@@ -1,0 +1,21 @@
+# Personal Memory Pipeline - PoC
+# Python 3.10+
+
+# NLP & Entity Extraction (optionnel - fallback regex si non installé)
+# spacy>=3.7.0  # Décommenter si C++ Build Tools installés
+
+# Embeddings (local, no API)
+sentence-transformers>=2.2.0
+
+# Graph Database
+neo4j>=5.14.0
+
+# Vector Store (v3 API - stable)
+weaviate-client>=3.26.0,<4
+
+# LLM (OpenAI)
+openai>=1.0.0
+
+# Utilities
+python-dotenv>=1.0.0
+rich>=13.0.0  # Pretty CLI output

@@ -1,0 +1,31 @@
+# Neo4j (graph) + Weaviate (vector store)
+# Usage: docker-compose up -d
+# Puis: python main.py add "..."
+
+services:
+  neo4j:
+    image: neo4j:5
+    ports:
+      - "7474:7474"   # HTTP
+      - "7687:7687"   # Bolt
+    environment:
+      NEO4J_AUTH: neo4j/password
+    volumes:
+      - neo4j_data:/data
+
+  weaviate:
+    image: cr.weaviate.io/semitechnologies/weaviate:1.36.2
+    ports:
+      - "8080:8080"
+      - "50051:50051"
+    environment:
+      QUERY_DEFAULTS_LIMIT: 25
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"
+      PERSISTENCE_DATA_PATH: "/var/lib/weaviate"
+      CLUSTER_HOSTNAME: "node1"
+    volumes:
+      - weaviate_data:/var/lib/weaviate
+
+volumes:
+  neo4j_data:
+  weaviate_data:
