@@ -1,4 +1,4 @@
-"""LLM-based entity extraction using OpenAI API."""
+"""LLM-based entity extraction (OpenAI or Azure AI Foundry)."""
 import json
 import re
 from typing import Any, Dict, List, Optional
@@ -41,19 +41,41 @@ class LLMExtractor:
         self,
         api_key: Optional[str] = None,
         model: str = "gpt-4o-mini",
+        base_url: Optional[str] = None,
+        azure_endpoint: Optional[str] = None,
+        api_version: Optional[str] = None,
     ):
         self.api_key = api_key
         self.model = model
+        self.base_url = base_url
+        self.azure_endpoint = azure_endpoint
+        self.api_version = api_version
         self._client = None
 
     def _get_client(self):
         if self._client is None:
             try:
-                from openai import OpenAI
-                key = self.api_key or __import__("os").environ.get("OPENAI_API_KEY")
+                key = self.api_key or __import__("os").environ.get("AZURE_OPENAI_API_KEY") or __import__("os").environ.get("OPENAI_API_KEY")
                 if not key:
-                    raise ValueError("OPENAI_API_KEY non configurée")
-                self._client = OpenAI(api_key=key)
+                    raise ValueError("Aucune clé LLM configurée (AZURE_OPENAI_API_KEY ou OPENAI_API_KEY).")
+
+                # Azure OpenAI (AzureOpenAI client) si endpoint fourni
+                if self.azure_endpoint:
+                    from openai import AzureOpenAI
+
+                    self._client = AzureOpenAI(
+                        api_key=key,
+                        azure_endpoint=self.azure_endpoint.rstrip("/"),
+                        api_version=self.api_version or "2024-12-01-preview",
+                    )
+                else:
+                    # OpenAI public (OpenAI client)
+                    from openai import OpenAI
+
+                    kwargs = {"api_key": key}
+                    if self.base_url:
+                        kwargs["base_url"] = self.base_url.rstrip("/") + "/"
+                    self._client = OpenAI(**kwargs)
             except ImportError as e:
                 raise ImportError("Installez openai: pip install openai") from e
         return self._client
@@ -66,18 +88,13 @@ class LLMExtractor:
         client = self._get_client()
         full_prompt = EXTRACTION_PROMPT + "\n\nTexte :\n" + text.strip()
 
-        try:
-            response = client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": full_prompt}],
-                temperature=0.2,
-            )
-            content = response.choices[0].message.content or "{}"
-        except Exception as e:
-            return ExtractionResult(
-                entities=[],
-                raw_text=text,
-            )
+        # Let errors surface instead of silently returning no entities
+        response = client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": full_prompt}],
+            temperature=0.2,
+        )
+        content = response.choices[0].message.content or "{}"
 
         data = self._parse_response(content, text)
         entities = self._to_entities(data, text)

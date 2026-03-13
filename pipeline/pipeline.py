@@ -3,43 +3,45 @@ from datetime import datetime
 from typing import List, Optional
 import uuid
 
-from .extractor import EntityExtractor, ExtractionResult
 from .graph_store import GraphStore
 from .llm_extractor import LLMExtractor
 from .vector_store import VectorStore
 
 from config import (
-    DATA_DIR,
-    OPENAI_API_KEY,
-    OPENAI_MODEL,
-    SPACY_MODEL,
+    AZURE_OPENAI_API_KEY,
+    AZURE_OPENAI_ENDPOINT,
+    AZURE_OPENAI_DEPLOYMENT,
+    AZURE_OPENAI_API_VERSION,
 )
 
 
 class MemoryPipeline:
     """
     Orchestrates the full pipeline:
-    1. Extract entities from text (LLM si OPENAI_API_KEY, sinon spaCy/regex)
+    1. Extract entities from text (LLM uniquement)
     2. Store in Neo4j (graph)
     3. Store in Weaviate (vector search)
     """
     
     def __init__(
         self,
-        spacy_model: str = SPACY_MODEL,
         use_graph: bool = True,
         use_vector: bool = True,
         use_llm: Optional[bool] = None,
     ):
-        if use_llm is None:
-            use_llm = bool(OPENAI_API_KEY and OPENAI_API_KEY.strip())
-        if use_llm and OPENAI_API_KEY:
-            try:
-                self.extractor = LLMExtractor(model=OPENAI_MODEL)
-            except Exception:
-                self.extractor = EntityExtractor(model_name=spacy_model)
-        else:
-            self.extractor = EntityExtractor(model_name=spacy_model)
+        # LLM-only: Azure AI Foundry (utilisé exclusivement)
+        use_azure = (AZURE_OPENAI_API_KEY or "").strip() and (AZURE_OPENAI_ENDPOINT or "").strip()
+        if not use_azure:
+            raise RuntimeError(
+                "Configurer AZURE_OPENAI_API_KEY et AZURE_OPENAI_ENDPOINT dans .env pour utiliser la pipeline (LLM Azure-only)."
+            )
+        deployment = (AZURE_OPENAI_DEPLOYMENT or "gpt-4o-mini").strip()
+        self.extractor = LLMExtractor(
+            api_key=AZURE_OPENAI_API_KEY,
+            model=deployment,
+            azure_endpoint=AZURE_OPENAI_ENDPOINT.strip(),
+            api_version=AZURE_OPENAI_API_VERSION,
+        )
         
         self.graph_store = None
         if use_graph:
@@ -49,11 +51,14 @@ class MemoryPipeline:
                 self.graph_store = None  # Neo4j non disponible
         
         self.vector_store = None
+        self._vector_init_error: Optional[Exception] = None
         if use_vector:
             try:
                 self.vector_store = VectorStore()
-            except Exception:
-                self.vector_store = None  # Weaviate non disponible
+            except Exception as e:
+                # Weaviate non disponible ou client incompatible
+                self.vector_store = None
+                self._vector_init_error = e
     
     def process(self, text: str, entry_id: Optional[str] = None) -> dict:
         """
@@ -63,7 +68,7 @@ class MemoryPipeline:
         """
         entry_id = entry_id or str(uuid.uuid4())
         
-        # 1. Extract entities
+        # 1. Extract entities (LLM-only)
         extraction = self.extractor.extract(text)
         
         # 2. Store in graph (if Neo4j available)
@@ -94,11 +99,15 @@ class MemoryPipeline:
                 vector_status = "ok"
             except Exception as e:
                 vector_status = f"error: {e}"
+        elif self._vector_init_error is not None:
+            # Surface initialization error instead of a silent "skipped"
+            vector_status = f"init-error: {self._vector_init_error}"
         
         return {
             "entry_id": entry_id,
             "entities": [
-                {"text": e.text, "type": EntityExtractor.LABEL_TO_TYPE.get(e.label, e.label)}
+                # LLMExtractor retourne déjà des labels de haut niveau (Person, Place, etc.)
+                {"text": e.text, "type": e.label}
                 for e in extraction.entities
             ],
             "graph": graph_status,

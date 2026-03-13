@@ -4,9 +4,7 @@ from typing import List, Optional
 
 from sentence_transformers import SentenceTransformer
 
-from config import CHROMA_COLLECTION, EMBEDDING_MODEL, WEAVIATE_URL
-
-COLLECTION_NAME = CHROMA_COLLECTION  # reuse same constant
+from config import WEAVIATE_CLASS_NAME, EMBEDDING_MODEL, WEAVIATE_URL
 
 
 class VectorStore:
@@ -15,7 +13,7 @@ class VectorStore:
     def __init__(
         self,
         url: Optional[str] = None,
-        collection_name: str = COLLECTION_NAME,
+        collection_name: str = WEAVIATE_CLASS_NAME,
         embedding_model: str = EMBEDDING_MODEL,
     ):
         url = url or WEAVIATE_URL
@@ -27,15 +25,19 @@ class VectorStore:
             self.client = weaviate.Client(url)
             self._ensure_schema()
         except Exception as e:
+            # Expose the underlying error message to help debugging
             raise RuntimeError(
-                f"Weaviate non disponible ({url}). Lance docker-compose up -d."
+                f"Weaviate non disponible ({url}) : {e}"
             ) from e
 
     def _ensure_schema(self):
         """Create collection if it doesn't exist (vectorizer=none, we provide vectors)."""
         schema = self.client.schema.get()
         classes = [c["class"] for c in schema.get("classes", [])]
-        if self.collection_name not in classes:
+        if self.collection_name in classes:
+            return
+
+        try:
             self.client.schema.create_class({
                 "class": self.collection_name,
                 "vectorizer": "none",
@@ -47,6 +49,11 @@ class VectorStore:
                     {"name": "entities", "dataType": ["string[]"]},
                 ],
             })
+        except Exception as e:
+            # If the class already exists (422), ignore and continue
+            msg = str(e)
+            if "already exists" not in msg:
+                raise
 
     def _embed(self, text: str) -> List[float]:
         """Generate embedding for text."""
@@ -62,11 +69,13 @@ class VectorStore:
         """Add a journal entry to the vector store."""
         meta = metadata or {}
         ts = timestamp or datetime.now()
+        # Weaviate "date" type expects RFC3339 string (no microseconds, with 'Z')
+        ts_rfc3339 = ts.replace(microsecond=0).isoformat() + "Z"
 
         props = {
             "text": text[:8000],
             "entry_id": entry_id,
-            "timestamp": ts.isoformat(),
+            "timestamp": ts_rfc3339,
             "entity_count": meta.get("entity_count", 0),
             "entities": meta.get("entities", [])[:20],
         }

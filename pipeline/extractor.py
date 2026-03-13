@@ -44,6 +44,20 @@ class SimpleExtractor:
     
     # Mots capitalisés consécutifs = probablement Person ou Lieu
     CAPITALIZED = re.compile(r"\b([A-ZÀÂÄÉÈÊËÏÎÔÙÛÜÇ][a-zàâäéèêëïîôùûüç]+(?:\s+[A-ZÀÂÄÉÈÊËÏÎÔÙÛÜÇ][a-zàâäéèêëïîôùûüç]+)*)\b")
+    # Petits mots très fréquents en français qu'on ne veut pas taguer comme entités
+    STOPWORDS_CAPITALIZED = {
+        "je",
+        "j'",
+        "aujourd'hui",
+        "aujourd’huI".lower(),  # avec apostrophe typographique
+        "on",
+        "il",
+        "elle",
+        "nous",
+        "vous",
+        "ils",
+        "elles",
+    }
     
     def extract(self, text: str) -> ExtractionResult:
         entities = []
@@ -60,7 +74,14 @@ class SimpleExtractor:
         # Noms propres (mots capitalisés, 2+ caractères)
         for m in self.CAPITALIZED.finditer(text):
             t = m.group().strip()
-            if len(t) < 2 or t.lower() in ("je", "aujourd'hui", "hier", "demain"):
+            tl = t.lower()
+            # Filtre quelques faux positifs courants en français
+            if (
+                len(t) < 2
+                or tl in self.STOPWORDS_CAPITALIZED
+                or tl in ("hier", "demain")
+                or tl.startswith("aujourd")  # couvre "Aujourd", "Aujourd'hui", etc.
+            ):
                 continue
             if t not in seen:
                 seen.add(t)

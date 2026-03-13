@@ -18,6 +18,11 @@ class GraphStore:
         password: str = NEO4J_PASSWORD,
     ):
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
+        # Initialize schema (constraints/indexes) in a dedicated transaction.
+        # Neo4j does not allow mixing schema modifications with data writes
+        # in the same transaction, so we run this once here.
+        with self.driver.session() as session:
+            session.execute_write(self._init_schema)
     
     def close(self):
         self.driver.close()
@@ -52,8 +57,6 @@ class GraphStore:
         ts_str = ts.isoformat()
         
         def _store(tx):
-            self._init_schema(tx)
-            
             # Create JournalEntry node
             tx.run("""
                 MERGE (j:JournalEntry {id: $id})
