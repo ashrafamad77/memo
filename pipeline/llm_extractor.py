@@ -55,9 +55,9 @@ class LLMExtractor:
     def _get_client(self):
         if self._client is None:
             try:
-                key = self.api_key or __import__("os").environ.get("AZURE_OPENAI_API_KEY") or __import__("os").environ.get("OPENAI_API_KEY")
+                key = self.api_key or __import__("os").environ.get("AZURE_OPENAI_API_KEY")
                 if not key:
-                    raise ValueError("Aucune clé LLM configurée (AZURE_OPENAI_API_KEY ou OPENAI_API_KEY).")
+                    raise ValueError("AZURE_OPENAI_API_KEY non configurée.")
 
                 # Azure OpenAI (AzureOpenAI client) si endpoint fourni
                 if self.azure_endpoint:

@@ -22,34 +22,19 @@ pip install -r requirements.txt
 
 Crée un fichier `.env` à la racine.
 
-Variables importantes :
-
-**Option A — OpenAI**
-```env
-OPENAI_API_KEY=...
-OPENAI_MODEL=gpt-4o-mini
-```
-
-**Option B — Azure AI Foundry** (prioritaire si les deux sont définis)
 ```env
 AZURE_OPENAI_API_KEY=ta-clé-azure
-AZURE_OPENAI_ENDPOINT=https://TON-RESOURCE.openai.azure.com/openai/v1
+AZURE_OPENAI_ENDPOINT=https://TON-RESOURCE.cognitiveservices.azure.com/
 AZURE_OPENAI_DEPLOYMENT=gpt-4o-mini
-```
-→ Dans Azure AI Foundry : **Keys and endpoint** pour la clé et l’URL, **Deployments** pour le nom du déploiement (ex. `gpt-4o-mini`).
+AZURE_OPENAI_API_VERSION=2024-12-01-preview
 
-**Weaviate + Neo4j**
-```env
-WEAVIATE_URL=http://localhost:8080
+WEAVIATE_URL=http://localhost:8081
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=password
 ```
 
-Notes :
-- Si tu utilises **Azure AI Foundry**, mets dans `.env` : `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT` et `AZURE_OPENAI_DEPLOYMENT` (nom du déploiement, ex. `gpt-4o-mini`). La pipeline utilisera Azure en priorité.
-- Si ton Weaviate est sur une autre machine, mets son IP/host dans `WEAVIATE_URL` (ex: `http://88.223.92.163:8080`).
-- Si tu vois une erreur OpenAI `429 insufficient_quota`, utilise Azure ou ajoute du crédit côté OpenAI.
+→ Azure : **Keys and endpoint** pour la clé et l’URL, **Deployments** pour le nom du déploiement. Weaviate par défaut sur le port 8081 (voir `docker-compose.yml`).
 
 ## Services (Neo4j + Weaviate)
 
@@ -60,7 +45,7 @@ docker-compose up -d
 ```
 
 Par défaut :
-- **Weaviate** : `http://localhost:8080`
+- **Weaviate** : `http://localhost:8081` (port 8081 pour éviter conflit avec d’autres services)
 - **Neo4j** : `bolt://localhost:7687` (user `neo4j`, password `password`)
 
 ## Utilisation
@@ -84,9 +69,9 @@ python main.py list --limit 20
 - **Vector: init-error: Weaviate non disponible (...)**
   - Vérifie `WEAVIATE_URL` (localhost vs IP serveur)
   - Vérifie que le conteneur Weaviate tourne (`docker ps`)
-- **Aucune entité extraite / erreur OpenAI**
-  - Si tu vois `429 insufficient_quota`, ton quota OpenAI est épuisé
-  - Vérifie que `OPENAI_API_KEY` est bien chargé (re-lancer le shell ou `source .venv/bin/activate`)
+- **Aucune entité extraite / erreur Azure**
+  - Vérifie `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT` et `AZURE_OPENAI_DEPLOYMENT` dans `.env`
+  - Recharge le shell : `source .venv/bin/activate`
 - **Pourquoi “BertModel LOAD REPORT … MiniLM” ?**
   - C’est le modèle d’**embeddings** (SentenceTransformers) utilisé pour la recherche sémantique (Weaviate).
   - Ce n’est pas le NER : l’extraction d’entités est faite par le LLM.
