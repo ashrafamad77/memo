@@ -41,6 +41,33 @@ def cmd_add(pipeline: MemoryPipeline, text: str):
     console.print(f"  Graph: {result['graph']} | Vector: {result['vector']}")
 
 
+def cmd_add_agentic(pipeline: MemoryPipeline, text: str):
+    """Process and store a journal entry via LangGraph workflow."""
+    result = pipeline.process_agentic(text)
+
+    console.print(Panel("[green]✓ Entry stored (agentic)[/green]", title="Success"))
+    console.print(f"  ID: [dim]{result['entry_id']}[/dim]")
+
+    if result["entities"]:
+        table = Table(title="Extracted entities")
+        table.add_column("Entity", style="cyan")
+        table.add_column("Type", style="magenta")
+        for e in result["entities"]:
+            table.add_row(e["text"], e["type"])
+        console.print(table)
+    if result.get("relations"):
+        rel_table = Table(title="Extracted relations (triplets)")
+        rel_table.add_column("Subject", style="cyan")
+        rel_table.add_column("Predicate", style="yellow")
+        rel_table.add_column("Object", style="green")
+        rel_table.add_column("Sentiment", justify="right")
+        for r in result["relations"]:
+            rel_table.add_row(r["subject"], r["predicate"], r["object"], f"{r['sentiment']:.2f}")
+        console.print(rel_table)
+
+    console.print(f"  Graph: {result['graph']} | Vector: {result['vector']}")
+
+
 def cmd_search(pipeline: MemoryPipeline, query: str, n: int = 5):
     """Semantic search over entries."""
     results = pipeline.search_semantic(query, n_results=n)
@@ -126,6 +153,7 @@ def main():
 
 Usage:
   python main.py add "<texte du journal>"
+  python main.py add-agentic "<texte du journal>"
   python main.py search "<requête sémantique>" [--n 5]
   python main.py entity "<nom personne/lieu>"
   python main.py list [--limit 20]
@@ -136,6 +164,7 @@ Usage:
 
 Examples:
   python main.py add "Aujourd'hui j'ai déjeuné avec Marie à Paris. On a parlé du projet."
+  python main.py add-agentic "Aujourd'hui j'ai déjeuné avec Marie à Paris. On a parlé du projet."
   python main.py search "repas avec des amis"
   python main.py entity "Marie"
   python main.py list
@@ -168,6 +197,13 @@ Examples:
                 console.print("[red]Texte vide.[/red]")
                 return 1
             cmd_add(pipeline, text)
+
+        elif command == "add-agentic":
+            text = " ".join(args) if args else input("Entrée journal: ")
+            if not text.strip():
+                console.print("[red]Texte vide.[/red]")
+                return 1
+            cmd_add_agentic(pipeline, text)
         
         elif command == "search":
             query = " ".join(args) if args else "expériences récentes"

@@ -56,6 +56,9 @@ Par défaut :
 # Ajouter une entrée journal
 python main.py add "Aujourd'hui j'ai déjeuné avec Marie à Paris. On a parlé du projet."
 
+# Ajouter une entrée via workflow agentic (LangGraph)
+python main.py add-agentic "Aujourd'hui j'ai déjeuné avec Marie à Paris. On a parlé du projet."
+
 # Reset Neo4j (utile après changement de schéma)
 python main.py reset-graph
 

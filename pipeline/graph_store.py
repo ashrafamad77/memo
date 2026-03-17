@@ -1,10 +1,12 @@
-"""Neo4j graph storage — event-centric ontology."""
+"""Neo4j graph storage — event-centric ontology + Person consolidator."""
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Tuple
+import uuid
 
 from neo4j import GraphDatabase
 
 from .extractor import ExtractionResult, ExtractedEntity
+from .embedding_service import embed_text, embedding_dim
 from config import NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
 
 
@@ -33,9 +35,18 @@ class GraphStore:
             session.execute_write(_reset)
 
     def _init_schema(self, tx):
+        # People: use stable IDs (names are NOT unique)
         tx.run("""
-            CREATE CONSTRAINT person_name IF NOT EXISTS
-            FOR (p:Person) REQUIRE p.name IS UNIQUE
+            CREATE CONSTRAINT person_id IF NOT EXISTS
+            FOR (p:Person) REQUIRE p.id IS UNIQUE
+        """)
+        tx.run("""
+            CREATE INDEX person_name IF NOT EXISTS
+            FOR (p:Person) ON (p.name)
+        """)
+        tx.run("""
+            CREATE CONSTRAINT alias_id IF NOT EXISTS
+            FOR (a:Alias) REQUIRE a.id IS UNIQUE
         """)
         tx.run("""
             CREATE CONSTRAINT place_name IF NOT EXISTS
@@ -74,6 +85,233 @@ class GraphStore:
             FOR (d:Day) REQUIRE d.date IS UNIQUE
         """)
 
+        # Vector index for entity resolution (Neo4j 5+)
+        try:
+            dim = embedding_dim()
+            tx.run(f"""
+                CREATE VECTOR INDEX person_index IF NOT EXISTS
+                FOR (p:Person) ON (p.embedding)
+                OPTIONS {{
+                  indexConfig: {{
+                    `vector.dimensions`: {dim},
+                    `vector.similarity_function`: 'cosine'
+                  }}
+                }}
+            """)
+        except Exception:
+            # If vector indexes unsupported on this Neo4j build, skip.
+            pass
+
+    def _person_profile_from_entry(self, mention: str, entry_text: str, places: List[str], topics: List[str]) -> str:
+        # Short but rich profile for embedding
+        parts = [f"Person: {mention}"]
+        if places:
+            parts.append("Places: " + ", ".join(places[:3]))
+        if topics:
+            parts.append("Topics: " + ", ".join(topics[:5]))
+        parts.append("Context: " + entry_text[:500])
+        return " | ".join(parts)
+
+    def _query_person_candidates(self, tx, query_vec: List[float], k: int = 5) -> List[Tuple[dict, float]]:
+        try:
+            result = tx.run(
+                """
+                CALL db.index.vector.queryNodes('person_index', $k, $vec)
+                YIELD node, score
+                RETURN node.id as id, node.name as name, node.role as role, score as score
+                ORDER BY score DESC
+                """,
+                k=k,
+                vec=query_vec,
+            )
+            return [({"id": r["id"], "name": r["name"], "role": r.get("role")}, float(r["score"])) for r in result]
+        except Exception:
+            return []
+
+    def _infer_role(self, mention: str, entry_text: str) -> str:
+        """Very small heuristic to guess role from the sentence."""
+        txt = (entry_text or "").lower()
+        if "ma soeur" in txt or "ma sœur" in txt or "ma frangine" in txt:
+            return "sister"
+        if "mon frère" in txt or "mon frere" in txt:
+            return "brother"
+        if "ma mère" in txt or "ma mere" in txt:
+            return "mother"
+        if "mon père" in txt or "mon pere" in txt:
+            return "father"
+        if "ma femme" in txt or "mon mari" in txt or "mon époux" in txt or "mon epoux" in txt:
+            return "partner"
+        if "collègue" in txt or "collegue" in txt or "au travail" in txt or "au boulot" in txt:
+            return "colleague"
+        if "ami" in txt or "amie" in txt:
+            return "friend"
+        return ""
+
+    def resolve_person(
+        self,
+        mention: str,
+        entry_text: str,
+        places: List[str],
+        topics: List[str],
+        threshold: float = 0.90,
+        create_alias: bool = True,
+        interactive: bool = True,
+        role: str = "",
+    ) -> dict:
+        """Return canonical person node ({id,name,score,created})."""
+        mention = (mention or "").strip()
+        if not mention:
+            return {"id": "", "name": "", "score": 0.0, "created": False}
+
+        profile = self._person_profile_from_entry(mention, entry_text, places, topics)
+        qvec = embed_text(profile)
+
+        def _resolve(tx):
+            # 1) Vector candidates
+            candidates = self._query_person_candidates(tx, qvec, k=5)
+            if candidates and candidates[0][0].get("id"):
+                best, score = candidates[0]
+                # Safety: do not auto-merge purely on embedding similarity unless we have a
+                # strong lexical anchor (exact name match, or existing alias match).
+                same_name = (best.get("name") or "").strip().lower() == mention.strip().lower()
+                existing_role = (best.get("role") or "").strip().lower() if isinstance(best, dict) else ""
+                alias_match = False
+                if not same_name:
+                    chk = tx.run(
+                        """
+                        MATCH (p:Person {id: $pid})<-[:REFERS_TO]-(a:Alias)
+                        WHERE toLower(a.text) = toLower($text)
+                        RETURN count(a) > 0 as ok
+                        """,
+                        pid=best["id"],
+                        text=mention,
+                    ).single()
+                    alias_match = bool(chk and chk.get("ok"))
+                # 1) Clear conflict by role: force split
+                kin_roles = {"sister", "brother", "mother", "father", "partner"}
+                new_role = (role or "").strip().lower()
+                if new_role and existing_role and new_role != existing_role and (
+                    new_role in kin_roles or existing_role in kin_roles
+                ):
+                    # treat as different person
+                    pass
+                else:
+                    # 2) High similarity AND lexical anchor -> likely same person
+                    if score >= threshold and (same_name or alias_match):
+                        if create_alias:
+                            aid = str(uuid.uuid4())
+                            tx.run(
+                                """
+                                MATCH (p:Person {id: $pid})
+                                CREATE (a:Alias {id: $aid, text: $text, created_at: datetime()})
+                                MERGE (a)-[:REFERS_TO]->(p)
+                                """,
+                                pid=best["id"],
+                                aid=aid,
+                                text=mention,
+                            )
+                        # Update role if previously empty and we just inferred one
+                        if new_role and not existing_role:
+                            tx.run(
+                                "MATCH (p:Person {id: $id}) SET p.role = $role",
+                                id=best["id"],
+                                role=new_role,
+                            )
+                        return {"id": best["id"], "name": best["name"], "score": score, "created": False}
+                    # 3) Ambiguous band: optionally ask user
+                    if interactive and (same_name or alias_match) and score >= 0.75:
+                        # crude CLI question; safe default is to split
+                        try:
+                            snippet = (entry_text or "")[:120].replace("\n", " ")
+                            answer = input(
+                                f"\n[Consolidator] Le nom '{mention}' semble correspondre au contact existant '{best.get('name')}' "
+                                f"(score={score:.2f}, ancien rôle='{existing_role or '-'}', nouveau rôle='{new_role or '-'}').\n"
+                                f"Texte: {snippet}\n"
+                                f"Est-ce la même personne ? [y/N]: "
+                            ).strip().lower()
+                        except EOFError:
+                            answer = ""
+                        if answer.startswith("y"):
+                            if create_alias:
+                                aid = str(uuid.uuid4())
+                                tx.run(
+                                    """
+                                    MATCH (p:Person {id: $pid})
+                                    CREATE (a:Alias {id: $aid, text: $text, created_at: datetime()})
+                                    MERGE (a)-[:REFERS_TO]->(p)
+                                    """,
+                                    pid=best["id"],
+                                    aid=aid,
+                                    text=mention,
+                                )
+                            if new_role and not existing_role:
+                                tx.run(
+                                    "MATCH (p:Person {id: $id}) SET p.role = $role",
+                                    id=best["id"],
+                                    role=new_role,
+                                )
+                            return {"id": best["id"], "name": best["name"], "score": score, "created": False}
+                    # otherwise, fall through to create new / exact-name path
+
+            # 2) Fallback: exact name match (if exists) to seed vector index
+            res = tx.run("MATCH (p:Person) WHERE toLower(p.name)=toLower($name) RETURN p.id as id, p.name as name LIMIT 1", name=mention).single()
+            if res and res.get("id"):
+                pid = res["id"]
+                # Update embedding with EMA
+                tx.run(
+                    """
+                    MATCH (p:Person {id: $id})
+                    SET p.embedding = CASE
+                      WHEN p.embedding IS NULL THEN $vec
+                      ELSE [i IN range(0, size($vec)-1) | (p.embedding[i] * 0.7) + ($vec[i] * 0.3)]
+                    END,
+                    p.last_seen = datetime()
+                    """,
+                    id=pid,
+                    vec=qvec,
+                )
+                if create_alias:
+                    aid = str(uuid.uuid4())
+                    tx.run(
+                        """
+                        MATCH (p:Person {id: $pid})
+                        CREATE (a:Alias {id: $aid, text: $text, created_at: datetime()})
+                        MERGE (a)-[:REFERS_TO]->(p)
+                        """,
+                        pid=pid,
+                        aid=aid,
+                        text=mention,
+                    )
+                return {"id": pid, "name": mention, "score": 0.5, "created": False}
+
+            # 3) Create new person
+            pid = str(uuid.uuid4())
+            tx.run(
+                """
+                CREATE (p:Person {id: $id, name: $name, created_at: datetime(), first_seen: datetime(), last_seen: datetime(), mention_count: 0, embedding: $vec, role: $role})
+                """,
+                id=pid,
+                name=mention,
+                vec=qvec,
+                role=(role or "").strip() or None,
+            )
+            if create_alias:
+                aid = str(uuid.uuid4())
+                tx.run(
+                    """
+                    MATCH (p:Person {id: $pid})
+                    CREATE (a:Alias {id: $aid, text: $text, created_at: datetime()})
+                    MERGE (a)-[:REFERS_TO]->(p)
+                    """,
+                    pid=pid,
+                    aid=aid,
+                    text=mention,
+                )
+            return {"id": pid, "name": mention, "score": 0.0, "created": True}
+
+        with self.driver.session() as session:
+            return session.execute_write(_resolve)
+
     def store_entry(
         self,
         entry_id: str,
@@ -96,6 +334,7 @@ class GraphStore:
         event_time_iso = meta.get("event_time_iso")
         event_time_conf = meta.get("event_time_confidence")
         event_type = meta.get("event_type")
+        person_roles_map = meta.get("person_roles_map") or {}
 
         # Canonical day bucket: prefer resolved event_time_iso, else input date
         resolved_day = None
@@ -170,23 +409,72 @@ class GraphStore:
                     MERGE (u)-[:PARTICIPATED_IN]->(ev)
                 """, name=user_name, ts=input_ts_str, event_key=event_key)
 
+            # Pre-resolve persons to stable IDs (Consolidator)
+            places_ctx = [e.text for e in entities if e.label == "Place"]
+            topics_ctx = [e.text for e in entities if e.label == "Concept"]
+            person_map = {}
+            uname = (user_name or "").strip().lower()
+            unique_person_mentions = {
+                e.text
+                for e in entities
+                if e.label == "Person"
+                and (e.text or "").strip()
+                and e.text.strip().lower() != uname
+            }
+            for mention in unique_person_mentions:
+                mkey = mention.strip().lower()
+                meta_role = ""
+                if isinstance(person_roles_map, dict):
+                    meta_role = (person_roles_map.get(mkey) or "").strip()
+                person_map[mention] = self.resolve_person(
+                    mention=mention,
+                    entry_text=text,
+                    places=places_ctx,
+                    topics=topics_ctx,
+                    role=meta_role or self._infer_role(mention, text),
+                )
+
             for ent in entities:
                 if user_name and ent.text.strip().lower() == user_name.lower():
                     node_type = "User"
                 else:
                     node_type = self._get_node_type(ent)
-                tx.run(f"""
-                    MERGE (e:{node_type} {{name: $name}})
-                    ON CREATE SET e.first_seen = datetime($ts), e.mention_count = 1
-                    ON MATCH SET e.last_seen = datetime($ts), e.mention_count = e.mention_count + 1
-                """, name=ent.text, ts=input_ts_str)
+                if node_type == "Person":
+                    resolved = person_map.get(ent.text) or {}
+                    pid = resolved.get("id")
+                    if not pid:
+                        continue
+                    tx.run(
+                        """
+                        MATCH (p:Person {id: $id})
+                        SET p.last_seen = datetime($ts), p.mention_count = coalesce(p.mention_count, 0) + 1
+                        """,
+                        id=pid,
+                        ts=input_ts_str,
+                    )
+                else:
+                    tx.run(f"""
+                        MERGE (e:{node_type} {{name: $name}})
+                        ON CREATE SET e.first_seen = datetime($ts), e.mention_count = 1
+                        ON MATCH SET e.last_seen = datetime($ts), e.mention_count = e.mention_count + 1
+                    """, name=ent.text, ts=input_ts_str)
 
                 if node_type in ("Person", "User"):
-                    tx.run(f"""
-                        MATCH (n:{node_type} {{name: $name}})
-                        MATCH (ev:Event {{key: $event_key}})
-                        MERGE (n)-[:PARTICIPATED_IN]->(ev)
-                    """, name=ent.text, event_key=event_key)
+                    if node_type == "User":
+                        tx.run("""
+                            MATCH (u:User {name: $name})
+                            MATCH (ev:Event {key: $event_key})
+                            MERGE (u)-[:PARTICIPATED_IN]->(ev)
+                        """, name=ent.text, event_key=event_key)
+                    else:
+                        resolved = person_map.get(ent.text) or {}
+                        pid = resolved.get("id")
+                        if pid:
+                            tx.run("""
+                                MATCH (p:Person {id: $id})
+                                MATCH (ev:Event {key: $event_key})
+                                MERGE (p)-[:PARTICIPATED_IN]->(ev)
+                            """, id=pid, event_key=event_key)
                 elif node_type == "Place":
                     tx.run("""
                         MATCH (pl:Place {name: $name})
@@ -230,9 +518,11 @@ class GraphStore:
         def _query(tx):
             result = tx.run("""
                 MATCH (e) WHERE e:Person OR e:Place OR e:Organization OR e:Concept OR e:User
-                RETURN labels(e)[0] as type, e.name as name,
-                       e.mention_count as mentions, e.last_seen as last_seen
-                ORDER BY e.mention_count DESC
+                RETURN labels(e)[0] as type,
+                       CASE WHEN e:Person THEN e.name ELSE e.name END as name,
+                       e.mention_count as mentions,
+                       e.last_seen as last_seen
+                ORDER BY coalesce(e.mention_count, 0) DESC
                 LIMIT $limit
             """, limit=limit)
             return [dict(record) for record in result]
@@ -243,12 +533,17 @@ class GraphStore:
     def search_by_entity(self, entity_name: str) -> List[dict]:
         def _query(tx):
             result = tx.run("""
-                MATCH (e {name: $name})
                 MATCH (j:Entry)-[:REFERS_TO]->(ev:Event)
-                WHERE ((e:Person OR e:User) AND (e)-[:PARTICIPATED_IN]->(ev))
-                   OR (e:Place AND (ev)-[:OCCURRED_AT]->(e))
-                   OR (e:Concept AND (ev)-[:HAS_TOPIC]->(e))
-                   OR (e:Organization AND (ev)-[:HAS_TOPIC]->(e))
+                OPTIONAL MATCH (u:User {name: $name})-[:PARTICIPATED_IN]->(ev)
+                OPTIONAL MATCH (p:Person)-[:PARTICIPATED_IN]->(ev)
+                OPTIONAL MATCH (a:Alias {text: $name})-[:REFERS_TO]->(p)
+                OPTIONAL MATCH (pl:Place {name: $name})<-[:OCCURRED_AT]-(ev)
+                OPTIONAL MATCH (c:Concept {name: $name})<-[:HAS_TOPIC]-(ev)
+                WITH j, ev,
+                     (u IS NOT NULL OR a IS NOT NULL) as personMatch,
+                     (pl IS NOT NULL) as placeMatch,
+                     (c IS NOT NULL) as conceptMatch
+                WHERE personMatch OR placeMatch OR conceptMatch
                 RETURN j.id as id, j.text as text, j.input_time as timestamp
                 ORDER BY j.input_time DESC
                 LIMIT 20

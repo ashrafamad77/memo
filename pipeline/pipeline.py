@@ -126,6 +126,33 @@ class MemoryPipeline:
             "vector": vector_status,
         }
 
+    def process_agentic(self, text: str, entry_id: Optional[str] = None) -> dict:
+        """Run the same pipeline through a minimal LangGraph workflow."""
+        from .agentic import AgenticRunner
+
+        entry_id = entry_id or str(uuid.uuid4())
+        runner = AgenticRunner(
+            extractor=self.extractor,
+            graph_store=self.graph_store,
+            vector_store=self.vector_store,
+            user_name=USER_NAME,
+        )
+        app = runner.build()
+        out = app.invoke({"text": text, "entry_id": entry_id})
+        extraction = out.get("extraction")
+        entities = [{"text": e.text, "type": e.label} for e in getattr(extraction, "entities", [])]
+        relations = [
+            {"subject": r.subject, "predicate": r.predicate, "object": r.obj, "sentiment": r.sentiment}
+            for r in getattr(extraction, "relations", [])
+        ]
+        return {
+            "entry_id": entry_id,
+            "entities": entities,
+            "relations": relations,
+            "graph": out.get("graph_status", "skipped"),
+            "vector": out.get("vector_status", "skipped"),
+        }
+
     @staticmethod
     def _resolve_relative_dates(extraction, input_dt: datetime):
         meta = extraction.metadata or {}

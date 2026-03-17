@@ -27,7 +27,11 @@ Retourne un JSON valide avec cette structure exacte :
     "event_type": "social",
     "event_time_text": "ce matin",
     "event_time_iso": "2026-03-13T12:30:00Z",
-    "event_time_confidence": 0.6
+    "event_time_confidence": 0.6,
+    "person_roles": [
+      {"name": "Marie", "role": "colleague"},
+      {"name": "Jean", "role": "friend"}
+    ]
   }
 }
 
@@ -229,8 +233,23 @@ class LLMExtractor:
         return relations
 
     def _to_metadata(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        meta = data.get("metadata", {})
-        return meta if isinstance(meta, dict) else {}
+        raw = data.get("metadata", {})
+        meta: Dict[str, Any] = raw if isinstance(raw, dict) else {}
+
+        # Normalize optional person_roles into a dict: lower(name) -> role
+        roles_map: Dict[str, str] = {}
+        for item in meta.get("person_roles", []) or []:
+            if not isinstance(item, dict):
+                continue
+            n = (item.get("name") or "").strip()
+            r = (item.get("role") or "").strip()
+            if not n or not r:
+                continue
+            roles_map[n.lower()] = r
+        if roles_map:
+            meta["person_roles_map"] = roles_map
+
+        return meta
 
     def _normalize_user_in_relations(
         self, relations: List[ExtractedRelation]

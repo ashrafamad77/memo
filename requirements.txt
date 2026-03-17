@@ -19,3 +19,6 @@ openai>=1.0.0
 # Utilities
 python-dotenv>=1.0.0
 rich>=13.0.0  # Pretty CLI output
+
+# Agent orchestration (minimal agentic workflow)
+langgraph>=0.2.0
