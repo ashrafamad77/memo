@@ -5,7 +5,7 @@ the data structures shared with the graph and vector stores.
 """
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional, Any
 
 
 @dataclass
@@ -17,7 +17,18 @@ class ExtractedEntity:
 
 
 @dataclass
+class ExtractedRelation:
+    """Triplet sujet-prédicat-objet pour le graphe event-centric."""
+    subject: str
+    predicate: str  # PARTICIPATED_IN, OCCURRED_AT, HAS_TOPIC, DISCUSSED, etc.
+    obj: str
+    sentiment: float = 0.5  # 0..1, défaut neutre
+
+
+@dataclass
 class ExtractionResult:
     entities: List[ExtractedEntity] = field(default_factory=list)
+    relations: List[ExtractedRelation] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
     raw_text: str = ""
     timestamp: Optional[datetime] = None

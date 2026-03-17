@@ -23,6 +23,8 @@ pip install -r requirements.txt
 Crée un fichier `.env` à la racine.
 
 ```env
+USER_NAME=Ashraf
+
 AZURE_OPENAI_API_KEY=ta-clé-azure
 AZURE_OPENAI_ENDPOINT=https://TON-RESOURCE.cognitiveservices.azure.com/
 AZURE_OPENAI_DEPLOYMENT=gpt-4o-mini
@@ -54,6 +56,15 @@ Par défaut :
 # Ajouter une entrée journal
 python main.py add "Aujourd'hui j'ai déjeuné avec Marie à Paris. On a parlé du projet."
 
+# Reset Neo4j (utile après changement de schéma)
+python main.py reset-graph
+
+# Reset Weaviate (vide les objets indexés)
+python main.py reset-vector
+
+# Reset complet (Neo4j + Weaviate)
+python main.py reset-all
+
 # Recherche sémantique
 python main.py search "repas avec des amis" --n 5
 
@@ -63,6 +74,12 @@ python main.py entity "Marie"
 # Lister les entités connues
 python main.py list --limit 20
 ```
+
+## Notes de modélisation (important)
+
+- **Neo4j**: on stocke *toutes* les entrées (`Entry`) avec `input_time`. Un `Event` canonique est créé/mergé via une clé (bucket jour + entités clés) et les entrées pointent vers lui via `(:Entry)-[:REFERS_TO]->(:Event)`.
+- **Weaviate**: on indexe pour la recherche sémantique, mais on évite les doublons exacts **le même jour** via `content_hash + day` (si déjà présent, on skip l'insertion vector).
+- **Métadonnées**: `event_type` / `emotions` sont stockés en metadata (pas mélangés aux entités littérales) afin d'éviter d’avoir des mots “inférés” dans `entities`.
 
 ## Dépannage rapide
 

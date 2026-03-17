@@ -28,7 +28,16 @@ def cmd_add(pipeline: MemoryPipeline, text: str):
         for e in result["entities"]:
             table.add_row(e["text"], e["type"])
         console.print(table)
-    
+    if result.get("relations"):
+        rel_table = Table(title="Extracted relations (triplets)")
+        rel_table.add_column("Subject", style="cyan")
+        rel_table.add_column("Predicate", style="yellow")
+        rel_table.add_column("Object", style="green")
+        rel_table.add_column("Sentiment", justify="right")
+        for r in result["relations"]:
+            rel_table.add_row(r["subject"], r["predicate"], r["object"], f"{r['sentiment']:.2f}")
+        console.print(rel_table)
+
     console.print(f"  Graph: {result['graph']} | Vector: {result['vector']}")
 
 
@@ -82,6 +91,34 @@ def cmd_list(pipeline: MemoryPipeline, limit: int = 20):
     console.print(table)
 
 
+def cmd_reset(pipeline: MemoryPipeline):
+    """Clear Neo4j graph (event-centric schema reset)."""
+    if pipeline.reset_graph():
+        console.print(Panel("[green]✓ Graph Neo4j vidé.[/green]", title="Reset"))
+    else:
+        console.print("[yellow]Neo4j non disponible.[/yellow]")
+
+
+def cmd_reset_graph(pipeline: MemoryPipeline):
+    if pipeline.reset_graph():
+        console.print(Panel("[green]✓ Graph Neo4j vidé.[/green]", title="Reset graph"))
+    else:
+        console.print("[yellow]Neo4j non disponible.[/yellow]")
+
+
+def cmd_reset_vector(pipeline: MemoryPipeline):
+    if pipeline.reset_vector():
+        console.print(Panel("[green]✓ Vector store (Weaviate) vidé.[/green]", title="Reset vector"))
+    else:
+        console.print("[yellow]Weaviate non disponible.[/yellow]")
+
+
+def cmd_reset_all(pipeline: MemoryPipeline):
+    res = pipeline.reset_all()
+    msg = f"Graph: {'ok' if res['graph'] else 'skipped'} | Vector: {'ok' if res['vector'] else 'skipped'}"
+    console.print(Panel(f"[green]✓ Reset terminé.[/green]\n{msg}", title="Reset all"))
+
+
 def main():
     if len(sys.argv) < 2:
         console.print(Panel("""
@@ -92,6 +129,10 @@ Usage:
   python main.py search "<requête sémantique>" [--n 5]
   python main.py entity "<nom personne/lieu>"
   python main.py list [--limit 20]
+  python main.py reset
+  python main.py reset-graph
+  python main.py reset-vector
+  python main.py reset-all
 
 Examples:
   python main.py add "Aujourd'hui j'ai déjeuné avec Marie à Paris. On a parlé du projet."
@@ -141,7 +182,19 @@ Examples:
         
         elif command == "list":
             cmd_list(pipeline, limit=limit)
-        
+
+        elif command == "reset":
+            cmd_reset(pipeline)
+
+        elif command == "reset-graph":
+            cmd_reset_graph(pipeline)
+
+        elif command == "reset-vector":
+            cmd_reset_vector(pipeline)
+
+        elif command == "reset-all":
+            cmd_reset_all(pipeline)
+
         else:
             console.print(f"[red]Commande inconnue: {command}[/red]")
             return 1

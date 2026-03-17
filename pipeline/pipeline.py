@@ -1,5 +1,5 @@
 """Main pipeline: text -> extract -> graph + vector store."""
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
 import uuid
 
@@ -12,6 +12,7 @@ from config import (
     AZURE_OPENAI_ENDPOINT,
     AZURE_OPENAI_DEPLOYMENT,
     AZURE_OPENAI_API_VERSION,
+    USER_NAME,
 )
 
 
@@ -41,6 +42,7 @@ class MemoryPipeline:
             model=deployment,
             azure_endpoint=AZURE_OPENAI_ENDPOINT.strip(),
             api_version=AZURE_OPENAI_API_VERSION,
+            user_name=USER_NAME,
         )
         
         self.graph_store = None
@@ -70,6 +72,10 @@ class MemoryPipeline:
         
         # 1. Extract entities (LLM-only)
         extraction = self.extractor.extract(text)
+
+        # Resolve relative dates like "aujourd'hui" -> absolute event_time_iso,
+        # then drop those Date entities so we don't store them as Date nodes.
+        extraction = self._resolve_relative_dates(extraction, input_dt=datetime.now())
         
         # 2. Store in graph (if Neo4j available)
         graph_status = "skipped"
@@ -79,6 +85,7 @@ class MemoryPipeline:
                     entry_id=entry_id,
                     text=text,
                     extraction=extraction,
+                    user_name=USER_NAME,
                 )
                 graph_status = "ok"
             except Exception as e:
@@ -93,7 +100,9 @@ class MemoryPipeline:
                     text=text,
                     metadata={
                         "entity_count": len(extraction.entities),
-                        "entities": [e.text for e in extraction.entities[:10]],
+                        # Store only "retrieval entities" (exclude Date)
+                        "entities": [e.text for e in extraction.entities if e.label != "Date"][:10],
+                        "metadata": extraction.metadata,
                     },
                 )
                 vector_status = "ok"
@@ -106,13 +115,47 @@ class MemoryPipeline:
         return {
             "entry_id": entry_id,
             "entities": [
-                # LLMExtractor retourne déjà des labels de haut niveau (Person, Place, etc.)
                 {"text": e.text, "type": e.label}
                 for e in extraction.entities
+            ],
+            "relations": [
+                {"subject": r.subject, "predicate": r.predicate, "object": r.obj, "sentiment": r.sentiment}
+                for r in extraction.relations
             ],
             "graph": graph_status,
             "vector": vector_status,
         }
+
+    @staticmethod
+    def _resolve_relative_dates(extraction, input_dt: datetime):
+        meta = extraction.metadata or {}
+        # Keep existing LLM-provided absolute time if present
+        if not meta.get("event_time_iso"):
+            for e in list(extraction.entities):
+                if e.label != "Date":
+                    continue
+                t = e.text.strip().lower()
+                t = t.replace("’", "'")
+                if t in ("aujourd'hui", "aujourdhui"):
+                    meta["event_time_iso"] = input_dt.replace(microsecond=0).isoformat() + "Z"
+                    meta["event_time_confidence"] = max(float(meta.get("event_time_confidence", 0.0)), 0.9)
+                elif t == "hier":
+                    dt = input_dt - timedelta(days=1)
+                    meta["event_time_iso"] = dt.replace(microsecond=0).isoformat() + "Z"
+                    meta["event_time_confidence"] = max(float(meta.get("event_time_confidence", 0.0)), 0.9)
+                elif t == "demain":
+                    dt = input_dt + timedelta(days=1)
+                    meta["event_time_iso"] = dt.replace(microsecond=0).isoformat() + "Z"
+                    meta["event_time_confidence"] = max(float(meta.get("event_time_confidence", 0.0)), 0.9)
+
+        # Drop relative date mentions from entities (not useful long-term)
+        drop = {"aujourd'hui", "aujourdhui", "hier", "demain"}
+        extraction.entities = [
+            e for e in extraction.entities
+            if not (e.label == "Date" and e.text.strip().lower().replace("’", "'") in drop)
+        ]
+        extraction.metadata = meta
+        return extraction
     
     def search_semantic(self, query: str, n_results: int = 5) -> List[dict]:
         """Semantic search over journal entries."""
@@ -131,7 +174,28 @@ class MemoryPipeline:
         if not self.graph_store:
             return []
         return self.graph_store.query_entities(limit=limit)
-    
+
+    def reset_graph(self) -> bool:
+        """Clear all Neo4j data. Returns True if done, False if graph unavailable."""
+        if not self.graph_store:
+            return False
+        self.graph_store.reset_graph()
+        return True
+
+    def reset_vector(self) -> bool:
+        """Clear all Weaviate objects. Returns True if done, False if vector unavailable."""
+        if not self.vector_store:
+            return False
+        self.vector_store.reset_vector()
+        return True
+
+    def reset_all(self) -> dict:
+        """Reset graph and vector stores."""
+        return {
+            "graph": self.reset_graph(),
+            "vector": self.reset_vector(),
+        }
+
     def close(self):
         """Clean up connections."""
         if self.graph_store:

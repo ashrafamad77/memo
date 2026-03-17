@@ -3,30 +3,46 @@ import json
 import re
 from typing import Any, Dict, List, Optional
 
-from .extractor import ExtractedEntity, ExtractionResult
+from .extractor import ExtractedEntity, ExtractedRelation, ExtractionResult
 
 
-EXTRACTION_PROMPT = """Tu es un assistant qui extrait des entités et métadonnées d'une entrée de journal personnel.
+EXTRACTION_PROMPT = """Tu es un assistant qui extrait des entités (mentions), des relations (triplets) et des métadonnées d'une entrée de journal personnel.
 
-Pour le texte suivant, extrais toutes les entités pertinentes et retourne un JSON valide avec cette structure exacte :
+Pour le texte suivant, extrais :
+1) Les entités (Person, Place, Concept, Event, Date)
+2) Les relations entre elles au format sujet-prédicat-objet
+
+Retourne un JSON valide avec cette structure exacte :
 
 {
   "entities": [
     {"text": "nom ou expression", "type": "Person|Place|Organization|Event|Date|Concept"}
   ],
-  "emotions": ["émotion1", "émotion2"],
-  "event_type": "travail|social|santé|familial|loisirs|autre"
+  "relations": [
+    {"subject": "Marie", "predicate": "MET_AT", "object": "Paris", "sentiment": 0.8},
+    {"subject": "Marie", "predicate": "DISCUSSED", "object": "projet", "sentiment": 0.6}
+  ],
+  "metadata": {
+    "emotions": ["joie", "stress"],
+    "event_type": "social",
+    "event_time_text": "ce matin",
+    "event_time_iso": "2026-03-13T12:30:00Z",
+    "event_time_confidence": 0.6
+  }
 }
 
-Règles :
-- Person : noms de personnes (Marie, Jean, etc.)
-- Place : lieux (Paris, le café, bureau, etc.)
-- Organization : entreprises, équipes, groupes
-- Event : événements nommés (réunion, déjeuner, conférence)
-- Date : dates explicites (aujourd'hui, lundi 15, 2024-03-15)
-- Concept : thèmes, sujets, activités, émotions en tant que concepts
-- emotions : sentiments ressentis (joie, stress, nostalgie, etc.)
-- event_type : catégorie globale (une seule valeur)
+Règles entités :
+- Person : noms de personnes. Place : lieux. Concept : thèmes, sujets.
+- Event : type d'événement (déjeuner, réunion, etc.). Date : dates explicites.
+⚠️ Les entités doivent être des mentions dans le texte (pas d'inférences).
+
+Règles relations (triplets) :
+- subject et object doivent être des entités ou le nom de l'auteur.
+- predicate : LUNCHED_WITH, MET_AT, DISCUSSED, WORKED_ON, OCCURRED_AT, HAS_TOPIC, etc.
+- sentiment : 0 (négatif) à 1 (positif), 0.5 = neutre.
+- Extrais 2 à 6 relations. Quand le texte dit "je", "j'ai", "nous" (auteur inclus), le SUJET doit être l'auteur.
+
+{user_context}
 
 Retourne UNIQUEMENT le JSON, sans texte avant ou après.
 """
@@ -44,9 +60,11 @@ class LLMExtractor:
         base_url: Optional[str] = None,
         azure_endpoint: Optional[str] = None,
         api_version: Optional[str] = None,
+        user_name: Optional[str] = None,
     ):
         self.api_key = api_key
         self.model = model
+        self.user_name = (user_name or "").strip()
         self.base_url = base_url
         self.azure_endpoint = azure_endpoint
         self.api_version = api_version
@@ -86,7 +104,13 @@ class LLMExtractor:
             return ExtractionResult(entities=[], raw_text=text)
 
         client = self._get_client()
-        full_prompt = EXTRACTION_PROMPT + "\n\nTexte :\n" + text.strip()
+        user_context = ""
+        if self.user_name:
+            user_context = f"L'auteur du journal s'appelle {self.user_name}. Quand le texte dit 'je', 'j'ai', 'on a', 'nous', c'est {self.user_name} qui agit. Utilise TOUJOURS exactement '{self.user_name}' comme sujet (jamais 'auteur', 'je', 'moi'). Exemple: subject='{self.user_name}', predicate='LUNCHED_WITH', object='Marie'."
+        else:
+            user_context = "Tu ne connais pas le nom de l'auteur ; extrais les relations à partir des entités mentionnées."
+        prompt = EXTRACTION_PROMPT.replace("{user_context}", user_context)
+        full_prompt = prompt + "\n\nTexte :\n" + text.strip()
 
         # Let errors surface instead of silently returning no entities
         response = client.chat.completions.create(
@@ -98,7 +122,11 @@ class LLMExtractor:
 
         data = self._parse_response(content, text)
         entities = self._to_entities(data, text)
-        return ExtractionResult(entities=entities, raw_text=text.strip())
+        relations = self._to_relations(data, text)
+        if self.user_name:
+            relations = self._normalize_user_in_relations(relations)
+        metadata = self._to_metadata(data)
+        return ExtractionResult(entities=entities, relations=relations, metadata=metadata, raw_text=text.strip())
 
     def _parse_response(self, content: str, original_text: str) -> Dict[str, Any]:
         """Parse LLM response into structured data."""
@@ -110,7 +138,7 @@ class LLMExtractor:
         try:
             return json.loads(content)
         except json.JSONDecodeError:
-            return {"entities": [], "emotions": [], "event_type": "autre"}
+            return {"entities": [], "relations": [], "metadata": {}}
 
     def _to_entities(
         self,
@@ -168,3 +196,62 @@ class LLMExtractor:
                 ))
 
         return entities
+
+    def _to_relations(
+        self,
+        data: Dict[str, Any],
+        original_text: str,
+    ) -> List[ExtractedRelation]:
+        """Convert parsed relations into ExtractedRelation list."""
+        relations: List[ExtractedRelation] = []
+        seen: set = set()
+
+        for item in data.get("relations", []):
+            if not isinstance(item, dict):
+                continue
+            subj = (item.get("subject") or "").strip()
+            pred = (item.get("predicate") or "RELATED_TO").strip().upper().replace(" ", "_")
+            obj = (item.get("object") or "").strip()
+            if not subj or not obj:
+                continue
+            sent = float(item.get("sentiment", 0.5))
+            sent = max(0.0, min(1.0, sent))
+            key = (subj.lower(), pred, obj.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            relations.append(ExtractedRelation(
+                subject=subj,
+                predicate=pred,
+                obj=obj,
+                sentiment=sent,
+            ))
+        return relations
+
+    def _to_metadata(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        meta = data.get("metadata", {})
+        return meta if isinstance(meta, dict) else {}
+
+    def _normalize_user_in_relations(
+        self, relations: List[ExtractedRelation]
+    ) -> List[ExtractedRelation]:
+        """Replace 'auteur', 'l'auteur', 'je', etc. with the actual user_name."""
+        def _is_author_ref(s: str) -> bool:
+            s = s.strip().lower()
+            for c in "''\u2019":  # apostrophe variants
+                s = s.replace(c, " ")
+            s = s.replace("l ", "").replace("le ", "").replace("la ", "").strip()
+            return s in {"auteur", "author", "je", "moi", "me", "nous", "us"}
+
+        out = []
+        for r in relations:
+            subj = r.subject.strip()
+            obj = r.obj.strip()
+            if _is_author_ref(subj):
+                subj = self.user_name
+            if _is_author_ref(obj):
+                obj = self.user_name
+            out.append(ExtractedRelation(
+                subject=subj, predicate=r.predicate, obj=obj, sentiment=r.sentiment
+            ))
+        return out

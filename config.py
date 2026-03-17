@@ -21,6 +21,11 @@ WEAVIATE_CLASS_NAME = os.getenv("WEAVIATE_CLASS_NAME", "journal_entries")
 # Embedding model (multilingual, works for FR/EN)
 EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
+# User (owner of the journal – first-person "je" maps to this)
+USER_NAME = os.getenv("USER_NAME", "")  # e.g. Ashraf
+USER_AGE = os.getenv("USER_AGE", "")  # optional
+USER_LANG = os.getenv("USER_LANG", "")  # optional, e.g. french
+
 # LLM extraction (Azure AI Foundry)
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY", "")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "")  # e.g. https://xxx.cognitiveservices.azure.com/
