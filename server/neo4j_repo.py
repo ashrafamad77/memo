@@ -98,6 +98,30 @@ class Neo4jRepo:
             row = s.run(q, id=person_id, entry_limit=int(entry_limit)).single()
             return dict(row) if row else None
 
+    def person_timeline(self, person_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Interaction timeline for a person: (Person)-[:PARTICIPATED_IN]->(Event)<-[:REFERS_TO]-(Entry)
+        Enriched with Day, Place, and EventType when available.
+        """
+        q = """
+        MATCH (p:Person {id: $id})
+        MATCH (p)-[:PARTICIPATED_IN]->(ev:Event)<-[:REFERS_TO]-(e:Entry)
+        OPTIONAL MATCH (ev)-[:ON_DAY]->(d:Day)
+        OPTIONAL MATCH (ev)-[:OCCURRED_AT]->(pl:Place)
+        OPTIONAL MATCH (ev)-[:HAS_TYPE]->(t:EventType)
+        WITH e, ev, d, collect(DISTINCT pl.name) as places, collect(DISTINCT t.name) as types
+        RETURN e.id as entry_id,
+               toString(e.input_time) as input_time,
+               d.date as day,
+               coalesce(types[0], ev.event_type, '') as event_type,
+               places as places,
+               substring(e.text, 0, 260) as text_preview
+        ORDER BY e.input_time DESC
+        LIMIT $limit
+        """
+        with self._driver.session() as s:
+            return [dict(r) for r in s.run(q, id=person_id, limit=int(limit))]
+
     def neighborhood(self, ref: str, depth: int = 1, limit: int = 200) -> Dict[str, Any]:
         """
         ref format: Label:Key where key maps to a well-known property:

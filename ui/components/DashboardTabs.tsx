@@ -5,8 +5,9 @@ import { useEffect, useMemo, useState } from "react";
 import { apiGet } from "@/lib/api";
 import { InboxQueue } from "@/components/InboxQueue";
 import { GraphMindMap } from "@/components/GraphMindMap";
+import { EntityTimeline } from "@/components/EntityTimeline";
 
-const tabs = ["Inbox", "Timeline", "Entities", "Graph"] as const;
+const tabs = ["Inbox", "Timeline", "Entities", "Entity Timeline", "Graph"] as const;
 type Tab = (typeof tabs)[number];
 
 function TabButton({
@@ -57,6 +58,11 @@ export function DashboardTabs() {
         if (tab === "Graph") {
           // GraphMindMap loads its own neighborhood; we only need a people list.
           const out = await apiGet<{ items: any[] }>("/persons?limit=30");
+          if (!ignore) setPeople(out.items || []);
+        }
+        if (tab === "Entity Timeline") {
+          // EntityTimeline loads its own timeline; we only need a people list.
+          const out = await apiGet<{ items: any[] }>("/persons?limit=50");
           if (!ignore) setPeople(out.items || []);
         }
       } catch (e: any) {
@@ -141,6 +147,13 @@ export function DashboardTabs() {
           <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-5">
             <div className="text-sm font-semibold">Graph view</div>
             <GraphMindMap initialPeople={people} />
+          </div>
+        );
+      case "Entity Timeline":
+        return (
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-5">
+            <div className="text-sm font-semibold">Entity timeline</div>
+            <EntityTimeline initialPeople={people} />
           </div>
         );
       default:

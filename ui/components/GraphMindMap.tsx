@@ -117,6 +117,19 @@ export function GraphMindMap({
   const [selectedPersonId, setSelectedPersonId] = useState<string>(initialPeople?.[0]?.id || "");
   const [data, setData] = useState<GraphApiOut>({ nodes: [], edges: [] });
   const [status, setStatus] = useState<string>("");
+  const [compactMode, setCompactMode] = useState<boolean>(true);
+
+  // Refs so cytoscape tap handler always reads latest state.
+  const compactModeRef = useRef<boolean>(compactMode);
+  const selectedPersonIdRef = useRef<string>(selectedPersonId);
+
+  useEffect(() => {
+    compactModeRef.current = compactMode;
+  }, [compactMode]);
+
+  useEffect(() => {
+    selectedPersonIdRef.current = selectedPersonId;
+  }, [selectedPersonId]);
 
   useEffect(() => {
     // Ensure we have a list of people for selection.
@@ -204,39 +217,98 @@ export function GraphMindMap({
     const ids2 = new Set(nodes2.map((n) => n.id));
     const edges2 = edges.filter((e) => ids2.has(e.source) && ids2.has(e.target));
 
-    // Enrich labels:
-    // - Prefix with type, e.g. "Person: Marie"
-    // - For Events, include a nearby Place, e.g. "Event: call @ Lyon"
     const nodeById = new Map(nodes2.map((n) => [n.id, n]));
-    const neighbors = new Map<string, Set<string>>();
+
+    // Collect per-Event attributes by scanning edges to context nodes.
+    const eventCtx = new Map<
+      string,
+      { day?: string; place?: string; topics: Set<string>; emotions: Set<string>; type?: string }
+    >();
     for (const e of edges2) {
-      if (!neighbors.has(e.source)) neighbors.set(e.source, new Set());
-      if (!neighbors.has(e.target)) neighbors.set(e.target, new Set());
-      neighbors.get(e.source)!.add(e.target);
-      neighbors.get(e.target)!.add(e.source);
+      const s = nodeById.get(e.source);
+      const t = nodeById.get(e.target);
+      const eventId = s?.kind === "Event" ? e.source : t?.kind === "Event" ? e.target : "";
+      if (!eventId) continue;
+      const otherId = eventId === e.source ? e.target : e.source;
+      const other = nodeById.get(otherId);
+      if (!other) continue;
+
+      if (!eventCtx.has(eventId)) {
+        eventCtx.set(eventId, { topics: new Set(), emotions: new Set() });
+      }
+      const ctx = eventCtx.get(eventId)!;
+
+      // Relationship-driven enrichment
+      if (e.type === "ON_DAY" && other.kind === "Day") ctx.day = other.label;
+      if (e.type === "OCCURRED_AT" && other.kind === "Place") ctx.place = other.label;
+      if (e.type === "HAS_TOPIC" && (other.kind === "Concept" || other.kind === "Organization")) ctx.topics.add(other.label);
+      if (e.type === "HAS_EMOTION" && other.kind === "Emotion") ctx.emotions.add(other.label);
+      if (e.type === "HAS_TYPE" && other.kind === "EventType") ctx.type = other.label;
     }
 
     const nodes3 = nodes2.map((n) => {
-      let base = n.label;
-      if (n.kind === "Event") {
-        let place = "";
-        for (const nid of Array.from(neighbors.get(n.id) || [])) {
-          const other = nodeById.get(nid);
-          if (other?.kind === "Place") {
-            place = other.label;
-            break;
-          }
-        }
-        base = place ? `${base} @ ${place}` : base;
-      }
       const prefix = n.kind || "Node";
-      // Keep Entry readable without over-prefixing the whole snippet.
-      const label = n.kind === "Entry" ? `Entry: ${base}` : `${prefix}: ${base}`;
+
+      if (!compactMode) {
+        // Non-compact: keep the current behavior (show context nodes & edges).
+        let base = n.label;
+        if (n.kind === "Event") {
+          const ctx = eventCtx.get(n.id);
+          if (ctx?.place) base = `${base} @ ${ctx.place}`;
+        }
+        const label = n.kind === "Entry" ? `Entry: ${base}` : `${prefix}: ${base}`;
+        return { ...n, label };
+      }
+
+      // Compact card: encode Event attributes; hide context nodes later.
+      if (n.kind === "Event") {
+        const ctx = eventCtx.get(n.id);
+        const raw = (n.raw || {}) as any;
+
+        const day =
+          ctx?.day ||
+          (typeof raw?.event_time_iso === "string" ? String(raw.event_time_iso).slice(0, 10) : "") ||
+          (typeof raw?.key === "string" ? String(raw.key).split("|")[0] : "");
+        const place = ctx?.place || "";
+        const typeVal = ctx?.type || (typeof raw?.event_type === "string" ? raw.event_type : "") || n.label;
+        const topics = Array.from(ctx?.topics || []).slice(0, 3);
+        const emotions = Array.from(ctx?.emotions || []).slice(0, 2);
+
+        const line1 = `Event: ${typeVal}`;
+        const line2 = day ? `on ${day}` : "on —";
+        const line3 =
+          place && topics.length
+            ? `at ${place} · topics: ${topics.join(", ")}`
+            : place
+              ? `at ${place}`
+              : topics.length
+                ? `topics: ${topics.join(", ")}`
+                : "";
+        const line4 = emotions.length ? `emotions: ${emotions.join(", ")}` : "";
+        const label = [line1, line2, line3, line4].filter(Boolean).join("\n");
+
+        return { ...n, label };
+      }
+
+      // Keep Person readable with type prefix.
+      const label = n.kind === "Entry" ? `Entry: ${n.label}` : `${prefix}: ${n.label}`;
       return { ...n, label };
     });
 
-    return { nodes: nodes3, edges: edges2 };
-  }, [data.edges, data.nodes, selectedPersonId]);
+    if (!compactMode) {
+      return { nodes: nodes3, edges: edges2 };
+    }
+
+    // Compact: only Person/User/Event nodes; context nodes become attributes.
+    const baseKinds = new Set<string>(["Person", "User", "Event"]);
+    const idsDisplayed = new Set<string>();
+    for (const n of nodes3) {
+      if (baseKinds.has(n.kind)) idsDisplayed.add(n.id);
+    }
+    const nodesDisplayed = nodes3.filter((n) => idsDisplayed.has(n.id));
+    const edgesDisplayed = edges2.filter((e) => idsDisplayed.has(e.source) && idsDisplayed.has(e.target));
+    return { nodes: nodesDisplayed, edges: edgesDisplayed };
+  }, [data.edges, data.nodes, selectedPersonId, compactMode]);
 
   const cyElements = useMemo(() => {
     const els: any[] = [];
@@ -282,7 +354,14 @@ export function GraphMindMap({
       const node = evt.target;
       const kind = node.data("kind");
       const pid = node.data("personId");
-      if (kind === "Person" && pid && pid !== selectedPersonId) setSelectedPersonId(pid);
+      const nodeId = node.id();
+
+      if (kind === "Person" && pid && pid !== selectedPersonIdRef.current) {
+        setSelectedPersonId(pid);
+        return;
+      }
+
+      // In compact view we only show card nodes; no progressive expansion.
     };
     cy.on("tap", "node", onTap);
 
@@ -299,16 +378,18 @@ export function GraphMindMap({
     return {
       name: "breadthfirst",
       directed: false,
-      padding: 120,
+      padding: compactMode ? 90 : 120,
       circle: false,
-      spacingFactor: 2.8,
+      spacingFactor: compactMode ? 2.15 : 2.8,
       animate: false,
-      fit: true,
+      // We'll explicitly call cy.fit() after layout completes.
+      // Leaving layout.fit enabled can "fit" twice (double scaling) across toggles.
+      fit: false,
       // Important: roots must be a selector string or node IDs; passing a live collection
       // can crash react-cytoscapejs during mount/update.
       roots: `node[kind = "Person"][personId = "${selectedPersonId}"]`,
     } as any;
-  }, [selectedPersonId, cyElements.length]);
+  }, [selectedPersonId, cyElements.length, compactMode]);
 
   const stylesheet = useMemo(
     () => [
@@ -333,9 +414,9 @@ export function GraphMindMap({
         selector: 'node[kind = "Event"]',
         style: {
           shape: "round-rectangle",
-          width: 92,
-          height: 74,
-          "text-max-width": 260,
+          width: compactMode ? 160 : 92,
+          height: compactMode ? 118 : 74,
+          "text-max-width": compactMode ? 260 : 260,
         },
       },
       {
@@ -360,7 +441,7 @@ export function GraphMindMap({
           "target-arrow-color": "rgba(244,244,245,0.25)",
           "target-arrow-shape": "data(arrow)",
           "curve-style": "bezier",
-          label: "data(label)",
+          label: compactMode ? "" : "data(label)",
           color: "rgba(244,244,245,0.80)",
           "font-size": 22,
           "text-rotation": "autorotate",
@@ -381,7 +462,7 @@ export function GraphMindMap({
         },
       },
     ],
-    []
+    [compactMode]
   );
 
   // Update Cytoscape whenever inputs change.
@@ -396,9 +477,34 @@ export function GraphMindMap({
       cy.style().fromJson(stylesheet as any).update();
     });
 
+    // Layout runs async; fit must happen after layout completes, otherwise
+    // viewport transforms can compound across toggles.
+    const padding = compactMode ? 60 : 120;
+
+    // Reset viewport before layout, so any previous zoom doesn't influence layout positioning.
+    cy.zoom(1);
+    cy.center(cy.elements());
+
     const l = cy.layout(layout as any);
+
+    const onStop = () => {
+      if (cy.elements().length > 0) cy.fit(cy.elements(), padding);
+      else cy.zoom(1);
+      l.off("layoutstop", onStop);
+    };
+
+    l.on("layoutstop", onStop);
     l.run();
-  }, [cyElements, layout, stylesheet]);
+
+    return () => {
+      try {
+        l.off("layoutstop", onStop);
+        l.stop();
+      } catch {
+        // ignore
+      }
+    };
+  }, [cyElements, layout, stylesheet, compactMode]);
 
   return (
     <div className="mt-3">
@@ -418,6 +524,15 @@ export function GraphMindMap({
             ))}
           </select>
         </div>
+        <label className="flex items-center gap-2 text-[11px] text-zinc-500 select-none">
+          <input
+            type="checkbox"
+            checked={compactMode}
+            onChange={(e) => setCompactMode(e.target.checked)}
+            className="h-4 w-4 rounded border-zinc-700 bg-zinc-900"
+          />
+          Compact events
+        </label>
         <div className="text-[11px] text-zinc-500">
           {elements.nodes.length} nodes · {elements.edges.length} edges
         </div>

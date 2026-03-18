@@ -57,6 +57,10 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="person not found")
         return out
 
+    @app.get("/person/{person_id}/timeline")
+    def person_timeline(person_id: str, limit: int = 100):
+        return {"items": repo.person_timeline(person_id=person_id, limit=limit)}
+
     @app.get("/graph/neighborhood")
     def neighborhood(ref: str, depth: int = 1, limit: int = 200):
         try:
