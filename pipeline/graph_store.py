@@ -28,11 +28,31 @@ class GraphStore:
 
     def reset_graph(self) -> None:
         """Delete all nodes and relationships. Use before migrating to new schema."""
-        def _reset(tx):
-            tx.run("MATCH (n) DETACH DELETE n")
-
         with self.driver.session() as session:
-            session.execute_write(_reset)
+            # Drop legacy uniqueness constraint on :Person(name) if it exists (older schema).
+            try:
+                rows = session.run(
+                    """
+                    SHOW CONSTRAINTS
+                    YIELD name, type, entityType, labelsOrTypes, properties
+                    WHERE entityType = 'NODE'
+                      AND type IN ['UNIQUENESS', 'NODE_PROPERTY_UNIQUENESS']
+                      AND labelsOrTypes = ['Person']
+                      AND properties = ['name']
+                    RETURN name
+                    """
+                )
+                for r in rows:
+                    cname = r.get("name")
+                    if cname:
+                        session.run(f"DROP CONSTRAINT {cname} IF EXISTS")
+            except Exception:
+                # If SHOW CONSTRAINTS unsupported, ignore.
+                pass
+
+            session.execute_write(lambda tx: tx.run("MATCH (n) DETACH DELETE n"))
+            # Re-apply current schema (constraints + indexes)
+            session.execute_write(self._init_schema)
 
     def _init_schema(self, tx):
         # People: use stable IDs (names are NOT unique)
@@ -83,6 +103,10 @@ class GraphStore:
         tx.run("""
             CREATE CONSTRAINT day_date IF NOT EXISTS
             FOR (d:Day) REQUIRE d.date IS UNIQUE
+        """)
+        tx.run("""
+            CREATE CONSTRAINT disambiguation_task_id IF NOT EXISTS
+            FOR (t:DisambiguationTask) REQUIRE t.id IS UNIQUE
         """)
 
         # Vector index for entity resolution (Neo4j 5+)
@@ -155,8 +179,9 @@ class GraphStore:
         topics: List[str],
         threshold: float = 0.90,
         create_alias: bool = True,
-        interactive: bool = True,
+        interactive: bool = False,
         role: str = "",
+        entry_id: Optional[str] = None,
     ) -> dict:
         """Return canonical person node ({id,name,score,created})."""
         mention = (mention or "").strip()
@@ -167,6 +192,71 @@ class GraphStore:
         qvec = embed_text(profile)
 
         def _resolve(tx):
+            def _create_new_person(new_role: str) -> dict:
+                pid = str(uuid.uuid4())
+                tx.run(
+                    """
+                    CREATE (p:Person {id: $id, name: $name, created_at: datetime(), first_seen: datetime(), last_seen: datetime(), mention_count: 0, embedding: $vec, role: $role})
+                    """,
+                    id=pid,
+                    name=mention,
+                    vec=qvec,
+                    role=(new_role or "").strip() or None,
+                )
+                if create_alias:
+                    aid = str(uuid.uuid4())
+                    tx.run(
+                        """
+                        MATCH (p:Person {id: $pid})
+                        CREATE (a:Alias {id: $aid, text: $text, created_at: datetime()})
+                        MERGE (a)-[:REFERS_TO]->(p)
+                        """,
+                        pid=pid,
+                        aid=aid,
+                        text=mention,
+                    )
+                return {"id": pid, "name": mention, "score": 0.0, "created": True}
+
+            def _create_task(
+                candidate_person_id: str,
+                proposed_person_id: str,
+                score: float,
+                candidate_role: str,
+                proposed_role: str,
+            ) -> None:
+                tid = str(uuid.uuid4())
+                tx.run(
+                    """
+                    CREATE (t:DisambiguationTask {
+                      id: $id,
+                      type: 'person',
+                      mention: $mention,
+                      score: $score,
+                      status: 'open',
+                      created_at: datetime(),
+                      candidate_role: $candidate_role,
+                      proposed_role: $proposed_role,
+                      entry_id: $entry_id
+                    })
+                    WITH t
+                    MATCH (c:Person {id: $cid})
+                    MATCH (p:Person {id: $pid})
+                    MERGE (t)-[:CANDIDATE]->(c)
+                    MERGE (t)-[:PROPOSED]->(p)
+                    """,
+                    id=tid,
+                    mention=mention,
+                    score=float(score),
+                    cid=candidate_person_id,
+                    pid=proposed_person_id,
+                    candidate_role=candidate_role or None,
+                    proposed_role=proposed_role or None,
+                    entry_id=entry_id or None,
+                )
+                # NOTE: do not create a FROM_ENTRY relationship here because resolve_person
+                # runs in a separate transaction and may not see the freshly created Entry yet.
+                # We store entry_id as a property; the UI can use it to fetch entry details.
+
             # 1) Vector candidates
             candidates = self._query_person_candidates(tx, qvec, k=5)
             if candidates and candidates[0][0].get("id"):
@@ -188,8 +278,25 @@ class GraphStore:
                     ).single()
                     alias_match = bool(chk and chk.get("ok"))
                 # 1) Clear conflict by role: force split
-                kin_roles = {"sister", "brother", "mother", "father", "partner"}
+                kin_roles = {"sister", "brother", "mother", "father", "partner", "sibling"}
                 new_role = (role or "").strip().lower()
+                # Non-blocking HITL: for same-name (or alias-match) collisions where role is
+                # conflicting/unknown or similarity is mid, create a proposed person + task.
+                if same_name or alias_match:
+                    role_conflict = bool(new_role and existing_role and new_role != existing_role)
+                    kinship_change = bool((new_role in kin_roles) and new_role != (existing_role or ""))
+                    unknown_role = bool((not new_role) or (not existing_role))
+                    ambiguous = bool(score >= 0.75 and score < threshold)
+                    if kinship_change or role_conflict or (unknown_role and score >= 0.80) or ambiguous:
+                        proposed = _create_new_person(new_role)
+                        _create_task(
+                            candidate_person_id=best["id"],
+                            proposed_person_id=proposed["id"],
+                            score=score,
+                            candidate_role=existing_role,
+                            proposed_role=new_role,
+                        )
+                        return proposed
                 if new_role and existing_role and new_role != existing_role and (
                     new_role in kin_roles or existing_role in kin_roles
                 ):
@@ -218,43 +325,31 @@ class GraphStore:
                                 role=new_role,
                             )
                         return {"id": best["id"], "name": best["name"], "score": score, "created": False}
-                    # 3) Ambiguous band: optionally ask user
-                    if interactive and (same_name or alias_match) and score >= 0.75:
-                        # crude CLI question; safe default is to split
-                        try:
-                            snippet = (entry_text or "")[:120].replace("\n", " ")
-                            answer = input(
-                                f"\n[Consolidator] Le nom '{mention}' semble correspondre au contact existant '{best.get('name')}' "
-                                f"(score={score:.2f}, ancien rôle='{existing_role or '-'}', nouveau rôle='{new_role or '-'}').\n"
-                                f"Texte: {snippet}\n"
-                                f"Est-ce la même personne ? [y/N]: "
-                            ).strip().lower()
-                        except EOFError:
-                            answer = ""
-                        if answer.startswith("y"):
-                            if create_alias:
-                                aid = str(uuid.uuid4())
-                                tx.run(
-                                    """
-                                    MATCH (p:Person {id: $pid})
-                                    CREATE (a:Alias {id: $aid, text: $text, created_at: datetime()})
-                                    MERGE (a)-[:REFERS_TO]->(p)
-                                    """,
-                                    pid=best["id"],
-                                    aid=aid,
-                                    text=mention,
-                                )
-                            if new_role and not existing_role:
-                                tx.run(
-                                    "MATCH (p:Person {id: $id}) SET p.role = $role",
-                                    id=best["id"],
-                                    role=new_role,
-                                )
-                            return {"id": best["id"], "name": best["name"], "score": score, "created": False}
                     # otherwise, fall through to create new / exact-name path
 
             # 2) Fallback: exact name match (if exists) to seed vector index
-            res = tx.run("MATCH (p:Person) WHERE toLower(p.name)=toLower($name) RETURN p.id as id, p.name as name LIMIT 1", name=mention).single()
+            res = tx.run(
+                "MATCH (p:Person) WHERE toLower(p.name)=toLower($name) RETURN p.id as id, p.name as name, p.role as role LIMIT 1",
+                name=mention,
+            ).single()
+            if res and res.get("id"):
+                existing_role2 = (res.get("role") or "").strip().lower() if res.get("role") is not None else ""
+                new_role2 = (role or "").strip().lower()
+                kin_roles2 = {"sister", "brother", "mother", "father", "partner", "sibling"}
+                role_conflict2 = bool(new_role2 and existing_role2 and new_role2 != existing_role2)
+                kinship_change2 = bool((new_role2 in kin_roles2) and new_role2 != (existing_role2 or ""))
+                unknown_role2 = bool((not new_role2) or (not existing_role2))
+                if kinship_change2 or role_conflict2 or unknown_role2:
+                    proposed2 = _create_new_person(new_role2)
+                    _create_task(
+                        candidate_person_id=res["id"],
+                        proposed_person_id=proposed2["id"],
+                        score=0.85,
+                        candidate_role=existing_role2,
+                        proposed_role=new_role2,
+                    )
+                    return proposed2
+
             if res and res.get("id"):
                 pid = res["id"]
                 # Update embedding with EMA
@@ -285,29 +380,7 @@ class GraphStore:
                 return {"id": pid, "name": mention, "score": 0.5, "created": False}
 
             # 3) Create new person
-            pid = str(uuid.uuid4())
-            tx.run(
-                """
-                CREATE (p:Person {id: $id, name: $name, created_at: datetime(), first_seen: datetime(), last_seen: datetime(), mention_count: 0, embedding: $vec, role: $role})
-                """,
-                id=pid,
-                name=mention,
-                vec=qvec,
-                role=(role or "").strip() or None,
-            )
-            if create_alias:
-                aid = str(uuid.uuid4())
-                tx.run(
-                    """
-                    MATCH (p:Person {id: $pid})
-                    CREATE (a:Alias {id: $aid, text: $text, created_at: datetime()})
-                    MERGE (a)-[:REFERS_TO]->(p)
-                    """,
-                    pid=pid,
-                    aid=aid,
-                    text=mention,
-                )
-            return {"id": pid, "name": mention, "score": 0.0, "created": True}
+            return _create_new_person((role or "").strip().lower())
 
         with self.driver.session() as session:
             return session.execute_write(_resolve)
@@ -432,6 +505,8 @@ class GraphStore:
                     places=places_ctx,
                     topics=topics_ctx,
                     role=meta_role or self._infer_role(mention, text),
+                    entry_id=entry_id,
+                    interactive=False,
                 )
 
             for ent in entities:

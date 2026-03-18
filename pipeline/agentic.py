@@ -47,31 +47,9 @@ class AgenticRunner:
             return {**state, "extraction": extraction}
 
         def consolidate_node(state: AgenticState) -> AgenticState:
-            # Minimal consolidator: pre-resolve persons to stable IDs in Neo4j
-            if not self.graph_store:
-                return {**state, "consolidation": {"status": "skipped"}}
-            extraction = state["extraction"]
-            # Never resolve the journal owner as a Person (owner is modeled as (:User))
-            uname = (self.user_name or "").strip().lower()
-            people = [
-                e.text
-                for e in extraction.entities
-                if getattr(e, "label", "") == "Person" and (e.text or "").strip().lower() != uname
-            ]
-            places = [e.text for e in extraction.entities if getattr(e, "label", "") == "Place"]
-            topics = [e.text for e in extraction.entities if getattr(e, "label", "") == "Concept"]
-            mapping = {}
-            for p in people:
-                mapping[p] = self.graph_store.resolve_person(
-                    mention=p,
-                    entry_text=state["text"],
-                    places=places,
-                    topics=topics,
-                    create_alias=False,
-                    interactive=False,
-                    role=self.graph_store._infer_role(p, state["text"]),
-                )
-            return {**state, "consolidation": {"status": "ok", "person_map": mapping}}
+            # Non-blocking HITL: consolidation happens during persistence (GraphStore.store_entry),
+            # which can emit DisambiguationTask nodes for the UI Inbox.
+            return {**state, "consolidation": {"status": "skipped"}}
 
         def persist_graph_node(state: AgenticState) -> AgenticState:
             if not self.graph_store:
