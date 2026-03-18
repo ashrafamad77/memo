@@ -240,16 +240,26 @@ class Neo4jRepo:
             return
         q = """
         MATCH (src:Person {id: $src}), (dst:Person {id: $dst})
-        // Move aliases
-        OPTIONAL MATCH (a:Alias)-[:REFERS_TO]->(src)
-        FOREACH (_ IN CASE WHEN a IS NULL THEN [] ELSE [1] END |
+        // Move aliases (subquery avoids FOREACH/WITH pitfalls)
+        CALL {
+          WITH src, dst
+          OPTIONAL MATCH (a:Alias)-[:REFERS_TO]->(src)
+          WITH dst, collect(DISTINCT a) AS aliases
+          UNWIND aliases AS a
+          WITH dst, a
+          WHERE a IS NOT NULL
           MERGE (a)-[:REFERS_TO]->(dst)
-        )
+        }
         // Move participation edges
-        OPTIONAL MATCH (src)-[r:PARTICIPATED_IN]->(ev:Event)
-        FOREACH (_ IN CASE WHEN ev IS NULL THEN [] ELSE [1] END |
+        CALL {
+          WITH src, dst
+          OPTIONAL MATCH (src)-[:PARTICIPATED_IN]->(ev:Event)
+          WITH dst, collect(DISTINCT ev) AS events
+          UNWIND events AS ev
+          WITH dst, ev
+          WHERE ev IS NOT NULL
           MERGE (dst)-[:PARTICIPATED_IN]->(ev)
-        )
+        }
         // Best-effort mention_count + last_seen
         SET dst.mention_count = coalesce(dst.mention_count, 0) + coalesce(src.mention_count, 0),
             dst.last_seen = CASE
