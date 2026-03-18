@@ -5,3 +5,15 @@ __pycache__/
 .venv/
 venv/
 *.egg-info/
+
+# Frontend
+ui/node_modules/
+ui/.next/
+ui/out/
+ui/.vercel/
+ui/.env.local
+ui/.env.*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
