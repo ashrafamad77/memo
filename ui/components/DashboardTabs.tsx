@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { apiGet } from "@/lib/api";
 import { InboxQueue } from "@/components/InboxQueue";
+import { GraphMindMap } from "@/components/GraphMindMap";
 
 const tabs = ["Inbox", "Timeline", "Entities", "Graph"] as const;
 type Tab = (typeof tabs)[number];
@@ -38,7 +39,6 @@ export function DashboardTabs() {
   const [people, setPeople] = useState<
     { id: string; name: string; role?: string; mentions?: number }[]
   >([]);
-  const [graph, setGraph] = useState<{ nodes: any[]; edges: any[] } | null>(null);
   const [status, setStatus] = useState<string>("");
 
   useEffect(() => {
@@ -55,16 +55,9 @@ export function DashboardTabs() {
           if (!ignore) setPeople(out.items || []);
         }
         if (tab === "Graph") {
-          const out = await apiGet<{ items: any[] }>("/persons?limit=1");
-          const first = (out.items || [])[0];
-          if (first?.id) {
-            const g = await apiGet<{ nodes: any[]; edges: any[] }>(
-              `/graph/neighborhood?ref=${encodeURIComponent(`Person:${first.id}`)}&depth=1`
-            );
-            if (!ignore) setGraph(g);
-          } else {
-            if (!ignore) setGraph({ nodes: [], edges: [] });
-          }
+          // GraphMindMap loads its own neighborhood; we only need a people list.
+          const out = await apiGet<{ items: any[] }>("/persons?limit=30");
+          if (!ignore) setPeople(out.items || []);
         }
       } catch (e: any) {
         if (!ignore) setStatus(e?.message || String(e));
@@ -147,34 +140,13 @@ export function DashboardTabs() {
         return (
           <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-5">
             <div className="text-sm font-semibold">Graph view</div>
-            <div className="mt-3 grid gap-3 sm:grid-cols-2">
-              <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-3">
-                <div className="text-xs font-semibold text-zinc-300">Nodes</div>
-                <div className="mt-2 text-xs text-zinc-400">
-                  {(graph?.nodes || []).slice(0, 8).map((n, i) => (
-                    <div key={n._elementId || i}>
-                      {(n._labels || []).join(",")}: {n.name || n.id || n.key || n.date || "—"}
-                    </div>
-                  ))}
-                  {(graph?.nodes || []).length > 8 ? "…" : ""}
-                </div>
-              </div>
-              <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-3">
-                <div className="text-xs font-semibold text-zinc-300">Edges</div>
-                <div className="mt-2 text-xs text-zinc-400">
-                  {(graph?.edges || []).slice(0, 10).map((e, i) => (
-                    <div key={i}>{e.type}</div>
-                  ))}
-                  {(graph?.edges || []).length > 10 ? "…" : ""}
-                </div>
-              </div>
-            </div>
+            <GraphMindMap initialPeople={people} />
           </div>
         );
       default:
         return null;
     }
-  }, [tab, graph, people, timeline]);
+  }, [tab, people, timeline]);
 
   return (
     <div className="flex h-full flex-col">
@@ -188,7 +160,7 @@ export function DashboardTabs() {
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
-        <div className="mx-auto max-w-5xl">
+        <div className={["mx-auto", tab === "Graph" ? "max-w-none" : "max-w-5xl"].join(" ")}>
           {status ? (
             <div className="mb-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200">
               {status}
