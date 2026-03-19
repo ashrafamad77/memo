@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { apiGet } from "@/lib/api";
 
 type Person = { id: string; name: string; role?: string; mentions?: number };
+type RootEntity = { ref: string; name: string; type: string; mentions?: number };
 
 type ApiNode = {
   _elementId: string;
@@ -28,6 +29,7 @@ function kindFromLabels(labels?: string[]) {
   if (s.has("User")) return "User";
   if (s.has("Place")) return "Place";
   if (s.has("Concept")) return "Concept";
+  if (s.has("Context")) return "Context";
   if (s.has("Event")) return "Event";
   if (s.has("Entry")) return "Entry";
   if (s.has("Day")) return "Day";
@@ -56,6 +58,11 @@ function labelForNode(n: ApiNode) {
       "event";
     return String(action);
   }
+  if (labels.includes("Context") && typeof n.text === "string") {
+    const t = n.text.replace(/\s+/g, " ").trim();
+    if (!t) return "Context";
+    return t.length > 90 ? t.slice(0, 90) + "…" : t;
+  }
   return n.name || n.text || n.mention || n.date || (typeof n.key === "string" ? n.key.split("|")[0] : "") || n.id || "—";
 }
 
@@ -65,6 +72,7 @@ function humanizeRel(type: string) {
     PARTICIPATED_IN: "participated in",
     OCCURRED_AT: "at",
     HAS_TOPIC: "topic",
+    HAS_CONTEXT: "context",
     HAS_EMOTION: "emotion",
     FROM_ENTRY: "from entry",
     ON_DAY: "on day",
@@ -89,6 +97,8 @@ function colorForKind(kind: string) {
       return "#34d399"; // emerald
     case "User":
       return "#a78bfa"; // violet
+    case "Context":
+      return "#fb7185"; // rose
     case "Place":
       return "#60a5fa"; // blue
     case "Concept":
@@ -107,45 +117,49 @@ function colorForKind(kind: string) {
 }
 
 export function GraphMindMap({
-  initialPeople,
+  initialRoots,
 }: {
-  initialPeople: Person[];
+  initialRoots: RootEntity[];
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const cyRef = useRef<Core | null>(null);
-  const [people, setPeople] = useState<Person[]>(initialPeople || []);
-  const [selectedPersonId, setSelectedPersonId] = useState<string>(initialPeople?.[0]?.id || "");
+  const [roots, setRoots] = useState<RootEntity[]>(initialRoots || []);
+  const [selectedRef, setSelectedRef] = useState<string>(initialRoots?.[0]?.ref || "");
   const [data, setData] = useState<GraphApiOut>({ nodes: [], edges: [] });
   const [status, setStatus] = useState<string>("");
   const [compactMode, setCompactMode] = useState<boolean>(true);
 
   // Refs so cytoscape tap handler always reads latest state.
   const compactModeRef = useRef<boolean>(compactMode);
-  const selectedPersonIdRef = useRef<string>(selectedPersonId);
+  const selectedRefRef = useRef<string>(selectedRef);
 
   useEffect(() => {
     compactModeRef.current = compactMode;
   }, [compactMode]);
 
   useEffect(() => {
-    selectedPersonIdRef.current = selectedPersonId;
-  }, [selectedPersonId]);
+    selectedRefRef.current = selectedRef;
+  }, [selectedRef]);
 
   useEffect(() => {
-    // Ensure we have a list of people for selection.
-    if (people.length) return;
-    apiGet<{ items: Person[] }>("/persons?limit=50")
-      .then((out) => setPeople(out.items || []))
+    // Ensure we have a list of root entities for selection.
+    if (roots.length) return;
+    apiGet<{ items: RootEntity[] }>("/entities?limit=120")
+      .then((out) => {
+        const items = out.items || [];
+        setRoots(items);
+        if (!selectedRef && items[0]?.ref) setSelectedRef(items[0].ref);
+      })
       .catch(() => {});
-  }, [people.length]);
+  }, [roots.length, selectedRef]);
 
   useEffect(() => {
-    if (!selectedPersonId) return;
+    if (!selectedRef) return;
     let ignore = false;
     setStatus("");
-    // depth=2 gives: Person -> Event -> (Day/Place/Concept/...)
+    // depth=2 gives: root entity -> Event -> context nodes.
     apiGet<GraphApiOut>(
-      `/graph/neighborhood?ref=${encodeURIComponent(`Person:${selectedPersonId}`)}&depth=2`
+      `/graph/neighborhood?ref=${encodeURIComponent(selectedRef)}&depth=2`
     )
       .then((out) => {
         if (!ignore) setData(out);
@@ -156,7 +170,7 @@ export function GraphMindMap({
     return () => {
       ignore = true;
     };
-  }, [selectedPersonId]);
+  }, [selectedRef]);
 
   const elements = useMemo(() => {
     const nodesAll = (data.nodes || []).map((n) => {
@@ -195,8 +209,20 @@ export function GraphMindMap({
     }
     const edges = Array.from(edgeMap.values());
 
-    // Prune to: root person + its events + event context (keeps it mind-map like)
-    const root = nodes.find((n) => n.kind === "Person" && String(n.raw?.id || "") === selectedPersonId);
+    // Prune to: selected root + its events + event context (keeps it mind-map like)
+    const root = nodes.find((n) => {
+      if (!selectedRef) return false;
+      const [label, key] = selectedRef.split(":", 2);
+      if (label === "Person") return n.kind === "Person" && String(n.raw?.id || "") === key;
+      if (label === "User") return n.kind === "User" && String(n.raw?.name || "") === key;
+      if (label === "Place") return n.kind === "Place" && String(n.raw?.name || "") === key;
+      if (label === "Concept") return n.kind === "Concept" && String(n.raw?.name || "") === key;
+      if (label === "Context") return n.kind === "Context" && String(n.raw?.key || "") === key;
+      if (label === "Event") return n.kind === "Event" && String(n.raw?.key || "") === key;
+      if (label === "Day") return n.kind === "Day" && String(n.raw?.date || "") === key;
+      if (label === "EventType") return n.kind === "EventType" && String(n.raw?.name || "") === key;
+      return false;
+    });
     if (!root) return { nodes, edges };
     const adj = new Map<string, Set<string>>();
     for (const e of edges) {
@@ -299,8 +325,8 @@ export function GraphMindMap({
       return { nodes: nodes3, edges: edges2 };
     }
 
-    // Compact: only Person/User/Event nodes; context nodes become attributes.
-    const baseKinds = new Set<string>(["Person", "User", "Event"]);
+    // Compact: only Person/User/Event/Context nodes.
+    const baseKinds = new Set<string>(["Person", "User", "Event", "Context"]);
     const idsDisplayed = new Set<string>();
     for (const n of nodes3) {
       if (baseKinds.has(n.kind)) idsDisplayed.add(n.id);
@@ -308,7 +334,7 @@ export function GraphMindMap({
     const nodesDisplayed = nodes3.filter((n) => idsDisplayed.has(n.id));
     const edgesDisplayed = edges2.filter((e) => idsDisplayed.has(e.source) && idsDisplayed.has(e.target));
     return { nodes: nodesDisplayed, edges: edgesDisplayed };
-  }, [data.edges, data.nodes, selectedPersonId, compactMode]);
+  }, [data.edges, data.nodes, selectedRef, compactMode]);
 
   const cyElements = useMemo(() => {
     const els: any[] = [];
@@ -319,6 +345,24 @@ export function GraphMindMap({
           kind: n.kind,
           label: n.label,
           personId: n.kind === "Person" ? String(n.raw?.id || "") : "",
+          ref:
+            n.kind === "Person"
+              ? `Person:${String(n.raw?.id || "")}`
+              : n.kind === "User"
+                ? `User:${String(n.raw?.name || "")}`
+                : n.kind === "Place"
+                  ? `Place:${String(n.raw?.name || "")}`
+                  : n.kind === "Concept"
+                    ? `Concept:${String(n.raw?.name || "")}`
+                  : n.kind === "Context"
+                    ? `Context:${String(n.raw?.key || "")}`
+                    : n.kind === "Event"
+                      ? `Event:${String(n.raw?.key || "")}`
+                      : n.kind === "Day"
+                        ? `Day:${String(n.raw?.date || "")}`
+                        : n.kind === "EventType"
+                          ? `EventType:${String(n.raw?.name || "")}`
+                          : "",
           color: colorForKind(n.kind),
         },
       });
@@ -353,11 +397,9 @@ export function GraphMindMap({
     const onTap = (evt: any) => {
       const node = evt.target;
       const kind = node.data("kind");
-      const pid = node.data("personId");
-      const nodeId = node.id();
-
-      if (kind === "Person" && pid && pid !== selectedPersonIdRef.current) {
-        setSelectedPersonId(pid);
+      const ref = node.data("ref");
+      if (ref && ref !== selectedRefRef.current) {
+        setSelectedRef(ref);
         return;
       }
 
@@ -387,9 +429,9 @@ export function GraphMindMap({
       fit: false,
       // Important: roots must be a selector string or node IDs; passing a live collection
       // can crash react-cytoscapejs during mount/update.
-      roots: `node[kind = "Person"][personId = "${selectedPersonId}"]`,
+      roots: undefined,
     } as any;
-  }, [selectedPersonId, cyElements.length, compactMode]);
+  }, [selectedRef, cyElements.length, compactMode]);
 
   const stylesheet = useMemo(
     () => [
@@ -430,6 +472,15 @@ export function GraphMindMap({
         },
       },
       {
+        selector: 'node[kind = "Context"]',
+        style: {
+          shape: "ellipse",
+          width: compactMode ? 150 : 95,
+          height: compactMode ? 110 : 70,
+          "text-max-width": compactMode ? 260 : 240,
+        },
+      },
+      {
         selector: 'node[kind = "Day"]',
         style: { "font-size": 24, width: 86, height: 86, "text-max-width": 320 },
       },
@@ -441,14 +492,14 @@ export function GraphMindMap({
           "target-arrow-color": "rgba(244,244,245,0.25)",
           "target-arrow-shape": "data(arrow)",
           "curve-style": "bezier",
-          label: compactMode ? "" : "data(label)",
+          label: "data(label)",
           color: "rgba(244,244,245,0.80)",
-          "font-size": 22,
+          "font-size": compactMode ? 16 : 22,
           "text-rotation": "autorotate",
           "text-margin-y": -6,
           "text-background-opacity": 0.70,
           "text-background-color": "#09090b",
-          "text-background-padding": 6,
+          "text-background-padding": compactMode ? 4 : 6,
           "text-border-opacity": 0.35,
           "text-border-color": "rgba(244,244,245,0.40)",
           "text-border-width": 1,
@@ -512,14 +563,13 @@ export function GraphMindMap({
         <div className="flex items-center gap-2">
           <div className="text-xs font-semibold text-zinc-300">Root</div>
           <select
-            value={selectedPersonId}
-            onChange={(e) => setSelectedPersonId(e.target.value)}
+            value={selectedRef}
+            onChange={(e) => setSelectedRef(e.target.value)}
             className="rounded-lg border border-zinc-800 bg-zinc-950 px-2 py-1 text-xs text-zinc-200 outline-none"
           >
-            {people.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-                {p.role ? ` (${p.role})` : ""}
+            {roots.map((r) => (
+              <option key={r.ref} value={r.ref}>
+                {r.type}: {r.name}
               </option>
             ))}
           </select>
@@ -553,7 +603,7 @@ export function GraphMindMap({
       </div>
 
       <div className="mt-2 text-[11px] text-zinc-500">
-        Tip: scroll to zoom, drag to pan, click a Person to focus.
+        Tip: scroll to zoom, drag to pan, click a node to focus.
       </div>
     </div>
   );

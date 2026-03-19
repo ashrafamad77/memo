@@ -28,6 +28,45 @@ Retourne un JSON valide avec cette structure exacte :
     "event_time_text": "ce matin",
     "event_time_iso": "2026-03-13T12:30:00Z",
     "event_time_confidence": 0.6,
+    "events": [
+      {
+        "idx": 1,
+        "event_type": "wake up",
+        "event_time_text": "7H40",
+        "event_time_iso": "2026-03-13T07:40:00Z",
+        "event_time_confidence": 0.6,
+        "physical_place": "Paris",
+        "context_places": ["Nablus"],
+        "people": ["Marie"],
+        "topics": ["An-Najah university"],
+        "context_concepts": ["time difference", "no lectures today", "obliges me to wake earlier"],
+        "context_text": "I woke up at 6H30 even that today I have no lectures to give for An-Najah university in Nablus, which usually obliges me to wake up earlier as there is one hour of difference between France and Palestine.",
+        "evidence": "fragment bref du texte"
+      },
+      {
+        "idx": 2,
+        "event_type": "arrivée au bureau",
+        "event_time_text": "8H20",
+        "event_time_iso": "2026-03-13T08:20:00Z",
+        "event_time_confidence": 0.6,
+        "physical_place": "Paris",
+        "context_places": [],
+        "people": ["Marie"],
+        "topics": ["bureau"],
+        "context_concepts": [],
+        "context_text": "",
+        "evidence": "fragment bref du texte"
+      }
+    ],
+    "event_relations": [
+      {
+        "from_idx": 1,
+        "predicate": "PRECEDES",
+        "to_idx": 2,
+        "confidence": 0.7,
+        "evidence": "fragment bref du texte"
+      }
+    ],
     "person_roles": [
       {"name": "Marie", "role": "colleague"},
       {"name": "Jean", "role": "friend"}
@@ -39,6 +78,30 @@ Règles entités :
 - Person : noms de personnes. Place : lieux. Concept : thèmes, sujets.
 - Event : type d'événement (déjeuner, réunion, etc.). Date : dates explicites.
 ⚠️ Les entités doivent être des mentions dans le texte (pas d'inférences).
+
+ Règles multi-événements (events) :
+- events contient 1 à 4 micro-événements extraits de la phrase/entrée, dans l'ORDRE narratif.
+- idx commence à 1 et correspond aux indices utilisés dans event_relations.
+- Un micro-événement représente une ACTIVITE temps-ET-lieu (wake up, départ, arrivée, envoi d'email, appel, réunion, etc.).
+- Si une heure explicite est mentionnée pour un micro-événement, renseigne event_time_text et event_time_iso.
+- Si l'heure manque pour un micro-événement, garde idx correct via les mots de séquence (ensuite, puis, soudainement, etc.) et laisse event_time_iso vide si nécessaire.
+- physical_place: LA localisation PHYSIQUE (où le narrateur est réellement).
+- context_places: les lieux qui servent de CONTEXTE / sujet distant / explication (pas la localisation physique du micro-événement).
+- people: les personnes participantes à ce micro-événement.
+- topics: les sujets/objets pertinents POUR LE CONTEXTE (ex: organisation, sujet de conférence/lecture, objet de l'email, etc.).
+- context_concepts: les infos de réflexion/explication/contraintes (ex: "je dois être plus rapide", "ça m'oblige", "différence de temps", "no lectures today", "en général", etc.).
+- context_text: une PHRASE/EXTRAIT TEXTUEL qui représente le contexte (explication + réflexion), rattaché à ce micro-événement (ne pas répéter toute l'entrée).
+
+Règles liens entre micro-événements (event_relations) :
+- event_relations relie les micro-événements en utilisant predicate parmi : PRECEDES, CAUSES, ENABLES, IMPACTS, INFLUENCES.
+- Crée des liens seulement quand le texte fournit une justification (car/because/du fait que/then/suddenly/before/after/ainsi/donc).
+- Utilise CAUSES ou IMPACTS quand un événement précédent EXPLIQUE une accélération/contrainte pour l'événement suivant (ex: "je dois être plus rapide", "j'ai dû", "ce qui m'a obligé à", "forcé à").
+- Utilise ENABLES quand un événement précédent rend possible un événement suivant (ex: "grâce à", "permettant", "pour pouvoir").
+- Si ce n'est pas clair, event_relations peut être [].
+
+Contraintes ontologiques (important) :
+- Ne mets jamais Nablus/Palestine comme physical_place si le narrateur est physiquement en France : mets-les dans context_places.
+- Ne transforme pas une EXPLICATION en event core : si une partie du texte ne donne pas temps+lieu, elle appartient au contexte (context_places / context_concepts / topics), pas au micro-événement.
 
 Règles relations (triplets) :
 - subject et object doivent être des entités ou le nom de l'auteur.

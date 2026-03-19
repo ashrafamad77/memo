@@ -20,15 +20,67 @@ class Neo4jRepo:
     def close(self) -> None:
         self._driver.close()
 
+    def entry_count(self) -> int:
+        q = "MATCH (e:Entry) RETURN count(e) as c"
+        with self._driver.session() as s:
+            row = s.run(q).single()
+            return int(row["c"]) if row and row.get("c") is not None else 0
+
+    def get_user_profile(self, user_name: str) -> Dict[str, Any]:
+        q = """
+        MATCH (u:User {name: $name})
+        RETURN u.name as name,
+               u.profile_current_city as current_city,
+               u.profile_home_country as home_country,
+               u.profile_nationality as nationality,
+               u.profile_timezone as timezone,
+               u.profile_work_context as work_context
+        """
+        with self._driver.session() as s:
+            row = s.run(q, name=user_name).single()
+            return dict(row) if row else {}
+
+    def upsert_user_profile(self, user_name: str, fields: Dict[str, Any]) -> Dict[str, Any]:
+        q = """
+        MERGE (u:User {name: $name})
+        ON CREATE SET u.first_seen = datetime()
+        SET u.last_seen = datetime(),
+            u.profile_current_city = coalesce($current_city, u.profile_current_city),
+            u.profile_home_country = coalesce($home_country, u.profile_home_country),
+            u.profile_nationality = coalesce($nationality, u.profile_nationality),
+            u.profile_timezone = coalesce($timezone, u.profile_timezone),
+            u.profile_work_context = coalesce($work_context, u.profile_work_context)
+        RETURN u.name as name,
+               u.profile_current_city as current_city,
+               u.profile_home_country as home_country,
+               u.profile_nationality as nationality,
+               u.profile_timezone as timezone,
+               u.profile_work_context as work_context
+        """
+        with self._driver.session() as s:
+            row = s.run(
+                q,
+                name=user_name,
+                current_city=(fields.get("current_city") or None),
+                home_country=(fields.get("home_country") or None),
+                nationality=(fields.get("nationality") or None),
+                timezone=(fields.get("timezone") or None),
+                work_context=(fields.get("work_context") or None),
+            ).single()
+            return dict(row) if row else {}
+
     def timeline(self, limit: int = 50) -> List[Dict[str, Any]]:
         q = """
         MATCH (e:Entry)-[:REFERS_TO]->(ev:Event)
         OPTIONAL MATCH (ev)-[:ON_DAY]->(d:Day)
+        WITH e,
+             collect(DISTINCT ev.key) as event_keys,
+             collect(DISTINCT d.date) as days
         RETURN e.id as id,
                e.text as text,
                toString(e.input_time) as input_time,
-               ev.key as event_key,
-               d.date as day
+               event_keys[0] as event_key,
+               days[0] as day
         ORDER BY e.input_time DESC
         LIMIT $limit
         """
@@ -121,6 +173,390 @@ class Neo4jRepo:
         """
         with self._driver.session() as s:
             return [dict(r) for r in s.run(q, id=person_id, limit=int(limit))]
+
+    def entities(self, limit: int = 100, query: str = "") -> List[Dict[str, Any]]:
+        """
+        Mixed entity list for UI browsing.
+        Returns items with:
+          - type: primary Neo4j label (Person, Event, Place, Concept, User, Day, EventType, Emotion)
+          - name: human display name
+          - ref: a stable ref string usable with /entity/overview (ex: Person:<uuid>, Event:<key>, Day:<yyyy-mm-dd>, Context:<key>)
+        """
+        q = """
+        MATCH (e)
+        WHERE e:Person OR e:Place OR e:Concept OR e:User OR e:Event OR e:Day OR e:EventType OR e:Emotion OR e:Context
+        WITH e, labels(e)[0] as type
+        WITH e, type,
+          CASE
+            WHEN type = "Person" THEN e.name
+            WHEN type = "Place" THEN e.name
+            WHEN type = "Concept" THEN e.name
+            WHEN type = "User" THEN e.name
+            WHEN type = "Event" THEN coalesce(e.event_type, "event")
+            WHEN type = "Day" THEN toString(e.date)
+            WHEN type = "EventType" THEN e.name
+            WHEN type = "Emotion" THEN e.name
+            WHEN type = "Context" THEN coalesce(e.name, substring(coalesce(e.text, ''), 0, 60))
+            ELSE coalesce(e.name, type)
+          END as name,
+          CASE
+            WHEN type = "Person" THEN "Person:" + e.id
+            WHEN type = "Event" THEN "Event:" + e.key
+            WHEN type = "Day" THEN "Day:" + toString(e.date)
+            WHEN type IN ["Place","Concept","User","EventType","Emotion"] THEN type + ":" + e.name
+            WHEN type = "Context" THEN "Context:" + e.key
+            ELSE type + ":" + coalesce(e.name, toString(e.id))
+          END as ref,
+          coalesce(e.mention_count, 0) as mentions,
+          CASE
+            WHEN type = "Day" THEN toString(e.date)
+            ELSE toString(coalesce(e.last_seen, e.first_seen, e.created_at))
+          END as last_seen
+        WHERE $q = "" OR toLower(name) CONTAINS toLower($q)
+        RETURN type as type, name as name, ref as ref, mentions as mentions, last_seen as last_seen
+        ORDER BY mentions DESC, last_seen DESC
+        LIMIT $limit
+        """
+        with self._driver.session() as s:
+            return [dict(r) for r in s.run(q, limit=int(limit), q=query or "")]
+
+    def entity_overview(self, ref: str, limit: int = 120) -> Dict[str, Any]:
+        """
+        Unified overview endpoint for UI navigation.
+        Supported:
+          - Person:<uuid> => returns kind="Person" and items timeline
+          - Event:<key> => returns kind="Event" and participants + entries
+        """
+        if not ref or ":" not in ref:
+            raise ValueError("ref must be like 'Person:<id>' or 'Event:<key>'")
+
+        label, key = self._parse_ref(ref)
+
+        if label == "Person":
+            # timeline enriched with Day/Place/EventType
+            items = self.person_timeline(person_id=key, limit=limit)
+            # also include display name for header
+            with self._driver.session() as s:
+                row = s.run(
+                    "MATCH (p:Person {id: $id}) RETURN p.name as name, p.role as role, coalesce(p.mention_count,0) as mentions",
+                    id=key,
+                ).single()
+                name = row.get("name") if row else "Person"
+                role = row.get("role") if row else None
+                mentions = row.get("mentions") if row else 0
+            return {"kind": "Person", "ref": ref, "name": name, "role": role, "mentions": mentions, "items": items}
+
+        if label == "Event":
+            q_participants = """
+            MATCH (ev:Event {key: $key})
+            OPTIONAL MATCH (ev)-[:ON_DAY]->(d:Day)
+            OPTIONAL MATCH (ev)-[:OCCURRED_AT]->(pl:Place)
+            OPTIONAL MATCH (ev)-[:HAS_TYPE]->(t:EventType)
+            OPTIONAL MATCH (p:Person)-[:PARTICIPATED_IN]->(ev)
+            OPTIONAL MATCH (u:User)-[:PARTICIPATED_IN]->(ev)
+            WITH toString(d.date) as day,
+                 coalesce(t.name, ev.event_type, "") as event_type,
+                 collect(DISTINCT pl.name) as places,
+                 [x IN collect(DISTINCT {id: p.id, name: p.name, role: p.role, mentions: coalesce(p.mention_count,0)}) WHERE x.id IS NOT NULL] as persons,
+                 [y IN collect(DISTINCT {name: u.name}) WHERE y.name IS NOT NULL] as users
+            RETURN day as day,
+                   event_type as event_type,
+                   places as places,
+                   persons as persons,
+                   users as users
+            """
+
+            q_entries = """
+            MATCH (ev:Event {key: $key})<-[:REFERS_TO]-(e:Entry)
+            OPTIONAL MATCH (ev)-[:ON_DAY]->(d:Day)
+            RETURN e.id as entry_id,
+                   toString(e.input_time) as input_time,
+                   d.date as day,
+                   substring(e.text, 0, 260) as text_preview
+            ORDER BY e.input_time DESC
+            LIMIT $limit
+            """
+
+            with self._driver.session() as s:
+                p_row = s.run(q_participants, key=key).single()
+                participants = dict(p_row) if p_row else {"day": None, "event_type": None, "places": [], "persons": [], "users": []}
+                entries = [dict(r) for r in s.run(q_entries, key=key, limit=int(limit))]
+
+            # Flatten a bit for the UI
+            return {
+                "kind": "Event",
+                "ref": ref,
+                "event_type": participants.get("event_type") or "",
+                "day": participants.get("day") or "",
+                "places": participants.get("places") or [],
+                "persons": participants.get("persons") or [],
+                "users": participants.get("users") or [],
+                "entries": entries,
+            }
+
+        if label == "Context":
+            q_ctx = """
+            MATCH (ctx:Context {key: $key})
+            OPTIONAL MATCH (ev:Event)-[:HAS_CONTEXT]->(ctx)
+            OPTIONAL MATCH (ev)-[:ON_DAY]->(d:Day)
+            OPTIONAL MATCH (ev)-[:HAS_TYPE]->(t:EventType)
+            WITH ctx,
+                 coalesce(t.name, ev.event_type, '') as event_type,
+                 d.date as day,
+                 substring(ctx.text, 0, 120) as context_preview
+            RETURN event_type as event_type,
+                   day as day,
+                   ctx.name as name,
+                   ctx.text as text_preview_long,
+                   context_preview as context_preview,
+                   ctx.key as ckey
+            LIMIT 1
+            """
+
+            q_entries = """
+            MATCH (ctx:Context {key: $key})<-[:HAS_CONTEXT]-(ev:Event)<-[:REFERS_TO]-(e:Entry)
+            OPTIONAL MATCH (ev)-[:ON_DAY]->(d:Day)
+            RETURN e.id as entry_id,
+                   toString(e.input_time) as input_time,
+                   d.date as day,
+                   substring(e.text, 0, 260) as text_preview
+            ORDER BY e.input_time DESC
+            LIMIT $limit
+            """
+
+            q_entities = """
+            MATCH (ctx:Context {key: $key})
+            OPTIONAL MATCH (ctx)-[:HAS_TOPIC]->(t)
+            OPTIONAL MATCH (ctx)-[:MENTIONS]->(m)
+            WITH ctx,
+                 collect(DISTINCT {type: labels(t)[0], name: t.name}) as topics,
+                 collect(DISTINCT {type: labels(m)[0], name: m.name}) as mentions
+            RETURN topics, mentions
+            """
+
+            with self._driver.session() as s:
+                row = s.run(q_ctx, key=key).single()
+                ents = s.run(q_entities, key=key).single()
+                entries = [dict(r) for r in s.run(q_entries, key=key, limit=int(limit))]
+                ctx_row = dict(row) if row else {}
+                topics = (ents or {}).get("topics") or [] if ents else []
+                mentions = (ents or {}).get("mentions") or [] if ents else []
+
+            return {
+                "kind": "Context",
+                "ref": ref,
+                "name": ctx_row.get("name") or "Context",
+                "event_type": ctx_row.get("event_type") or "",
+                "day": ctx_row.get("day") or "",
+                "text": ctx_row.get("text_preview_long") or ctx_row.get("context_preview") or "",
+                "topics": topics,
+                "mentions": mentions,
+                "entries": entries,
+            }
+
+        if label == "Concept":
+            # Concept occurrences: (Concept)<-[:HAS_TOPIC]-(Event)<-[:REFERS_TO]-(Entry)
+            q_participants = """
+            MATCH (c:Concept {name: $name})<-[:HAS_TOPIC]-(ev:Event)
+            OPTIONAL MATCH (p:Person)-[:PARTICIPATED_IN]->(ev)
+            OPTIONAL MATCH (u:User)-[:PARTICIPATED_IN]->(ev)
+            RETURN coalesce(
+                     [x IN collect(DISTINCT {id: p.id, name: p.name, role: p.role, mentions: coalesce(p.mention_count,0)}) WHERE x.id IS NOT NULL],
+                     []
+                   ) as persons,
+                   coalesce([y IN collect(DISTINCT {name: u.name}) WHERE y.name IS NOT NULL], []) as users
+            """
+            q_entries = """
+            MATCH (c:Concept {name: $name})<-[:HAS_TOPIC]-(ev:Event)
+            MATCH (ev)<-[:REFERS_TO]-(e:Entry)
+            OPTIONAL MATCH (ev)-[:ON_DAY]->(d:Day)
+            OPTIONAL MATCH (ev)-[:OCCURRED_AT]->(pl:Place)
+            OPTIONAL MATCH (ev)-[:HAS_TYPE]->(t:EventType)
+            WITH e,
+                 collect(DISTINCT d.date) as days,
+                 collect(DISTINCT coalesce(t.name, ev.event_type, '')) as event_types,
+                 collect(DISTINCT pl.name) as places
+            RETURN e.id as entry_id,
+                   toString(e.input_time) as input_time,
+                   days[0] as day,
+                   event_types[0] as event_type,
+                   places[0..3] as places,
+                   substring(e.text, 0, 260) as text_preview
+            ORDER BY e.input_time DESC
+            LIMIT $limit
+            """
+
+            with self._driver.session() as s:
+                p_row = s.run(q_participants, name=key).single()
+                participants = dict(p_row) if p_row else {"persons": [], "users": []}
+                entries = [dict(r) for r in s.run(q_entries, name=key, limit=int(limit))]
+
+            first = entries[0] if entries else {}
+            return {
+                "kind": "Event",
+                "ref": ref,
+                "event_type": first.get("event_type") or key,
+                "day": first.get("day") or "",
+                "places": first.get("places") or [],
+                "persons": participants.get("persons") or [],
+                "users": participants.get("users") or [],
+                "entries": entries,
+            }
+
+        if label == "Day":
+            # Day overview: show entries whose event occurred on this day,
+            # plus all participants connected to those events.
+            q_participants = """
+            MATCH (d:Day {date: $name})<-[:ON_DAY]-(ev:Event)
+            OPTIONAL MATCH (p:Person)-[:PARTICIPATED_IN]->(ev)
+            OPTIONAL MATCH (u:User)-[:PARTICIPATED_IN]->(ev)
+            RETURN coalesce(
+                     [x IN collect(DISTINCT {id: p.id, name: p.name, role: p.role, mentions: coalesce(p.mention_count,0)}) WHERE x.id IS NOT NULL],
+                     []
+                   ) as persons,
+                   coalesce(
+                     [y IN collect(DISTINCT {name: u.name}) WHERE y.name IS NOT NULL],
+                     []
+                   ) as users
+            """
+
+            q_entries = """
+            MATCH (d:Day {date: $name})<-[:ON_DAY]-(ev:Event)<-[:REFERS_TO]-(e:Entry)
+            OPTIONAL MATCH (ev)-[:ON_DAY]->(d:Day)
+            OPTIONAL MATCH (ev)-[:OCCURRED_AT]->(pl:Place)
+            OPTIONAL MATCH (ev)-[:HAS_TYPE]->(t:EventType)
+            WITH e,
+                 collect(DISTINCT d.date) as days,
+                 collect(DISTINCT coalesce(t.name, ev.event_type, '')) as event_types,
+                 collect(DISTINCT pl.name) as places
+            RETURN e.id as entry_id,
+                   toString(e.input_time) as input_time,
+                   days[0] as day,
+                   event_types[0] as event_type,
+                   places[0..3] as places,
+                   substring(e.text, 0, 260) as text_preview
+            ORDER BY e.input_time DESC
+            LIMIT $limit
+            """
+
+            with self._driver.session() as s:
+                p_row = s.run(q_participants, name=key).single()
+                participants = dict(p_row) if p_row else {"persons": [], "users": []}
+                entries = [dict(r) for r in s.run(q_entries, name=key, limit=int(limit))]
+
+            return {
+                "kind": "Event",
+                "ref": ref,
+                "event_type": "day",
+                "day": key,
+                "places": [],
+                "persons": participants.get("persons") or [],
+                "users": participants.get("users") or [],
+                "entries": entries,
+            }
+
+        if label == "Place":
+            # Treat "place occurrences" as an Event-like overview so the UI can reuse
+            # the same rendering (participants + entries list).
+            q_entries = """
+            MATCH (pl:Place {name: $name})<-[:OCCURRED_AT]-(ev:Event)<-[:REFERS_TO]-(e:Entry)
+            OPTIONAL MATCH (ev)-[:ON_DAY]->(d:Day)
+            OPTIONAL MATCH (ev)-[:HAS_TYPE]->(t:EventType)
+            WITH e,
+                 collect(DISTINCT d.date) as days,
+                 collect(DISTINCT coalesce(t.name, ev.event_type, '')) as event_types
+            RETURN e.id as entry_id,
+                   toString(e.input_time) as input_time,
+                   days[0] as day,
+                   event_types[0] as event_type,
+                   substring(e.text, 0, 260) as text_preview
+            ORDER BY e.input_time DESC
+            LIMIT $limit
+            """
+            q_participants = """
+            MATCH (pl:Place {name: $name})<-[:OCCURRED_AT]-(ev:Event)
+            OPTIONAL MATCH (p:Person)-[:PARTICIPATED_IN]->(ev)
+            OPTIONAL MATCH (u:User)-[:PARTICIPATED_IN]->(ev)
+            RETURN coalesce([x IN collect(DISTINCT {id: p.id, name: p.name, role: p.role, mentions: coalesce(p.mention_count,0)}) WHERE x.id IS NOT NULL], []) as persons,
+                   coalesce([y IN collect(DISTINCT {name: u.name}) WHERE y.name IS NOT NULL], []) as users
+            """
+            with self._driver.session() as s:
+                p_row = s.run(q_participants, name=key).single()
+                participants = dict(p_row) if p_row else {"persons": [], "users": []}
+                entries = [dict(r) for r in s.run(q_entries, name=key, limit=int(limit))]
+
+            first = entries[0] if entries else {}
+            return {
+                "kind": "Event",
+                "ref": ref,
+                "event_type": first.get("event_type") or "",
+                "day": first.get("day") or "",
+                "places": [key],
+                "persons": participants.get("persons") or [],
+                "users": participants.get("users") or [],
+                "entries": [
+                    {
+                        "entry_id": e.get("entry_id"),
+                        "input_time": e.get("input_time"),
+                        "day": e.get("day"),
+                        "text_preview": e.get("text_preview"),
+                    }
+                    for e in entries
+                ],
+            }
+
+        if label == "EventType":
+            q_entries = """
+            MATCH (ev:Event)-[:HAS_TYPE]->(t:EventType {name: $name})
+            MATCH (ev)<-[:REFERS_TO]-(e:Entry)
+            OPTIONAL MATCH (ev)-[:ON_DAY]->(d:Day)
+            WITH e, collect(DISTINCT ev) as evs, collect(DISTINCT d.date) as days, collect(DISTINCT t.name) as tnames
+            ORDER BY e.input_time DESC
+            LIMIT $limit
+            CALL {
+              WITH evs
+              UNWIND evs as ev
+              OPTIONAL MATCH (ev)-[:OCCURRED_AT]->(pl:Place)
+              RETURN collect(DISTINCT pl.name)[0..3] as places
+            }
+            RETURN e.id as entry_id,
+                   toString(e.input_time) as input_time,
+                   days[0] as day,
+                   coalesce(tnames[0], '') as event_type,
+                   places,
+                   substring(e.text, 0, 260) as text_preview
+            """
+            q_participants = """
+            MATCH (ev:Event)-[:HAS_TYPE]->(t:EventType {name: $name})
+            OPTIONAL MATCH (p:Person)-[:PARTICIPATED_IN]->(ev)
+            OPTIONAL MATCH (u:User)-[:PARTICIPATED_IN]->(ev)
+            RETURN coalesce([x IN collect(DISTINCT {id: p.id, name: p.name, role: p.role, mentions: coalesce(p.mention_count,0)}) WHERE x.id IS NOT NULL], []) as persons,
+                   coalesce([y IN collect(DISTINCT {name: u.name}) WHERE y.name IS NOT NULL], []) as users
+            """
+            with self._driver.session() as s:
+                p_row = s.run(q_participants, name=key).single()
+                participants = dict(p_row) if p_row else {"persons": [], "users": []}
+                rows = [dict(r) for r in s.run(q_entries, name=key, limit=int(limit))]
+
+            first = rows[0] if rows else {}
+            return {
+                "kind": "Event",
+                "ref": ref,
+                "event_type": first.get("event_type") or key,
+                "day": first.get("day") or "",
+                "places": first.get("places") or [],
+                "persons": participants.get("persons") or [],
+                "users": participants.get("users") or [],
+                "entries": rows,
+            }
+
+        # Fallback: return minimal info rather than 500.
+        with self._driver.session() as s:
+            row = s.run(
+                f"MATCH (e:{label}) WHERE e.name = $key RETURN e LIMIT 1",
+                key=key,
+            ).single()
+        return {"kind": "Event", "ref": ref, "event_type": label, "day": "", "places": [], "persons": [], "users": [], "entries": []}
 
     def neighborhood(self, ref: str, depth: int = 1, limit: int = 200) -> Dict[str, Any]:
         """
@@ -318,6 +754,8 @@ class Neo4jRepo:
             "Place": "name",
             "Concept": "name",
             "Day": "date",
+            "Context": "key",
+            "EventType": "name",
         }
         if label not in mapping:
             raise ValueError("unsupported label for neighborhood")

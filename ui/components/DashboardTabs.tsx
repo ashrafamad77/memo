@@ -37,10 +37,14 @@ export function DashboardTabs() {
   const [timeline, setTimeline] = useState<
     { id: string; text: string; input_time?: string; day?: string }[]
   >([]);
-  const [people, setPeople] = useState<
-    { id: string; name: string; role?: string; mentions?: number }[]
+  const [graphRoots, setGraphRoots] = useState<
+    { type: string; name: string; ref: string; mentions?: number; last_seen?: string }[]
+  >([]);
+  const [entities, setEntities] = useState<
+    { type: string; name: string; ref: string; mentions?: number; last_seen?: string }[]
   >([]);
   const [status, setStatus] = useState<string>("");
+  const [entitiesOpenType, setEntitiesOpenType] = useState<string>("");
 
   useEffect(() => {
     let ignore = false;
@@ -52,18 +56,12 @@ export function DashboardTabs() {
           if (!ignore) setTimeline(out.items || []);
         }
         if (tab === "Entities") {
-          const out = await apiGet<{ items: any[] }>("/persons?limit=30");
-          if (!ignore) setPeople(out.items || []);
+          const out = await apiGet<{ items: any[] }>("/entities?limit=80");
+          if (!ignore) setEntities(out.items || []);
         }
         if (tab === "Graph") {
-          // GraphMindMap loads its own neighborhood; we only need a people list.
-          const out = await apiGet<{ items: any[] }>("/persons?limit=30");
-          if (!ignore) setPeople(out.items || []);
-        }
-        if (tab === "Entity Timeline") {
-          // EntityTimeline loads its own timeline; we only need a people list.
-          const out = await apiGet<{ items: any[] }>("/persons?limit=50");
-          if (!ignore) setPeople(out.items || []);
+          const out = await apiGet<{ items: any[] }>("/entities?limit=120");
+          if (!ignore) setGraphRoots(out.items || []);
         }
       } catch (e: any) {
         if (!ignore) setStatus(e?.message || String(e));
@@ -121,45 +119,94 @@ export function DashboardTabs() {
           </div>
         );
       case "Entities":
+        {
+          const grouped = (entities || []).reduce<Record<string, typeof entities>>((acc, e) => {
+            const k = e.type || "Other";
+            if (!acc[k]) acc[k] = [];
+            acc[k].push(e);
+            return acc;
+          }, {});
+          const typeOrder = Object.keys(grouped).sort((a, b) => {
+            const priority = [
+              "Person",
+              "User",
+              "Event",
+              "EventType",
+              "Place",
+              "Concept",
+              "Organization",
+              "Day",
+              "Emotion",
+            ];
+            const ia = priority.indexOf(a);
+            const ib = priority.indexOf(b);
+            if (ia >= 0 && ib >= 0) return ia - ib;
+            if (ia >= 0) return -1;
+            if (ib >= 0) return 1;
+            return a.localeCompare(b);
+          });
+
         return (
           <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-5">
-            <div className="text-sm font-semibold">People</div>
-            <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-              {people.map((p) => (
-                <div key={p.id} className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="text-sm font-semibold">{p.name}</div>
-                    <div className="text-[11px] text-zinc-500">
-                      {p.mentions ?? 0} mentions
-                    </div>
+            <div className="text-sm font-semibold">Entities</div>
+            <div className="mt-3 space-y-2">
+              {typeOrder.map((type) => {
+                const items = grouped[type] || [];
+                const isOpen = entitiesOpenType === type;
+                return (
+                  <div key={type} className="overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/40">
+                    <button
+                      onClick={() => setEntitiesOpenType((prev) => (prev === type ? "" : type))}
+                      className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left hover:bg-zinc-800/40"
+                    >
+                      <div className="text-sm font-semibold">{type}</div>
+                      <div className="text-[11px] text-zinc-400">
+                        {items.length} item{items.length > 1 ? "s" : ""} {isOpen ? "▲" : "▼"}
+                      </div>
+                    </button>
+                    {isOpen ? (
+                      <div className="grid gap-2 border-t border-zinc-800 p-3 sm:grid-cols-2 lg:grid-cols-3">
+                        {items.map((e) => (
+                          <div
+                            key={e.ref}
+                            className="rounded-lg border border-zinc-800 bg-zinc-950/70 p-2.5"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-sm font-semibold">{e.name}</div>
+                              <div className="text-[11px] text-zinc-500">{e.mentions ?? 0}</div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
-                  <div className="mt-1 text-xs text-zinc-400">{p.role || "—"}</div>
-                </div>
-              ))}
-              {!people.length ? (
-                <div className="text-sm text-zinc-500">No people yet.</div>
+                );
+              })}
+              {!typeOrder.length ? (
+                <div className="text-sm text-zinc-500">No entities yet.</div>
               ) : null}
             </div>
           </div>
         );
+        }
       case "Graph":
         return (
           <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-5">
             <div className="text-sm font-semibold">Graph view</div>
-            <GraphMindMap initialPeople={people} />
+            <GraphMindMap initialRoots={graphRoots} />
           </div>
         );
       case "Entity Timeline":
         return (
           <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-5">
             <div className="text-sm font-semibold">Entity timeline</div>
-            <EntityTimeline initialPeople={people} />
+            <EntityTimeline />
           </div>
         );
       default:
         return null;
     }
-  }, [tab, people, timeline]);
+  }, [tab, graphRoots, entities, timeline, entitiesOpenType]);
 
   return (
     <div className="flex h-full flex-col">

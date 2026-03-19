@@ -69,62 +69,15 @@ class MemoryPipeline:
         Returns: dict with entry_id, extraction result, and status.
         """
         entry_id = entry_id or str(uuid.uuid4())
-        
+
         # 1. Extract entities (LLM-only)
         extraction = self.extractor.extract(text)
 
         # Resolve relative dates like "aujourd'hui" -> absolute event_time_iso,
         # then drop those Date entities so we don't store them as Date nodes.
         extraction = self._resolve_relative_dates(extraction, input_dt=datetime.now())
-        
-        # 2. Store in graph (if Neo4j available)
-        graph_status = "skipped"
-        if self.graph_store:
-            try:
-                self.graph_store.store_entry(
-                    entry_id=entry_id,
-                    text=text,
-                    extraction=extraction,
-                    user_name=USER_NAME,
-                )
-                graph_status = "ok"
-            except Exception as e:
-                graph_status = f"error: {e}"
-        
-        # 3. Store in vector DB
-        vector_status = "skipped"
-        if self.vector_store:
-            try:
-                self.vector_store.add_entry(
-                    entry_id=entry_id,
-                    text=text,
-                    metadata={
-                        "entity_count": len(extraction.entities),
-                        # Store only "retrieval entities" (exclude Date)
-                        "entities": [e.text for e in extraction.entities if e.label != "Date"][:10],
-                        "metadata": extraction.metadata,
-                    },
-                )
-                vector_status = "ok"
-            except Exception as e:
-                vector_status = f"error: {e}"
-        elif self._vector_init_error is not None:
-            # Surface initialization error instead of a silent "skipped"
-            vector_status = f"init-error: {self._vector_init_error}"
-        
-        return {
-            "entry_id": entry_id,
-            "entities": [
-                {"text": e.text, "type": e.label}
-                for e in extraction.entities
-            ],
-            "relations": [
-                {"subject": r.subject, "predicate": r.predicate, "object": r.obj, "sentiment": r.sentiment}
-                for r in extraction.relations
-            ],
-            "graph": graph_status,
-            "vector": vector_status,
-        }
+
+        return self.persist_extraction(text=text, extraction=extraction, entry_id=entry_id)
 
     def process_agentic(self, text: str, entry_id: Optional[str] = None) -> dict:
         """Run the same pipeline through a minimal LangGraph workflow."""
@@ -151,6 +104,57 @@ class MemoryPipeline:
             "relations": relations,
             "graph": out.get("graph_status", "skipped"),
             "vector": out.get("vector_status", "skipped"),
+        }
+
+    def persist_extraction(self, text: str, extraction, entry_id: Optional[str] = None) -> dict:
+        """
+        Persist a pre-computed extraction result to graph + vector stores.
+        Used by chat clarifier flow to store only confirmed structured fields.
+        """
+        entry_id = entry_id or str(uuid.uuid4())
+
+        # 1) Graph
+        graph_status = "skipped"
+        if self.graph_store:
+            try:
+                self.graph_store.store_entry(
+                    entry_id=entry_id,
+                    text=text,
+                    extraction=extraction,
+                    user_name=USER_NAME,
+                )
+                graph_status = "ok"
+            except Exception as e:
+                graph_status = f"error: {e}"
+
+        # 2) Vector
+        vector_status = "skipped"
+        if self.vector_store:
+            try:
+                self.vector_store.add_entry(
+                    entry_id=entry_id,
+                    text=text,
+                    metadata={
+                        "entity_count": len(extraction.entities),
+                        "entities": [e.text for e in extraction.entities if e.label != "Date"][:10],
+                        "metadata": extraction.metadata,
+                    },
+                )
+                vector_status = "ok"
+            except Exception as e:
+                vector_status = f"error: {e}"
+        elif self._vector_init_error is not None:
+            vector_status = f"init-error: {self._vector_init_error}"
+
+        return {
+            "entry_id": entry_id,
+            "entities": [{"text": e.text, "type": e.label} for e in extraction.entities],
+            "relations": [
+                {"subject": r.subject, "predicate": r.predicate, "object": r.obj, "sentiment": r.sentiment}
+                for r in extraction.relations
+            ],
+            "graph": graph_status,
+            "vector": vector_status,
         }
 
     @staticmethod
