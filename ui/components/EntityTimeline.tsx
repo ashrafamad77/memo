@@ -111,11 +111,11 @@ export function EntityTimeline() {
     <div className="mt-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <div className="text-xs font-semibold text-zinc-300">Entity</div>
+          <div className="text-xs font-semibold text-zinc-500 dark:text-zinc-300">Entity</div>
           <select
             value={selectedRef}
             onChange={(e) => setSelectedRef(e.target.value)}
-            className="rounded-lg border border-zinc-800 bg-zinc-950 px-2 py-1 text-xs text-zinc-200 outline-none"
+            className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 px-2 py-1 text-xs text-zinc-700 dark:text-zinc-200 outline-none"
           >
             {entities.map((e) => (
               <option key={e.ref} value={e.ref}>
@@ -135,28 +135,28 @@ export function EntityTimeline() {
         </div>
       ) : null}
 
-      <div className="mt-3 rounded-2xl border border-zinc-800 bg-zinc-950 p-5">
+      <div className="mt-3 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-5">
         <div className="text-sm font-semibold">{header}</div>
         {overview ? (
           overview.kind === "Person" ? (
             <div className="mt-3 space-y-3">
               {overview.items.map((it) => (
-                <div key={it.entry_id} className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-3">
+                <div key={it.entry_id} className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/40 p-3">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="flex flex-wrap items-center gap-2">
-                      <div className="text-xs font-semibold text-zinc-200">{it.day || "—"}</div>
+                      <div className="text-xs font-semibold text-zinc-700 dark:text-zinc-200">{it.day || "—"}</div>
                       {it.event_type ? (
-                        <div className="rounded-lg border border-zinc-800 bg-zinc-950 px-2 py-0.5 text-[11px] text-zinc-200">
+                        <div className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 px-2 py-0.5 text-[11px] text-zinc-700 dark:text-zinc-200">
                           {it.event_type}
                         </div>
                       ) : null}
                       {Array.isArray(it.places) && it.places.length ? (
-                        <div className="text-[11px] text-zinc-400">{it.places.join(", ")}</div>
+                        <div className="text-[11px] text-zinc-500 dark:text-zinc-400">{it.places.join(", ")}</div>
                       ) : null}
                     </div>
                     <div className="text-[11px] text-zinc-500">{it.input_time || ""}</div>
                   </div>
-                  <div className="mt-2 text-sm text-zinc-200">
+                  <div className="mt-2 text-sm text-zinc-700 dark:text-zinc-200">
                     {it.text_preview || ""}
                     {(it.text_preview || "").length >= 260 ? "…" : ""}
                   </div>
@@ -168,36 +168,36 @@ export function EntityTimeline() {
             </div>
           ) : overview.kind === "E73_Information_Object" ? (
             <div className="mt-3 space-y-3">
-              <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-3">
+              <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/40 p-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  <div className="text-xs font-semibold text-zinc-200">{overview.day || "—"}</div>
+                  <div className="text-xs font-semibold text-zinc-700 dark:text-zinc-200">{overview.day || "—"}</div>
                   {overview.event_type ? (
-                    <div className="rounded-lg border border-zinc-800 bg-zinc-950 px-2 py-0.5 text-[11px] text-zinc-200">
+                    <div className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 px-2 py-0.5 text-[11px] text-zinc-700 dark:text-zinc-200">
                       {overview.event_type}
                     </div>
                   ) : null}
                 </div>
-                <div className="mt-2 text-sm text-zinc-200">
-                  <div className="text-xs font-semibold text-zinc-300">Context phrase</div>
-                  <div className="mt-1 text-zinc-300">{overview.text || ""}</div>
+                <div className="mt-2 text-sm text-zinc-700 dark:text-zinc-200">
+                  <div className="text-xs font-semibold text-zinc-500 dark:text-zinc-300">Context phrase</div>
+                  <div className="mt-1 text-zinc-500 dark:text-zinc-300">{overview.text || ""}</div>
                 </div>
               </div>
 
-              <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-3">
-                <div className="text-sm font-semibold text-zinc-200">Context entities</div>
+              <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/40 p-3">
+                <div className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">Context entities</div>
                 <div className="mt-2 space-y-1">
                   {(overview.topics || []).map((t, idx) => (
-                    <div key={`topic:${idx}:${t.name}`} className="text-sm text-zinc-200">
+                    <div key={`topic:${idx}:${t.name}`} className="text-sm text-zinc-700 dark:text-zinc-200">
                       {t.type}: {t.name}
                     </div>
                   ))}
                   {(overview.concepts || []).map((c, idx) => (
-                    <div key={`concept:${idx}:${c.name}`} className="text-sm text-zinc-300">
+                    <div key={`concept:${idx}:${c.name}`} className="text-sm text-zinc-500 dark:text-zinc-300">
                       {c.type}: {c.name}
                     </div>
                   ))}
                   {(overview.mentions || []).map((m, idx) => (
-                    <div key={`mention:${idx}:${m.name}`} className="text-sm text-zinc-300">
+                    <div key={`mention:${idx}:${m.name}`} className="text-sm text-zinc-500 dark:text-zinc-300">
                       {m.type}: {m.name}
                     </div>
                   ))}
@@ -207,11 +207,11 @@ export function EntityTimeline() {
                 </div>
               </div>
 
-              <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-3">
-                <div className="text-sm font-semibold text-zinc-200">Entries</div>
+              <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/40 p-3">
+                <div className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">Entries</div>
                 <div className="mt-2 space-y-2">
                   {(overview.entries || []).map((e) => (
-                    <div key={e.entry_id} className="text-sm text-zinc-200">
+                    <div key={e.entry_id} className="text-sm text-zinc-700 dark:text-zinc-200">
                       <div className="text-[11px] text-zinc-500">{e.input_time || ""}</div>
                       <div>{e.text_preview || ""}</div>
                     </div>
@@ -224,31 +224,31 @@ export function EntityTimeline() {
             </div>
           ) : (
             <div className="mt-3 space-y-3">
-              <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-3">
+              <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/40 p-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  <div className="text-xs font-semibold text-zinc-200">{overview.day || "—"}</div>
+                  <div className="text-xs font-semibold text-zinc-700 dark:text-zinc-200">{overview.day || "—"}</div>
                   {overview.event_type ? (
-                    <div className="rounded-lg border border-zinc-800 bg-zinc-950 px-2 py-0.5 text-[11px] text-zinc-200">
+                    <div className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 px-2 py-0.5 text-[11px] text-zinc-700 dark:text-zinc-200">
                       {overview.event_type}
                     </div>
                   ) : null}
                   {Array.isArray(overview.places) && overview.places.length ? (
-                    <div className="text-[11px] text-zinc-400">{overview.places.join(", ")}</div>
+                    <div className="text-[11px] text-zinc-500 dark:text-zinc-400">{overview.places.join(", ")}</div>
                   ) : null}
                 </div>
               </div>
 
-              <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-3">
-                <div className="text-sm font-semibold text-zinc-200">Participants</div>
+              <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/40 p-3">
+                <div className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">Participants</div>
                 <div className="mt-2 space-y-2">
                   {(overview.persons || []).map((p) => (
-                    <div key={p.id} className="text-sm text-zinc-200">
+                    <div key={p.id} className="text-sm text-zinc-700 dark:text-zinc-200">
                       {p.name}
                       {p.role ? ` (${p.role})` : ""}
                     </div>
                   ))}
                   {(overview.users || []).map((u, idx) => (
-                    <div key={`${u.name}:${idx}`} className="text-sm text-zinc-200 text-zinc-300">
+                    <div key={`${u.name}:${idx}`} className="text-sm text-zinc-500 dark:text-zinc-300">
                       {u.name}
                     </div>
                   ))}
@@ -258,11 +258,11 @@ export function EntityTimeline() {
                 </div>
               </div>
 
-              <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-3">
-                <div className="text-sm font-semibold text-zinc-200">Entries</div>
+              <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/40 p-3">
+                <div className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">Entries</div>
                 <div className="mt-2 space-y-2">
                   {(overview.entries || []).map((e) => (
-                    <div key={e.entry_id} className="text-sm text-zinc-200">
+                    <div key={e.entry_id} className="text-sm text-zinc-700 dark:text-zinc-200">
                       <div className="text-[11px] text-zinc-500">{e.input_time || ""}</div>
                       <div>{e.text_preview || ""}</div>
                     </div>

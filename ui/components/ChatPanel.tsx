@@ -105,9 +105,9 @@ export function ChatPanel() {
 
   return (
     <div className="flex h-full flex-col min-h-0">
-      <div className="flex items-center justify-between gap-3 border-b border-zinc-800 px-4 py-3">
-        <div className="text-sm font-semibold">Memo</div>
-        <div className="text-xs text-zinc-400">chat</div>
+      <div className="flex items-center justify-between gap-3 border-b border-zinc-200 dark:border-zinc-800 px-4 py-3">
+        <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Memo</div>
+        <div className="text-xs text-zinc-400 dark:text-zinc-400">chat</div>
       </div>
 
       <div
@@ -120,12 +120,12 @@ export function ChatPanel() {
               key={m.id}
               className={
                 m.role === "user"
-                  ? "ml-auto max-w-[95%] rounded-2xl bg-zinc-100 px-3 py-2 text-sm text-zinc-950"
-                  : "max-w-[95%] rounded-2xl bg-zinc-900 px-3 py-2 text-sm text-zinc-100"
+                  ? "ml-auto max-w-[95%] rounded-2xl bg-zinc-100 dark:bg-zinc-800 px-3 py-2 text-sm text-zinc-900 dark:text-zinc-100"
+                  : "max-w-[95%] rounded-2xl bg-zinc-50 dark:bg-zinc-900 px-3 py-2 text-sm text-zinc-900 dark:text-zinc-100"
               }
             >
               {m.role === "assistant" && m.badge ? (
-                <div className="mb-1 inline-flex rounded-full border border-zinc-700 bg-zinc-800 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-300">
+                <div className="mb-1 inline-flex rounded-full border border-zinc-300 dark:border-zinc-700 bg-zinc-100 dark:bg-zinc-800 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-300">
                   {m.badge}
                 </div>
               ) : null}
@@ -136,7 +136,7 @@ export function ChatPanel() {
         </div>
       </div>
 
-      <div className="border-t border-zinc-800 p-3">
+      <div className="border-t border-zinc-200 dark:border-zinc-800 p-3">
         <div className="flex gap-2">
           <textarea
             value={text}
@@ -150,13 +150,13 @@ export function ChatPanel() {
               if (!busy && canSend) void send();
             }}
             rows={4}
-            className="min-h-[96px] flex-1 resize-y rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm outline-none placeholder:text-zinc-500 focus:border-zinc-600"
+            className="min-h-[96px] flex-1 resize-y rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 px-3 py-2 text-sm text-zinc-900 dark:text-zinc-100 outline-none placeholder:text-zinc-500 focus:border-zinc-400 dark:focus:border-zinc-600"
             placeholder="Write an entry…"
           />
           <button
             disabled={!canSend || busy}
             onClick={send}
-            className="rounded-xl bg-emerald-400 px-4 text-sm font-semibold text-zinc-950 disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded-xl bg-zinc-200 hover:bg-zinc-300 dark:bg-zinc-700 dark:hover:bg-zinc-600 px-4 text-sm font-semibold text-zinc-900 dark:text-white disabled:cursor-not-allowed disabled:opacity-40"
           >
             {busy ? "…" : "Send"}
           </button>

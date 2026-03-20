@@ -5,6 +5,18 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { apiGet } from "@/lib/api";
 
+function useIsDark() {
+  const [dark, setDark] = useState(true);
+  useEffect(() => {
+    const check = () => setDark(document.documentElement.classList.contains("dark"));
+    check();
+    const obs = new MutationObserver(check);
+    obs.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+    return () => obs.disconnect();
+  }, []);
+  return dark;
+}
+
 type RootEntity = { ref: string; name: string; type: string; mentions?: number };
 
 type ApiNode = {
@@ -114,6 +126,7 @@ export function GraphMindMap({
 }: {
   initialRoots: RootEntity[];
 }) {
+  const isDark = useIsDark();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const cyRef = useRef<Core | null>(null);
   const [roots, setRoots] = useState<RootEntity[]>(initialRoots || []);
@@ -439,10 +452,10 @@ export function GraphMindMap({
         style: {
           "background-color": "data(color)",
           label: "data(label)",
-          color: "rgba(244,244,245,0.95)",
+          color: isDark ? "rgba(244,244,245,0.95)" : "rgba(24,24,27,0.95)",
           "font-size": 24,
           "text-outline-width": 4,
-          "text-outline-color": "#09090b",
+          "text-outline-color": isDark ? "#09090b" : "#ffffff",
           "text-valign": "center",
           "text-halign": "center",
           "text-wrap": "wrap",
@@ -487,20 +500,20 @@ export function GraphMindMap({
         selector: "edge",
         style: {
           width: 2,
-          "line-color": "rgba(244,244,245,0.25)",
-          "target-arrow-color": "rgba(244,244,245,0.25)",
+          "line-color": isDark ? "rgba(244,244,245,0.25)" : "rgba(63,63,70,0.4)",
+          "target-arrow-color": isDark ? "rgba(244,244,245,0.25)" : "rgba(63,63,70,0.4)",
           "target-arrow-shape": "data(arrow)",
           "curve-style": "bezier",
           label: "data(label)",
-          color: "rgba(244,244,245,0.80)",
+          color: isDark ? "rgba(244,244,245,0.80)" : "rgba(24,24,27,0.80)",
           "font-size": compactMode ? 16 : 22,
           "text-rotation": "autorotate",
           "text-margin-y": -6,
           "text-background-opacity": 0.70,
-          "text-background-color": "#09090b",
+          "text-background-color": isDark ? "#09090b" : "#ffffff",
           "text-background-padding": compactMode ? 4 : 6,
           "text-border-opacity": 0.35,
-          "text-border-color": "rgba(244,244,245,0.40)",
+          "text-border-color": isDark ? "rgba(244,244,245,0.40)" : "rgba(63,63,70,0.3)",
           "text-border-width": 1,
         },
       },
@@ -508,11 +521,11 @@ export function GraphMindMap({
         selector: "node:selected",
         style: {
           "border-width": 4,
-          "border-color": "rgba(244,244,245,0.75)",
+          "border-color": isDark ? "rgba(244,244,245,0.75)" : "rgba(24,24,27,0.5)",
         },
       },
     ],
-    [compactMode]
+    [compactMode, isDark]
   );
 
   // Update Cytoscape whenever inputs change.
@@ -560,11 +573,11 @@ export function GraphMindMap({
     <div className="mt-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <div className="text-xs font-semibold text-zinc-300">Root</div>
+          <div className="text-xs font-semibold text-zinc-500 dark:text-zinc-300">Root</div>
           <select
             value={selectedRef}
             onChange={(e) => setSelectedRef(e.target.value)}
-            className="rounded-lg border border-zinc-800 bg-zinc-950 px-2 py-1 text-xs text-zinc-200 outline-none"
+            className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 px-2 py-1 text-xs text-zinc-700 dark:text-zinc-200 outline-none"
           >
             {roots.map((r) => (
               <option key={r.ref} value={r.ref}>
@@ -578,7 +591,7 @@ export function GraphMindMap({
             type="checkbox"
             checked={compactMode}
             onChange={(e) => setCompactMode(e.target.checked)}
-            className="h-4 w-4 rounded border-zinc-700 bg-zinc-900"
+            className="h-4 w-4 rounded border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900"
           />
           Compact events
         </label>
@@ -593,11 +606,11 @@ export function GraphMindMap({
         </div>
       ) : null}
 
-      <div className="mt-3 overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-950">
+      <div className="mt-3 overflow-hidden rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950">
         <div
           ref={containerRef}
           className="h-[78vh] min-h-[620px] w-full"
-          style={{ background: "#09090b" }}
+          style={{ background: isDark ? "#09090b" : "#ffffff" }}
         />
       </div>
 

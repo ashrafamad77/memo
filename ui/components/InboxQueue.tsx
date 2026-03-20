@@ -59,19 +59,19 @@ export function InboxQueue() {
   }
 
   if (!items.length) {
-    return <div className="mt-2 text-sm text-zinc-400">No pending tasks.</div>;
+    return <div className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">No pending tasks.</div>;
   }
 
   return (
     <div className="mt-3 space-y-3">
       {items.map((t) => (
-        <div key={t.id} className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-3">
+        <div key={t.id} className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/40 p-3">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="text-sm font-semibold">
-                Disambiguate: <span className="text-zinc-100">{t.mention}</span>
+                Disambiguate: <span className="text-zinc-900 dark:text-zinc-100">{t.mention}</span>
               </div>
-              <div className="mt-1 text-xs text-zinc-400">
+              <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
                 candidate: {t.candidate_name || "—"} ({t.candidate_role || "—"}) · proposed:{" "}
                 {t.proposed_name || "—"} ({t.proposed_role || "—"}) · score:{" "}
                 {typeof t.score === "number" ? t.score.toFixed(2) : "—"}
@@ -83,14 +83,14 @@ export function InboxQueue() {
             <button
               disabled={busy === t.id}
               onClick={() => resolve(t.id, "merge")}
-              className="rounded-lg bg-zinc-100 px-3 py-2 text-xs font-semibold text-zinc-950 disabled:opacity-50"
+              className="rounded-lg bg-zinc-50 dark:bg-zinc-900 px-3 py-2 text-xs font-semibold text-zinc-950 disabled:opacity-50"
             >
               Merge (same person)
             </button>
             <button
               disabled={busy === t.id}
               onClick={() => resolve(t.id, "split")}
-              className="rounded-lg border border-zinc-700 bg-transparent px-3 py-2 text-xs font-semibold text-zinc-100 disabled:opacity-50"
+              className="rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent px-3 py-2 text-xs font-semibold text-zinc-900 dark:text-zinc-100 disabled:opacity-50"
             >
               Split (different)
             </button>

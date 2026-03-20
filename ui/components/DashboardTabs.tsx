@@ -24,7 +24,7 @@ function TabButton({
       onClick={onClick}
       className={[
         "rounded-xl px-3 py-2 text-sm font-semibold",
-        active ? "bg-zinc-100 text-zinc-950" : "bg-zinc-900 text-zinc-200 hover:bg-zinc-800",
+        active ? "bg-zinc-200 dark:bg-zinc-700 text-zinc-900 dark:text-white" : "bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700",
       ].join(" ")}
     >
       {label}
@@ -88,25 +88,25 @@ export function DashboardTabs() {
     switch (tab) {
       case "Inbox":
         return (
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-5">
+          <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-5">
             <div className="text-sm font-semibold">Needs review</div>
             <InboxQueue />
           </div>
         );
       case "Timeline":
         return (
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-5">
+          <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-5">
             <div className="text-sm font-semibold">Entries</div>
             <div className="mt-3 space-y-3">
               {timeline.map((e) => (
-                <div key={e.id} className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-3">
+                <div key={e.id} className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/40 p-3">
                   <div className="flex items-center justify-between gap-3">
-                    <div className="text-xs font-semibold text-zinc-200">
+                    <div className="text-xs font-semibold text-zinc-700 dark:text-zinc-200">
                       {e.day || "—"}
                     </div>
                     <div className="text-[11px] text-zinc-500">{e.input_time || ""}</div>
                   </div>
-                  <div className="mt-2 text-sm text-zinc-200">
+                  <div className="mt-2 text-sm text-zinc-700 dark:text-zinc-200">
                     {(e.text || "").slice(0, 240)}
                     {(e.text || "").length > 240 ? "…" : ""}
                   </div>
@@ -147,29 +147,29 @@ export function DashboardTabs() {
           });
 
         return (
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-5">
+          <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-5">
             <div className="text-sm font-semibold">Entities</div>
             <div className="mt-3 space-y-2">
               {typeOrder.map((type) => {
                 const items = grouped[type] || [];
                 const isOpen = entitiesOpenType === type;
                 return (
-                  <div key={type} className="overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/40">
+                  <div key={type} className="overflow-hidden rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/40">
                     <button
                       onClick={() => setEntitiesOpenType((prev) => (prev === type ? "" : type))}
-                      className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left hover:bg-zinc-800/40"
+                      className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left hover:bg-zinc-100 dark:hover:bg-zinc-800/40"
                     >
                       <div className="text-sm font-semibold">{type}</div>
-                      <div className="text-[11px] text-zinc-400">
+                      <div className="text-[11px] text-zinc-500 dark:text-zinc-400">
                         {items.length} item{items.length > 1 ? "s" : ""} {isOpen ? "▲" : "▼"}
                       </div>
                     </button>
                     {isOpen ? (
-                      <div className="grid gap-2 border-t border-zinc-800 p-3 sm:grid-cols-2 lg:grid-cols-3">
+                      <div className="grid gap-2 border-t border-zinc-200 dark:border-zinc-800 p-3 sm:grid-cols-2 lg:grid-cols-3">
                         {items.map((e) => (
                           <div
                             key={e.ref}
-                            className="rounded-lg border border-zinc-800 bg-zinc-950/70 p-2.5"
+                            className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950/70 p-2.5"
                           >
                             <div className="flex items-center justify-between gap-2">
                               <div className="text-sm font-semibold">{e.name}</div>
@@ -191,14 +191,14 @@ export function DashboardTabs() {
         }
       case "Graph":
         return (
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-5">
+          <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-5">
             <div className="text-sm font-semibold">Graph view</div>
             <GraphMindMap initialRoots={graphRoots} />
           </div>
         );
       case "Entity Timeline":
         return (
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-5">
+          <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-5">
             <div className="text-sm font-semibold">Entity timeline</div>
             <EntityTimeline />
           </div>
@@ -210,13 +210,13 @@ export function DashboardTabs() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between gap-3 border-b border-zinc-800 px-4 py-3">
+      <div className="flex items-center justify-between gap-3 border-b border-zinc-200 dark:border-zinc-700 px-4 py-3">
         <div className="flex flex-wrap gap-2">
           {tabs.map((t) => (
             <TabButton key={t} label={t} active={t === tab} onClick={() => setTab(t)} />
           ))}
         </div>
-        <div className="text-xs text-zinc-400">dashboard</div>
+        <div className="text-xs text-zinc-500 dark:text-zinc-400">dashboard</div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
