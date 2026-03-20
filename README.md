@@ -80,7 +80,7 @@ python main.py list --limit 20
 
 ## Notes de modélisation (important)
 
-- **Neo4j**: on stocke *toutes* les entrées (`Entry`) avec `input_time`. Un `Event` canonique est créé/mergé via une clé (bucket jour + entités clés) et les entrées pointent vers lui via `(:Entry)-[:REFERS_TO]->(:Event)`.
+- **Neo4j**: on stocke *toutes* les entrées (`Entry`) avec `input_time`. Une activité canonique (`E7_Activity`) est créée/mergée via une clé (bucket jour + entités clés) et les entrées pointent vers elle via `(:Entry)-[:P67_refers_to {ref_type:'about_activity'}]->(:E7_Activity)`.
 - **Weaviate**: on indexe pour la recherche sémantique, mais on évite les doublons exacts **le même jour** via `content_hash + day` (si déjà présent, on skip l'insertion vector).
 - **Métadonnées**: `event_type` / `emotions` sont stockés en metadata (pas mélangés aux entités littérales) afin d'éviter d’avoir des mots “inférés” dans `entities`.
 

@@ -40,13 +40,14 @@ type OverviewEvent = {
 };
 
 type OverviewContext = {
-  kind: "Context";
+  kind: "E73_Information_Object";
   ref: string;
   name?: string;
   event_type?: string;
   day?: string;
   text?: string;
   topics?: { type: string; name: string }[];
+  concepts?: { type: string; name: string }[];
   mentions?: { type: string; name: string }[];
   entries?: { entry_id: string; input_time?: string; day?: string; text_preview?: string }[];
 };
@@ -93,7 +94,7 @@ export function EntityTimeline() {
     if (overview.kind === "Person") {
       return `Entity timeline · ${overview.name}${overview.role ? ` (${overview.role})` : ""}`;
     }
-    if (overview.kind === "Context") {
+    if (overview.kind === "E73_Information_Object") {
       return `Entity timeline · Context`;
     }
     return `Entity timeline · Event`;
@@ -102,7 +103,7 @@ export function EntityTimeline() {
   const count = useMemo(() => {
     if (!overview) return 0;
     if (overview.kind === "Person") return overview.items?.length || 0;
-    if (overview.kind === "Context") return overview.entries?.length || 0;
+    if (overview.kind === "E73_Information_Object") return overview.entries?.length || 0;
     return overview.entries?.length || 0;
   }, [overview]);
 
@@ -165,7 +166,7 @@ export function EntityTimeline() {
                 <div className="text-sm text-zinc-500">No interactions yet.</div>
               ) : null}
             </div>
-          ) : overview.kind === "Context" ? (
+          ) : overview.kind === "E73_Information_Object" ? (
             <div className="mt-3 space-y-3">
               <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-3">
                 <div className="flex flex-wrap items-center gap-2">
@@ -188,6 +189,11 @@ export function EntityTimeline() {
                   {(overview.topics || []).map((t, idx) => (
                     <div key={`topic:${idx}:${t.name}`} className="text-sm text-zinc-200">
                       {t.type}: {t.name}
+                    </div>
+                  ))}
+                  {(overview.concepts || []).map((c, idx) => (
+                    <div key={`concept:${idx}:${c.name}`} className="text-sm text-zinc-300">
+                      {c.type}: {c.name}
                     </div>
                   ))}
                   {(overview.mentions || []).map((m, idx) => (

@@ -21,14 +21,14 @@ class Neo4jRepo:
         self._driver.close()
 
     def entry_count(self) -> int:
-        q = "MATCH (e:Entry) RETURN count(e) as c"
+        q = "MATCH (e:E73_Information_Object) WHERE coalesce(e.entry_kind,'') = 'journal_entry' RETURN count(e) as c"
         with self._driver.session() as s:
             row = s.run(q).single()
             return int(row["c"]) if row and row.get("c") is not None else 0
 
     def get_user_profile(self, user_name: str) -> Dict[str, Any]:
         q = """
-        MATCH (u:User {name: $name})
+        MATCH (u:E21_Person {name: $name})-[:P2_has_type]->(:E55_Type {name:'User'})
         RETURN u.name as name,
                u.profile_current_city as current_city,
                u.profile_home_country as home_country,
@@ -42,7 +42,7 @@ class Neo4jRepo:
 
     def upsert_user_profile(self, user_name: str, fields: Dict[str, Any]) -> Dict[str, Any]:
         q = """
-        MERGE (u:User {name: $name})
+        MERGE (u:E21_Person:E39_Actor {name: $name})
         ON CREATE SET u.first_seen = datetime()
         SET u.last_seen = datetime(),
             u.profile_current_city = coalesce($current_city, u.profile_current_city),
@@ -50,6 +50,10 @@ class Neo4jRepo:
             u.profile_nationality = coalesce($nationality, u.profile_nationality),
             u.profile_timezone = coalesce($timezone, u.profile_timezone),
             u.profile_work_context = coalesce($work_context, u.profile_work_context)
+        WITH u
+        MERGE (ut:E55_Type {name:'User'})
+        MERGE (u)-[:P2_has_type]->(ut)
+        WITH u
         RETURN u.name as name,
                u.profile_current_city as current_city,
                u.profile_home_country as home_country,
@@ -71,8 +75,9 @@ class Neo4jRepo:
 
     def timeline(self, limit: int = 50) -> List[Dict[str, Any]]:
         q = """
-        MATCH (e:Entry)-[:REFERS_TO]->(ev:Event)
-        OPTIONAL MATCH (ev)-[:ON_DAY]->(d:Day)
+        MATCH (e:E73_Information_Object)-[:P67_refers_to]->(ev:E7_Activity)
+        WHERE coalesce(e.entry_kind,'') = 'journal_entry'
+        OPTIONAL MATCH (ev)-[:P4_has_time_span]->(d:E52_Time_Span)
         WITH e,
              collect(DISTINCT ev.key) as event_keys,
              collect(DISTINCT d.date) as days
@@ -89,12 +94,12 @@ class Neo4jRepo:
 
     def entry_detail(self, entry_id: str) -> Optional[Dict[str, Any]]:
         q = """
-        MATCH (e:Entry {id: $id})-[:REFERS_TO]->(ev:Event)
-        OPTIONAL MATCH (ev)-[:ON_DAY]->(d:Day)
-        OPTIONAL MATCH (u:User)-[:PARTICIPATED_IN]->(ev)
-        OPTIONAL MATCH (p:Person)-[:PARTICIPATED_IN]->(ev)
-        OPTIONAL MATCH (ev)-[:OCCURRED_AT]->(pl:Place)
-        OPTIONAL MATCH (ev)-[:HAS_TOPIC]->(c:Concept)
+        MATCH (e:E73_Information_Object {id: $id})-[:P67_refers_to]->(ev:E7_Activity)
+        OPTIONAL MATCH (ev)-[:P4_has_time_span]->(d:E52_Time_Span)
+        OPTIONAL MATCH (ev)-[:P14_carried_out_by]->(u:E21_Person)
+        OPTIONAL MATCH (ev)-[:P14_carried_out_by]->(p:E21_Person)
+        OPTIONAL MATCH (ev)-[:P7_took_place_at]->(pl:E53_Place)
+        OPTIONAL MATCH (ev)-[:P67_refers_to]->(c:E28_Conceptual_Object)
         RETURN e.id as id,
                e.text as text,
                toString(e.input_time) as input_time,
@@ -112,7 +117,7 @@ class Neo4jRepo:
 
     def persons(self, query: str = "", limit: int = 50) -> List[Dict[str, Any]]:
         q = """
-        MATCH (p:Person)
+        MATCH (p:E21_Person)
         WHERE $q = "" OR toLower(p.name) CONTAINS toLower($q)
         RETURN p.id as id,
                p.name as name,
@@ -127,11 +132,12 @@ class Neo4jRepo:
 
     def person_detail(self, person_id: str, entry_limit: int = 30) -> Optional[Dict[str, Any]]:
         q = """
-        MATCH (p:Person {id: $id})
-        OPTIONAL MATCH (a:Alias)-[:REFERS_TO]->(p)
+        MATCH (p:E21_Person {id: $id})
+        OPTIONAL MATCH (a:Alias)-[:P67_refers_to]->(p)
         WITH p, collect(DISTINCT a.text) as aliases
-        OPTIONAL MATCH (p)-[:PARTICIPATED_IN]->(ev:Event)<-[:REFERS_TO]-(e:Entry)
-        OPTIONAL MATCH (ev)-[:ON_DAY]->(d:Day)
+        OPTIONAL MATCH (ev:E7_Activity)-[:P14_carried_out_by]->(p)
+        OPTIONAL MATCH (ev)<-[:P67_refers_to]-(e:E73_Information_Object {entry_kind: 'journal_entry'})
+        OPTIONAL MATCH (ev)-[:P4_has_time_span]->(d:E52_Time_Span)
         RETURN p.id as id,
                p.name as name,
                p.role as role,
@@ -152,15 +158,17 @@ class Neo4jRepo:
 
     def person_timeline(self, person_id: str, limit: int = 100) -> List[Dict[str, Any]]:
         """
-        Interaction timeline for a person: (Person)-[:PARTICIPATED_IN]->(Event)<-[:REFERS_TO]-(Entry)
+        Interaction timeline for a person: (Person)-[:P14_carried_out_by]->(E7_Activity)<-[:P67_refers_to]-(Entry)
         Enriched with Day, Place, and EventType when available.
         """
         q = """
-        MATCH (p:Person {id: $id})
-        MATCH (p)-[:PARTICIPATED_IN]->(ev:Event)<-[:REFERS_TO]-(e:Entry)
-        OPTIONAL MATCH (ev)-[:ON_DAY]->(d:Day)
-        OPTIONAL MATCH (ev)-[:OCCURRED_AT]->(pl:Place)
-        OPTIONAL MATCH (ev)-[:HAS_TYPE]->(t:EventType)
+        MATCH (p:E21_Person {id: $id})
+        MATCH (ev:E7_Activity)-[:P14_carried_out_by]->(p:E21_Person {id: $id})
+        MATCH (ev)<-[:P67_refers_to]-(e:E73_Information_Object)
+        WHERE coalesce(e.entry_kind,'') = 'journal_entry'
+        OPTIONAL MATCH (ev)-[:P4_has_time_span]->(d:E52_Time_Span)
+        OPTIONAL MATCH (ev)-[:P7_took_place_at]->(pl:E53_Place)
+        OPTIONAL MATCH (ev)-[:P2_has_type]->(t:E55_Type)
         WITH e, ev, d, collect(DISTINCT pl.name) as places, collect(DISTINCT t.name) as types
         RETURN e.id as entry_id,
                toString(e.input_time) as input_time,
@@ -184,32 +192,31 @@ class Neo4jRepo:
         """
         q = """
         MATCH (e)
-        WHERE e:Person OR e:Place OR e:Concept OR e:User OR e:Event OR e:Day OR e:EventType OR e:Emotion OR e:Context
+        WHERE e:E21_Person OR e:E53_Place OR e:E28_Conceptual_Object OR e:E7_Activity OR e:E52_Time_Span OR e:E55_Type OR e:E73_Information_Object OR e:E74_Group
         WITH e, labels(e)[0] as type
         WITH e, type,
           CASE
-            WHEN type = "Person" THEN e.name
-            WHEN type = "Place" THEN e.name
-            WHEN type = "Concept" THEN e.name
-            WHEN type = "User" THEN e.name
-            WHEN type = "Event" THEN coalesce(e.event_type, "event")
-            WHEN type = "Day" THEN toString(e.date)
-            WHEN type = "EventType" THEN e.name
-            WHEN type = "Emotion" THEN e.name
-            WHEN type = "Context" THEN coalesce(e.name, substring(coalesce(e.text, ''), 0, 60))
+            WHEN type = "E21_Person" THEN e.name
+            WHEN type = "E53_Place" THEN e.name
+            WHEN type = "E28_Conceptual_Object" THEN e.name
+            WHEN type = "E74_Group" THEN e.name
+            WHEN type = "E7_Activity" THEN coalesce(e.event_type, "event")
+            WHEN type = "E52_Time_Span" THEN toString(coalesce(e.date, e.key))
+            WHEN type = "E55_Type" THEN e.name
+            WHEN type = "E73_Information_Object" THEN coalesce(e.name, substring(coalesce(e.content, ''), 0, 60))
             ELSE coalesce(e.name, type)
           END as name,
           CASE
-            WHEN type = "Person" THEN "Person:" + e.id
-            WHEN type = "Event" THEN "Event:" + e.key
-            WHEN type = "Day" THEN "Day:" + toString(e.date)
-            WHEN type IN ["Place","Concept","User","EventType","Emotion"] THEN type + ":" + e.name
-            WHEN type = "Context" THEN "Context:" + e.key
+            WHEN type = "E21_Person" THEN "E21_Person:" + e.id
+            WHEN type = "E7_Activity" THEN "Event:" + e.key
+            WHEN type = "E52_Time_Span" THEN "E52_Time_Span:" + toString(coalesce(e.key, e.date))
+            WHEN type IN ["E53_Place","E28_Conceptual_Object","E74_Group","E55_Type"] THEN type + ":" + e.name
+            WHEN type = "E73_Information_Object" THEN "E73_Information_Object:" + e.key
             ELSE type + ":" + coalesce(e.name, toString(e.id))
           END as ref,
           coalesce(e.mention_count, 0) as mentions,
           CASE
-            WHEN type = "Day" THEN toString(e.date)
+            WHEN type = "E52_Time_Span" THEN toString(coalesce(e.date, e.key))
             ELSE toString(coalesce(e.last_seen, e.first_seen, e.created_at))
           END as last_seen
         WHERE $q = "" OR toLower(name) CONTAINS toLower($q)
@@ -232,13 +239,13 @@ class Neo4jRepo:
 
         label, key = self._parse_ref(ref)
 
-        if label == "Person":
+        if label == "E21_Person":
             # timeline enriched with Day/Place/EventType
             items = self.person_timeline(person_id=key, limit=limit)
             # also include display name for header
             with self._driver.session() as s:
                 row = s.run(
-                    "MATCH (p:Person {id: $id}) RETURN p.name as name, p.role as role, coalesce(p.mention_count,0) as mentions",
+                    "MATCH (p:E21_Person {id: $id}) RETURN p.name as name, p.role as role, coalesce(p.mention_count,0) as mentions",
                     id=key,
                 ).single()
                 name = row.get("name") if row else "Person"
@@ -248,17 +255,16 @@ class Neo4jRepo:
 
         if label == "Event":
             q_participants = """
-            MATCH (ev:Event {key: $key})
-            OPTIONAL MATCH (ev)-[:ON_DAY]->(d:Day)
-            OPTIONAL MATCH (ev)-[:OCCURRED_AT]->(pl:Place)
-            OPTIONAL MATCH (ev)-[:HAS_TYPE]->(t:EventType)
-            OPTIONAL MATCH (p:Person)-[:PARTICIPATED_IN]->(ev)
-            OPTIONAL MATCH (u:User)-[:PARTICIPATED_IN]->(ev)
+            MATCH (ev:E7_Activity {key: $key})
+            OPTIONAL MATCH (ev)-[:P4_has_time_span]->(d:E52_Time_Span)
+            OPTIONAL MATCH (ev)-[:P7_took_place_at]->(pl:E53_Place)
+            OPTIONAL MATCH (ev)-[:P2_has_type]->(t:E55_Type)
+            OPTIONAL MATCH (ev)-[:P14_carried_out_by]->(p:E21_Person)
             WITH toString(d.date) as day,
                  coalesce(t.name, ev.event_type, "") as event_type,
                  collect(DISTINCT pl.name) as places,
                  [x IN collect(DISTINCT {id: p.id, name: p.name, role: p.role, mentions: coalesce(p.mention_count,0)}) WHERE x.id IS NOT NULL] as persons,
-                 [y IN collect(DISTINCT {name: u.name}) WHERE y.name IS NOT NULL] as users
+                 [] as users
             RETURN day as day,
                    event_type as event_type,
                    places as places,
@@ -267,8 +273,9 @@ class Neo4jRepo:
             """
 
             q_entries = """
-            MATCH (ev:Event {key: $key})<-[:REFERS_TO]-(e:Entry)
-            OPTIONAL MATCH (ev)-[:ON_DAY]->(d:Day)
+            MATCH (ev:E7_Activity {key: $key})<-[:P67_refers_to]-(e:E73_Information_Object)
+            WHERE coalesce(e.entry_kind,'') = 'journal_entry'
+            OPTIONAL MATCH (ev)-[:P4_has_time_span]->(d:E52_Time_Span)
             RETURN e.id as entry_id,
                    toString(e.input_time) as input_time,
                    d.date as day,
@@ -294,28 +301,29 @@ class Neo4jRepo:
                 "entries": entries,
             }
 
-        if label == "Context":
+        if label == "E73_Information_Object":
             q_ctx = """
-            MATCH (ctx:Context {key: $key})
-            OPTIONAL MATCH (ev:Event)-[:HAS_CONTEXT]->(ctx)
-            OPTIONAL MATCH (ev)-[:ON_DAY]->(d:Day)
-            OPTIONAL MATCH (ev)-[:HAS_TYPE]->(t:EventType)
+            MATCH (ctx:E73_Information_Object {key: $key})
+            OPTIONAL MATCH (ctx)-[:P67_refers_to {ref_type: 'context_of'}]->(ev:E7_Activity)
+            OPTIONAL MATCH (ev)-[:P4_has_time_span]->(d:E52_Time_Span)
+            OPTIONAL MATCH (ev)-[:P2_has_type]->(t:E55_Type)
             WITH ctx,
                  coalesce(t.name, ev.event_type, '') as event_type,
                  d.date as day,
-                 substring(ctx.text, 0, 120) as context_preview
+                 substring(ctx.content, 0, 120) as context_preview
             RETURN event_type as event_type,
                    day as day,
                    ctx.name as name,
-                   ctx.text as text_preview_long,
+                   ctx.content as text_preview_long,
                    context_preview as context_preview,
                    ctx.key as ckey
             LIMIT 1
             """
 
             q_entries = """
-            MATCH (ctx:Context {key: $key})<-[:HAS_CONTEXT]-(ev:Event)<-[:REFERS_TO]-(e:Entry)
-            OPTIONAL MATCH (ev)-[:ON_DAY]->(d:Day)
+            MATCH (ctx:E73_Information_Object {key: $key})-[:P67_refers_to {ref_type: 'context_of'}]->(ev:E7_Activity)<-[:P67_refers_to]-(e:E73_Information_Object)
+            WHERE coalesce(e.entry_kind,'') = 'journal_entry'
+            OPTIONAL MATCH (ev)-[:P4_has_time_span]->(d:E52_Time_Span)
             RETURN e.id as entry_id,
                    toString(e.input_time) as input_time,
                    d.date as day,
@@ -325,13 +333,15 @@ class Neo4jRepo:
             """
 
             q_entities = """
-            MATCH (ctx:Context {key: $key})
-            OPTIONAL MATCH (ctx)-[:HAS_TOPIC]->(t)
-            OPTIONAL MATCH (ctx)-[:MENTIONS]->(m)
+            MATCH (ctx:E73_Information_Object {key: $key})
+            OPTIONAL MATCH (ctx)-[rt:P67_refers_to {ref_type: 'topic'}]->(t)
+            OPTIONAL MATCH (ctx)-[rc:P67_refers_to {ref_type: 'context'}]->(c)
+            OPTIONAL MATCH (ctx)-[rm:P67_refers_to {ref_type: 'mention'}]->(m)
             WITH ctx,
                  collect(DISTINCT {type: labels(t)[0], name: t.name}) as topics,
+                 collect(DISTINCT {type: labels(c)[0], name: c.name}) as concepts,
                  collect(DISTINCT {type: labels(m)[0], name: m.name}) as mentions
-            RETURN topics, mentions
+            RETURN topics, concepts, mentions
             """
 
             with self._driver.session() as s:
@@ -340,26 +350,28 @@ class Neo4jRepo:
                 entries = [dict(r) for r in s.run(q_entries, key=key, limit=int(limit))]
                 ctx_row = dict(row) if row else {}
                 topics = (ents or {}).get("topics") or [] if ents else []
+                concepts = (ents or {}).get("concepts") or [] if ents else []
                 mentions = (ents or {}).get("mentions") or [] if ents else []
 
             return {
-                "kind": "Context",
+                "kind": "E73_Information_Object",
                 "ref": ref,
                 "name": ctx_row.get("name") or "Context",
                 "event_type": ctx_row.get("event_type") or "",
                 "day": ctx_row.get("day") or "",
                 "text": ctx_row.get("text_preview_long") or ctx_row.get("context_preview") or "",
                 "topics": topics,
+                "concepts": concepts,
                 "mentions": mentions,
                 "entries": entries,
             }
 
-        if label == "Concept":
-            # Concept occurrences: (Concept)<-[:HAS_TOPIC]-(Event)<-[:REFERS_TO]-(Entry)
+        if label == "E28_Conceptual_Object":
+            # Concept occurrences through CIDOC reference links.
             q_participants = """
-            MATCH (c:Concept {name: $name})<-[:HAS_TOPIC]-(ev:Event)
-            OPTIONAL MATCH (p:Person)-[:PARTICIPATED_IN]->(ev)
-            OPTIONAL MATCH (u:User)-[:PARTICIPATED_IN]->(ev)
+            MATCH (c:E28_Conceptual_Object {name: $name})<-[:P67_refers_to]-(ev:E7_Activity)
+            OPTIONAL MATCH (ev)-[:P14_carried_out_by]->(p:E21_Person)
+            OPTIONAL MATCH (ev)-[:P14_carried_out_by]->(u:E21_Person)
             RETURN coalesce(
                      [x IN collect(DISTINCT {id: p.id, name: p.name, role: p.role, mentions: coalesce(p.mention_count,0)}) WHERE x.id IS NOT NULL],
                      []
@@ -367,11 +379,12 @@ class Neo4jRepo:
                    coalesce([y IN collect(DISTINCT {name: u.name}) WHERE y.name IS NOT NULL], []) as users
             """
             q_entries = """
-            MATCH (c:Concept {name: $name})<-[:HAS_TOPIC]-(ev:Event)
-            MATCH (ev)<-[:REFERS_TO]-(e:Entry)
-            OPTIONAL MATCH (ev)-[:ON_DAY]->(d:Day)
-            OPTIONAL MATCH (ev)-[:OCCURRED_AT]->(pl:Place)
-            OPTIONAL MATCH (ev)-[:HAS_TYPE]->(t:EventType)
+            MATCH (c:E28_Conceptual_Object {name: $name})<-[:P67_refers_to]-(ev:E7_Activity)
+            MATCH (ev)<-[:P67_refers_to]-(e:E73_Information_Object)
+            WHERE coalesce(e.entry_kind,'') = 'journal_entry'
+            OPTIONAL MATCH (ev)-[:P4_has_time_span]->(d:E52_Time_Span)
+            OPTIONAL MATCH (ev)-[:P7_took_place_at]->(pl:E53_Place)
+            OPTIONAL MATCH (ev)-[:P2_has_type]->(t:E55_Type)
             WITH e,
                  collect(DISTINCT d.date) as days,
                  collect(DISTINCT coalesce(t.name, ev.event_type, '')) as event_types,
@@ -403,13 +416,13 @@ class Neo4jRepo:
                 "entries": entries,
             }
 
-        if label == "Day":
+        if label == "E52_Time_Span":
             # Day overview: show entries whose event occurred on this day,
             # plus all participants connected to those events.
             q_participants = """
-            MATCH (d:Day {date: $name})<-[:ON_DAY]-(ev:Event)
-            OPTIONAL MATCH (p:Person)-[:PARTICIPATED_IN]->(ev)
-            OPTIONAL MATCH (u:User)-[:PARTICIPATED_IN]->(ev)
+            MATCH (d:E52_Time_Span {key: $name})<-[:P4_has_time_span]-(ev:E7_Activity)
+            OPTIONAL MATCH (ev)-[:P14_carried_out_by]->(p:E21_Person)
+            OPTIONAL MATCH (ev)-[:P14_carried_out_by]->(u:E21_Person)
             RETURN coalesce(
                      [x IN collect(DISTINCT {id: p.id, name: p.name, role: p.role, mentions: coalesce(p.mention_count,0)}) WHERE x.id IS NOT NULL],
                      []
@@ -421,10 +434,11 @@ class Neo4jRepo:
             """
 
             q_entries = """
-            MATCH (d:Day {date: $name})<-[:ON_DAY]-(ev:Event)<-[:REFERS_TO]-(e:Entry)
-            OPTIONAL MATCH (ev)-[:ON_DAY]->(d:Day)
-            OPTIONAL MATCH (ev)-[:OCCURRED_AT]->(pl:Place)
-            OPTIONAL MATCH (ev)-[:HAS_TYPE]->(t:EventType)
+            MATCH (d:E52_Time_Span {key: $name})<-[:P4_has_time_span]-(ev:E7_Activity)<-[:P67_refers_to]-(e:E73_Information_Object)
+            WHERE coalesce(e.entry_kind,'') = 'journal_entry'
+            OPTIONAL MATCH (ev)-[:P4_has_time_span]->(d:E52_Time_Span)
+            OPTIONAL MATCH (ev)-[:P7_took_place_at]->(pl:E53_Place)
+            OPTIONAL MATCH (ev)-[:P2_has_type]->(t:E55_Type)
             WITH e,
                  collect(DISTINCT d.date) as days,
                  collect(DISTINCT coalesce(t.name, ev.event_type, '')) as event_types,
@@ -455,13 +469,14 @@ class Neo4jRepo:
                 "entries": entries,
             }
 
-        if label == "Place":
+        if label == "E53_Place":
             # Treat "place occurrences" as an Event-like overview so the UI can reuse
             # the same rendering (participants + entries list).
             q_entries = """
-            MATCH (pl:Place {name: $name})<-[:OCCURRED_AT]-(ev:Event)<-[:REFERS_TO]-(e:Entry)
-            OPTIONAL MATCH (ev)-[:ON_DAY]->(d:Day)
-            OPTIONAL MATCH (ev)-[:HAS_TYPE]->(t:EventType)
+            MATCH (pl:E53_Place {name: $name})<-[:P7_took_place_at]-(ev:E7_Activity)<-[:P67_refers_to]-(e:E73_Information_Object)
+            WHERE coalesce(e.entry_kind,'') = 'journal_entry'
+            OPTIONAL MATCH (ev)-[:P4_has_time_span]->(d:E52_Time_Span)
+            OPTIONAL MATCH (ev)-[:P2_has_type]->(t:E55_Type)
             WITH e,
                  collect(DISTINCT d.date) as days,
                  collect(DISTINCT coalesce(t.name, ev.event_type, '')) as event_types
@@ -474,9 +489,9 @@ class Neo4jRepo:
             LIMIT $limit
             """
             q_participants = """
-            MATCH (pl:Place {name: $name})<-[:OCCURRED_AT]-(ev:Event)
-            OPTIONAL MATCH (p:Person)-[:PARTICIPATED_IN]->(ev)
-            OPTIONAL MATCH (u:User)-[:PARTICIPATED_IN]->(ev)
+            MATCH (pl:E53_Place {name: $name})<-[:P7_took_place_at]-(ev:E7_Activity)
+            OPTIONAL MATCH (ev)-[:P14_carried_out_by]->(p:E21_Person)
+            OPTIONAL MATCH (ev)-[:P14_carried_out_by]->(u:E21_Person)
             RETURN coalesce([x IN collect(DISTINCT {id: p.id, name: p.name, role: p.role, mentions: coalesce(p.mention_count,0)}) WHERE x.id IS NOT NULL], []) as persons,
                    coalesce([y IN collect(DISTINCT {name: u.name}) WHERE y.name IS NOT NULL], []) as users
             """
@@ -505,18 +520,19 @@ class Neo4jRepo:
                 ],
             }
 
-        if label == "EventType":
+        if label == "E55_Type":
             q_entries = """
-            MATCH (ev:Event)-[:HAS_TYPE]->(t:EventType {name: $name})
-            MATCH (ev)<-[:REFERS_TO]-(e:Entry)
-            OPTIONAL MATCH (ev)-[:ON_DAY]->(d:Day)
+            MATCH (ev:E7_Activity)-[:P2_has_type]->(t:E55_Type {name: $name})
+            MATCH (ev)<-[:P67_refers_to]-(e:E73_Information_Object)
+            WHERE coalesce(e.entry_kind,'') = 'journal_entry'
+            OPTIONAL MATCH (ev)-[:P4_has_time_span]->(d:E52_Time_Span)
             WITH e, collect(DISTINCT ev) as evs, collect(DISTINCT d.date) as days, collect(DISTINCT t.name) as tnames
             ORDER BY e.input_time DESC
             LIMIT $limit
             CALL {
               WITH evs
               UNWIND evs as ev
-              OPTIONAL MATCH (ev)-[:OCCURRED_AT]->(pl:Place)
+              OPTIONAL MATCH (ev)-[:P7_took_place_at]->(pl:E53_Place)
               RETURN collect(DISTINCT pl.name)[0..3] as places
             }
             RETURN e.id as entry_id,
@@ -527,9 +543,9 @@ class Neo4jRepo:
                    substring(e.text, 0, 260) as text_preview
             """
             q_participants = """
-            MATCH (ev:Event)-[:HAS_TYPE]->(t:EventType {name: $name})
-            OPTIONAL MATCH (p:Person)-[:PARTICIPATED_IN]->(ev)
-            OPTIONAL MATCH (u:User)-[:PARTICIPATED_IN]->(ev)
+            MATCH (ev:E7_Activity)-[:P2_has_type]->(t:E55_Type {name: $name})
+            OPTIONAL MATCH (ev)-[:P14_carried_out_by]->(p:E21_Person)
+            OPTIONAL MATCH (ev)-[:P14_carried_out_by]->(u:E21_Person)
             RETURN coalesce([x IN collect(DISTINCT {id: p.id, name: p.name, role: p.role, mentions: coalesce(p.mention_count,0)}) WHERE x.id IS NOT NULL], []) as persons,
                    coalesce([y IN collect(DISTINCT {name: u.name}) WHERE y.name IS NOT NULL], []) as users
             """
@@ -574,8 +590,9 @@ class Neo4jRepo:
         depth = max(1, min(int(depth), 2))
         limit = max(10, min(int(limit), 1000))
 
+        match_label = "E7_Activity" if label == "Event" else label
         q = f"""
-        MATCH (n:{label} {{{prop}: $key}})
+        MATCH (n:{match_label} {{{prop}: $key}})
         MATCH (n)-[r*1..{depth}]-(m)
         WITH collect(DISTINCT n) + collect(DISTINCT m) as ns, r
         UNWIND ns as node
@@ -619,8 +636,8 @@ class Neo4jRepo:
         q = """
         MATCH (t:DisambiguationTask)
         WHERE t.status = $status
-        OPTIONAL MATCH (t)-[:CANDIDATE]->(c:Person)
-        OPTIONAL MATCH (t)-[:PROPOSED]->(p:Person)
+        OPTIONAL MATCH (t)-[:CANDIDATE]->(c:E21_Person)
+        OPTIONAL MATCH (t)-[:PROPOSED]->(p:E21_Person)
         RETURN t.id as id,
                t.type as type,
                t.mention as mention,
@@ -653,8 +670,8 @@ class Neo4jRepo:
 
         q_get = """
         MATCH (t:DisambiguationTask {id: $id})
-        OPTIONAL MATCH (t)-[:CANDIDATE]->(c:Person)
-        OPTIONAL MATCH (t)-[:PROPOSED]->(p:Person)
+        OPTIONAL MATCH (t)-[:CANDIDATE]->(c:E21_Person)
+        OPTIONAL MATCH (t)-[:PROPOSED]->(p:E21_Person)
         RETURN t as t, c.id as candidate_id, p.id as proposed_id
         """
         with self._driver.session() as s:
@@ -699,26 +716,27 @@ class Neo4jRepo:
         if not src_person_id or not dst_person_id or src_person_id == dst_person_id:
             return
         q = """
-        MATCH (src:Person {id: $src}), (dst:Person {id: $dst})
+        MATCH (src:E21_Person {id: $src}), (dst:E21_Person {id: $dst})
         // Move aliases (subquery avoids FOREACH/WITH pitfalls)
         CALL {
           WITH src, dst
-          OPTIONAL MATCH (a:Alias)-[:REFERS_TO]->(src)
+          OPTIONAL MATCH (a:Alias)-[:P67_refers_to]->(src)
           WITH dst, collect(DISTINCT a) AS aliases
           UNWIND aliases AS a
           WITH dst, a
           WHERE a IS NOT NULL
-          MERGE (a)-[:REFERS_TO]->(dst)
+          MERGE (a)-[:P67_refers_to {ref_type: 'alias_of'}]->(dst)
         }
         // Move participation edges
         CALL {
           WITH src, dst
-          OPTIONAL MATCH (src)-[:PARTICIPATED_IN]->(ev:Event)
+          OPTIONAL MATCH (ev:E7_Activity)-[:P14_carried_out_by]->(src)
           WITH dst, collect(DISTINCT ev) AS events
           UNWIND events AS ev
           WITH dst, ev
           WHERE ev IS NOT NULL
-          MERGE (dst)-[:PARTICIPATED_IN]->(ev)
+          MERGE (ev)-[:P14_carried_out_by]->(dst)
+          MERGE (dst)-[:P14i_performed]->(ev)
         }
         // Best-effort mention_count + last_seen
         SET dst.mention_count = coalesce(dst.mention_count, 0) + coalesce(src.mention_count, 0),
@@ -747,15 +765,13 @@ class Neo4jRepo:
     @staticmethod
     def _label_key_prop(label: str) -> str:
         mapping = {
-            "Person": "id",
-            "Entry": "id",
+            "E21_Person": "id",
+            "E73_Information_Object": "id",
             "Event": "key",
-            "User": "name",
-            "Place": "name",
-            "Concept": "name",
-            "Day": "date",
-            "Context": "key",
-            "EventType": "name",
+            "E53_Place": "name",
+            "E28_Conceptual_Object": "name",
+            "E52_Time_Span": "key",
+            "E55_Type": "name",
         }
         if label not in mapping:
             raise ValueError("unsupported label for neighborhood")

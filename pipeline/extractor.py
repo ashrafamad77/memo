@@ -20,7 +20,7 @@ class ExtractedEntity:
 class ExtractedRelation:
     """Triplet sujet-prédicat-objet pour le graphe event-centric."""
     subject: str
-    predicate: str  # PARTICIPATED_IN, OCCURRED_AT, HAS_TOPIC, DISCUSSED, etc.
+    predicate: str  # PARTICIPATED_IN, OCCURRED_AT, P67_refers_to, DISCUSSED, etc.
     obj: str
     sentiment: float = 0.5  # 0..1, défaut neutre
 

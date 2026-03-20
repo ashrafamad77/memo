@@ -67,6 +67,32 @@ Retourne un JSON valide avec cette structure exacte :
         "evidence": "fragment bref du texte"
       }
     ],
+    "causal_factors": [
+      {
+        "target_idx": 1,
+        "factor_kind": "habit",
+        "text": "je me leve plus tot d'habitude",
+        "relation": "INFLUENCES",
+        "confidence": 0.7,
+        "evidence": "d'habitude"
+      },
+      {
+        "target_idx": 1,
+        "factor_kind": "today_specific",
+        "text": "pas de cours aujourd'hui",
+        "relation": "INFLUENCES",
+        "confidence": 0.7,
+        "evidence": "je n'avais pas de cours aujourd'hui"
+      },
+      {
+        "target_idx": 1,
+        "factor_kind": "propositional",
+        "text": "decalage horaire France-Palestine",
+        "relation": "INFLUENCES",
+        "confidence": 0.6,
+        "evidence": "decalage horaire"
+      }
+    ],
     "person_roles": [
       {"name": "Marie", "role": "colleague"},
       {"name": "Jean", "role": "friend"}
@@ -99,13 +125,20 @@ Règles liens entre micro-événements (event_relations) :
 - Utilise ENABLES quand un événement précédent rend possible un événement suivant (ex: "grâce à", "permettant", "pour pouvoir").
 - Si ce n'est pas clair, event_relations peut être [].
 
+Règles facteurs causaux (causal_factors) :
+- Quand le texte exprime un facteur de fond (habitude), une condition du jour ("pas de cours aujourd'hui"), ou une proposition explicative ("decalage horaire"), ajoute un objet dans metadata.causal_factors.
+- factor_kind ∈ {"habit", "today_specific", "propositional"}.
+- target_idx doit pointer vers l'idx du micro-événement impacté (souvent l'événement principal comme "wake up").
+- relation ∈ {"INFLUENCES", "MOTIVATES"} ; si incertain, utiliser INFLUENCES.
+- Ne pas inventer: si le texte ne porte pas de facteur causal clair, causal_factors = [].
+
 Contraintes ontologiques (important) :
 - Ne mets jamais Nablus/Palestine comme physical_place si le narrateur est physiquement en France : mets-les dans context_places.
 - Ne transforme pas une EXPLICATION en event core : si une partie du texte ne donne pas temps+lieu, elle appartient au contexte (context_places / context_concepts / topics), pas au micro-événement.
 
 Règles relations (triplets) :
 - subject et object doivent être des entités ou le nom de l'auteur.
-- predicate : LUNCHED_WITH, MET_AT, DISCUSSED, WORKED_ON, OCCURRED_AT, HAS_TOPIC, etc.
+- predicate : LUNCHED_WITH, MET_AT, DISCUSSED, WORKED_ON, OCCURRED_AT, P67_refers_to, etc.
 - sentiment : 0 (négatif) à 1 (positif), 0.5 = neutre.
 - Extrais 2 à 6 relations. Quand le texte dit "je", "j'ai", "nous" (auteur inclus), le SUJET doit être l'auteur.
 
@@ -165,7 +198,7 @@ class LLMExtractor:
                 raise ImportError("Installez openai: pip install openai") from e
         return self._client
 
-    def extract(self, text: str) -> ExtractionResult:
+    def extract(self, text: str, prep_context: Optional[Dict[str, Any]] = None) -> ExtractionResult:
         """Extract entities from journal text using LLM."""
         if not text or not text.strip():
             return ExtractionResult(entities=[], raw_text=text)
@@ -177,7 +210,13 @@ class LLMExtractor:
         else:
             user_context = "Tu ne connais pas le nom de l'auteur ; extrais les relations à partir des entités mentionnées."
         prompt = EXTRACTION_PROMPT.replace("{user_context}", user_context)
-        full_prompt = prompt + "\n\nTexte :\n" + text.strip()
+        prep_block = ""
+        if isinstance(prep_context, dict):
+            try:
+                prep_block = "\n\nContexte de preparation (Prep Agent v1):\n" + json.dumps(prep_context, ensure_ascii=False)
+            except Exception:
+                prep_block = ""
+        full_prompt = prompt + prep_block + "\n\nTexte :\n" + text.strip()
 
         # Let errors surface instead of silently returning no entities
         response = client.chat.completions.create(

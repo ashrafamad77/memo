@@ -22,6 +22,8 @@ class GraphStore:
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
         with self.driver.session() as session:
             session.execute_write(self._init_schema)
+            # Automatic one-way cleanup: legacy app labels/relations -> CIDOC equivalents.
+            session.execute_write(self._purge_legacy_labels_and_relations)
 
     def close(self):
         self.driver.close()
@@ -58,11 +60,11 @@ class GraphStore:
         # People: use stable IDs (names are NOT unique)
         tx.run("""
             CREATE CONSTRAINT person_id IF NOT EXISTS
-            FOR (p:Person) REQUIRE p.id IS UNIQUE
+            FOR (p:E21_Person) REQUIRE p.id IS UNIQUE
         """)
         tx.run("""
             CREATE INDEX person_name IF NOT EXISTS
-            FOR (p:Person) ON (p.name)
+            FOR (p:E21_Person) ON (p.name)
         """)
         tx.run("""
             CREATE CONSTRAINT alias_id IF NOT EXISTS
@@ -70,39 +72,39 @@ class GraphStore:
         """)
         tx.run("""
             CREATE CONSTRAINT place_name IF NOT EXISTS
-            FOR (p:Place) REQUIRE p.name IS UNIQUE
+            FOR (p:E53_Place) REQUIRE p.name IS UNIQUE
         """)
         tx.run("""
             CREATE CONSTRAINT org_name IF NOT EXISTS
-            FOR (o:Organization) REQUIRE o.name IS UNIQUE
+            FOR (o:E74_Group) REQUIRE o.name IS UNIQUE
         """)
         tx.run("""
             CREATE CONSTRAINT concept_name IF NOT EXISTS
-            FOR (c:Concept) REQUIRE c.name IS UNIQUE
+            FOR (c:E28_Conceptual_Object) REQUIRE c.name IS UNIQUE
         """)
         tx.run("""
             CREATE CONSTRAINT date_name IF NOT EXISTS
-            FOR (d:Date) REQUIRE d.name IS UNIQUE
+            FOR (d:E52_Time_Span) REQUIRE d.key IS UNIQUE
         """)
         tx.run("""
             CREATE CONSTRAINT emotion_name IF NOT EXISTS
-            FOR (e:Emotion) REQUIRE e.name IS UNIQUE
+            FOR (e:E55_Type) REQUIRE e.name IS UNIQUE
         """)
         tx.run("""
             CREATE CONSTRAINT event_type_name IF NOT EXISTS
-            FOR (t:EventType) REQUIRE t.name IS UNIQUE
+            FOR (t:E55_Type) REQUIRE t.name IS UNIQUE
         """)
         tx.run("""
             CREATE CONSTRAINT user_name IF NOT EXISTS
-            FOR (u:User) REQUIRE u.name IS UNIQUE
+            FOR (u:E21_Person) REQUIRE u.name IS UNIQUE
         """)
         tx.run("""
             CREATE CONSTRAINT event_key IF NOT EXISTS
-            FOR (e:Event) REQUIRE e.key IS UNIQUE
+            FOR (e:E7_Activity) REQUIRE e.key IS UNIQUE
         """)
         tx.run("""
             CREATE CONSTRAINT day_date IF NOT EXISTS
-            FOR (d:Day) REQUIRE d.date IS UNIQUE
+            FOR (d:E52_Time_Span) REQUIRE d.key IS UNIQUE
         """)
         tx.run("""
             CREATE CONSTRAINT disambiguation_task_id IF NOT EXISTS
@@ -114,7 +116,7 @@ class GraphStore:
             dim = embedding_dim()
             tx.run(f"""
                 CREATE VECTOR INDEX person_index IF NOT EXISTS
-                FOR (p:Person) ON (p.embedding)
+                FOR (p:E21_Person) ON (p.embedding)
                 OPTIONS {{
                   indexConfig: {{
                     `vector.dimensions`: {dim},
@@ -125,6 +127,184 @@ class GraphStore:
         except Exception:
             # If vector indexes unsupported on this Neo4j build, skip.
             pass
+
+    def _purge_legacy_labels_and_relations(self, tx):
+        """
+        Idempotent migration pass that upgrades legacy app labels/relations to CIDOC.
+        Safe to run on every startup.
+        """
+        # --- Label migrations ---
+        tx.run("""
+            MATCH (n:User)
+            REMOVE n:User
+            SET n:E21_Person:E39_Actor
+        """)
+        tx.run("""
+            MATCH (n:Entry)
+            REMOVE n:Entry
+            SET n:E73_Information_Object,
+                n.entry_kind = coalesce(n.entry_kind, 'journal_entry')
+        """)
+        tx.run("""
+            MATCH (n:Place)
+            REMOVE n:Place
+            SET n:E53_Place
+        """)
+        tx.run("""
+            MATCH (n:Concept)
+            REMOVE n:Concept
+            SET n:E28_Conceptual_Object
+        """)
+        tx.run("""
+            MATCH (n:Organization)
+            REMOVE n:Organization
+            SET n:E74_Group
+        """)
+        tx.run("""
+            MATCH (n:Day)
+            REMOVE n:Day
+            SET n:E52_Time_Span,
+                n.key = coalesce(n.key, n.date),
+                n.date = coalesce(n.date, n.key),
+                n.name = coalesce(n.name, n.date, n.key)
+        """)
+        tx.run("""
+            MATCH (n:Date)
+            REMOVE n:Date
+            SET n:E52_Time_Span,
+                n.key = coalesce(n.key, n.name, n.date),
+                n.date = coalesce(n.date, n.name),
+                n.name = coalesce(n.name, n.date, n.key)
+        """)
+        tx.run("""
+            MATCH (n:E52_Time_Span)
+            WHERE n.date IS NOT NULL
+            SET n.name = coalesce(n.name, n.date)
+        """)
+        tx.run("""
+            MATCH (n:EventType)
+            REMOVE n:EventType
+            SET n:E55_Type
+        """)
+        tx.run("""
+            MATCH (n:Emotion)
+            REMOVE n:Emotion
+            SET n:E55_Type
+        """)
+        tx.run("""
+            MATCH (n:Person)
+            REMOVE n:Person
+            SET n:E21_Person
+        """)
+
+        # Ensure user typing exists when profile fields are present.
+        tx.run("""
+            MATCH (u:E21_Person)
+            WHERE u.profile_current_city IS NOT NULL
+               OR u.profile_home_country IS NOT NULL
+               OR u.profile_nationality IS NOT NULL
+               OR u.profile_timezone IS NOT NULL
+               OR u.profile_work_context IS NOT NULL
+            MERGE (ut:E55_Type {name:'User'})
+            MERGE (u)-[:P2_has_type]->(ut)
+        """)
+
+        # --- Relationship migrations ---
+        tx.run("""
+            MATCH (a)-[r:REFERS_TO]->(b:E7_Activity)
+            MERGE (a)-[:P67_refers_to {ref_type:'about_activity'}]->(b)
+            DELETE r
+        """)
+        tx.run("""
+            MATCH (a)-[r:REFERS_TO]->(b:E21_Person)
+            MERGE (a)-[:P67_refers_to {ref_type:'alias_of'}]->(b)
+            DELETE r
+        """)
+        tx.run("""
+            MATCH (a)-[r:PARTICIPATED_IN]->(b:E7_Activity)
+            MERGE (b)-[:P14_carried_out_by]->(a)
+            MERGE (a)-[:P14i_performed]->(b)
+            DELETE r
+        """)
+        tx.run("""
+            MATCH (a:E21_Person)-[r:P14_carried_out_by]->(b:E7_Activity)
+            MERGE (b)-[:P14_carried_out_by]->(a)
+            MERGE (a)-[:P14i_performed]->(b)
+            DELETE r
+        """)
+        tx.run("""
+            MATCH (ev:E7_Activity)-[:P14_carried_out_by]->(ac:E39_Actor)
+            MERGE (ac)-[:P14i_performed]->(ev)
+        """)
+        tx.run("""
+            MATCH (ac:E39_Actor)-[:P14i_performed]->(ev:E7_Activity)
+            MERGE (ev)-[:P14_carried_out_by]->(ac)
+        """)
+        tx.run("""
+            MATCH (a:E7_Activity)-[r:OCCURRED_AT]->(b:E53_Place)
+            MERGE (a)-[:P7_took_place_at]->(b)
+            DELETE r
+        """)
+        tx.run("""
+            MATCH (a:E7_Activity)-[r:HAS_TYPE]->(b:E55_Type)
+            MERGE (a)-[:P2_has_type]->(b)
+            DELETE r
+        """)
+        tx.run("""
+            MATCH (a:E7_Activity)-[r:ON_DAY]->(b:E52_Time_Span)
+            MERGE (a)-[:P4_has_time_span]->(b)
+            DELETE r
+        """)
+        tx.run("""
+            MATCH (a:E7_Activity)-[r:OCCURRED_ON]->(b:E52_Time_Span)
+            MERGE (a)-[:P4_has_time_span]->(b)
+            DELETE r
+        """)
+        tx.run("""
+            MATCH (a:E7_Activity)-[r:HAS_EMOTION]->(b:E55_Type)
+            MERGE (a)-[:P67_refers_to {ref_type:'emotion'}]->(b)
+            DELETE r
+        """)
+        tx.run("""
+            MATCH (a)-[r:HAS_TOPIC]->(b)
+            MERGE (a)-[:P67_refers_to {ref_type:'topic'}]->(b)
+            DELETE r
+        """)
+        tx.run("""
+            MATCH (a)-[r:HAS_CONTEXT]->(b)
+            MERGE (a)-[:P67_refers_to {ref_type:'context'}]->(b)
+            DELETE r
+        """)
+        tx.run("""
+            MATCH (a)-[r:MENTIONS]->(b)
+            MERGE (a)-[:P67_refers_to {ref_type:'mention'}]->(b)
+            DELETE r
+        """)
+        tx.run("""
+            MATCH (a:E7_Activity)-[r:WAS_MOTIVATED_BY]->(b:E28_Conceptual_Object)
+            MERGE (a)-[:P17_was_motivated_by]->(b)
+            DELETE r
+        """)
+        tx.run("""
+            MATCH (a:E7_Activity)-[r:PRECEDES]->(b:E7_Activity)
+            MERGE (a)-[n:P120_occurs_before]->(b)
+            SET n.confidence = coalesce(r.confidence, n.confidence),
+                n.evidence = coalesce(r.evidence, n.evidence),
+                n.inference_type = 'PRECEDES'
+            DELETE r
+        """)
+        tx.run("""
+            MATCH (a:E7_Activity)-[r:CAUSES|ENABLES|IMPACTS|INFLUENCES]->(b:E7_Activity)
+            MERGE (a)-[n:P15_was_influenced_by]->(b)
+            SET n.confidence = coalesce(r.confidence, n.confidence),
+                n.evidence = coalesce(r.evidence, n.evidence),
+                n.inference_type = type(r)
+            DELETE r
+        """)
+        tx.run("""
+            MATCH ()-[r:CIDOC_EQUIVALENT]->()
+            DELETE r
+        """)
 
     def _person_profile_from_entry(self, mention: str, entry_text: str, places: List[str], topics: List[str]) -> str:
         # Short but rich profile for embedding
@@ -196,7 +376,7 @@ class GraphStore:
                 pid = str(uuid.uuid4())
                 tx.run(
                     """
-                    CREATE (p:Person {id: $id, name: $name, created_at: datetime(), first_seen: datetime(), last_seen: datetime(), mention_count: 0, embedding: $vec, role: $role})
+                    CREATE (p:E21_Person:E39_Actor {id: $id, name: $name, created_at: datetime(), first_seen: datetime(), last_seen: datetime(), mention_count: 0, embedding: $vec, role: $role})
                     """,
                     id=pid,
                     name=mention,
@@ -207,9 +387,9 @@ class GraphStore:
                     aid = str(uuid.uuid4())
                     tx.run(
                         """
-                        MATCH (p:Person {id: $pid})
+                        MATCH (p:E21_Person {id: $pid})
                         CREATE (a:Alias {id: $aid, text: $text, created_at: datetime()})
-                        MERGE (a)-[:REFERS_TO]->(p)
+                        MERGE (a)-[:P67_refers_to {ref_type: 'alias_of'}]->(p)
                         """,
                         pid=pid,
                         aid=aid,
@@ -239,8 +419,8 @@ class GraphStore:
                       entry_id: $entry_id
                     })
                     WITH t
-                    MATCH (c:Person {id: $cid})
-                    MATCH (p:Person {id: $pid})
+                    MATCH (c:E21_Person {id: $cid})
+                    MATCH (p:E21_Person {id: $pid})
                     MERGE (t)-[:CANDIDATE]->(c)
                     MERGE (t)-[:PROPOSED]->(p)
                     """,
@@ -269,7 +449,7 @@ class GraphStore:
                 if not same_name:
                     chk = tx.run(
                         """
-                        MATCH (p:Person {id: $pid})<-[:REFERS_TO]-(a:Alias)
+                        MATCH (p:E21_Person {id: $pid})<-[:P67_refers_to]-(a:Alias)
                         WHERE toLower(a.text) = toLower($text)
                         RETURN count(a) > 0 as ok
                         """,
@@ -309,9 +489,9 @@ class GraphStore:
                             aid = str(uuid.uuid4())
                             tx.run(
                                 """
-                                MATCH (p:Person {id: $pid})
+                                MATCH (p:E21_Person {id: $pid})
                                 CREATE (a:Alias {id: $aid, text: $text, created_at: datetime()})
-                                MERGE (a)-[:REFERS_TO]->(p)
+                                MERGE (a)-[:P67_refers_to {ref_type: 'alias_of'}]->(p)
                                 """,
                                 pid=best["id"],
                                 aid=aid,
@@ -320,7 +500,7 @@ class GraphStore:
                         # Update role if previously empty and we just inferred one
                         if new_role and not existing_role:
                             tx.run(
-                                "MATCH (p:Person {id: $id}) SET p.role = $role",
+                                "MATCH (p:E21_Person {id: $id}) SET p.role = $role",
                                 id=best["id"],
                                 role=new_role,
                             )
@@ -329,7 +509,7 @@ class GraphStore:
 
             # 2) Fallback: exact name match (if exists) to seed vector index
             res = tx.run(
-                "MATCH (p:Person) WHERE toLower(p.name)=toLower($name) RETURN p.id as id, p.name as name, p.role as role LIMIT 1",
+                "MATCH (p:E21_Person) WHERE toLower(p.name)=toLower($name) RETURN p.id as id, p.name as name, p.role as role LIMIT 1",
                 name=mention,
             ).single()
             if res and res.get("id"):
@@ -355,7 +535,7 @@ class GraphStore:
                 # Update embedding with EMA
                 tx.run(
                     """
-                    MATCH (p:Person {id: $id})
+                    MATCH (p:E21_Person {id: $id})
                     SET p.embedding = CASE
                       WHEN p.embedding IS NULL THEN $vec
                       ELSE [i IN range(0, size($vec)-1) | (p.embedding[i] * 0.7) + ($vec[i] * 0.3)]
@@ -369,9 +549,9 @@ class GraphStore:
                     aid = str(uuid.uuid4())
                     tx.run(
                         """
-                        MATCH (p:Person {id: $pid})
+                        MATCH (p:E21_Person {id: $pid})
                         CREATE (a:Alias {id: $aid, text: $text, created_at: datetime()})
-                        MERGE (a)-[:REFERS_TO]->(p)
+                        MERGE (a)-[:P67_refers_to {ref_type: 'alias_of'}]->(p)
                         """,
                         pid=pid,
                         aid=aid,
@@ -400,19 +580,50 @@ class GraphStore:
         ts = timestamp or datetime.now()
         input_ts_str = ts.isoformat()
         user_name = (user_name or "").strip()
+        def _is_placeholder_value(v: str) -> bool:
+            x = (v or "").strip().lower()
+            return x in {
+                "", "none", "null", "n/a", "na", "unknown", "unk",
+                "other", "autre", "event", "activity", "hi", "hello", "bonjour", "salut"
+            }
+
+        def _clean_event_type(v: str) -> str:
+            x = (v or "").strip()
+            if _is_placeholder_value(x):
+                return "activity"
+            return "".join(w.capitalize() for w in x.split())
 
         entities = extraction.entities
         relations = extraction.relations
         meta = extraction.metadata or {}
         events_meta = meta.get("events")
         event_relations_meta = meta.get("event_relations")
+        causal_factors_meta = meta.get("causal_factors")
+        prep_v1 = meta.get("prep_v1") if isinstance(meta.get("prep_v1"), dict) else {}
         # v2 ontology: when LLM provides `metadata.events`, we store micro-event occurrences
         # even if there's only 1 (still needed to separate physical_place vs context_places).
         has_multi_events = isinstance(events_meta, list) and len(events_meta) >= 1
         event_time_iso = meta.get("event_time_iso")
         event_time_conf = meta.get("event_time_confidence")
-        event_type = meta.get("event_type")
+        event_type = _clean_event_type(str(meta.get("event_type") or "activity"))
         person_roles_map = meta.get("person_roles_map") or {}
+        # Heuristic: when extractor gives generic type but text/prep clearly describes waking up,
+        # prefer a specific activity label.
+        try:
+            generic_types = {"activity", "reflection", "academic", "event"}
+            prep_blob = " ".join(
+                [
+                    " ".join(prep_v1.get("facts_today", []) if isinstance(prep_v1.get("facts_today"), list) else []),
+                    " ".join(prep_v1.get("habits", []) if isinstance(prep_v1.get("habits"), list) else []),
+                    str(prep_v1.get("normalized_text") or ""),
+                    text,
+                ]
+            ).lower()
+            wake_tokens = ["wake up", "woke up", "réveil", "reveil", "je me leve", "je me lève", "lever plus tot", "leve plus tot"]
+            if event_type.strip().lower() in generic_types and any(tok in prep_blob for tok in wake_tokens):
+                event_type = "wake up"
+        except Exception:
+            pass
 
         # Canonical day bucket: prefer resolved event_time_iso, else input date
         resolved_day = None
@@ -420,7 +631,11 @@ class GraphStore:
             resolved_day = event_time_iso[:10]
         day_bucket = resolved_day or ts.date().isoformat()
         key_people = sorted({e.text.strip().lower() for e in entities if e.label == "Person"})
-        key_places = sorted({e.text.strip().lower() for e in entities if e.label == "Place"})
+        key_places = sorted({
+            e.text.strip().lower()
+            for e in entities
+            if e.label == "Place" and not _is_placeholder_value(e.text)
+        })
         key_concepts = sorted({e.text.strip().lower() for e in entities if e.label == "Concept"})[:5]
         event_key = "|".join([day_bucket, ",".join(key_people), ",".join(key_places), ",".join(key_concepts), str(event_type or "")])
 
@@ -431,8 +646,8 @@ class GraphStore:
 
         def _store(tx):
             tx.run("""
-                MERGE (j:Entry {id: $id})
-                SET j.text = $text, j.input_time = datetime($input_ts)
+                MERGE (j:E73_Information_Object {id: $id})
+                SET j.text = $text, j.input_time = datetime($input_ts), j.entry_kind = 'journal_entry'
             """, id=entry_id, text=text[:5000], input_ts=input_ts_str)
 
             # Multi-event mode: create multiple Event occurrences and sequence/impact edges.
@@ -451,7 +666,7 @@ class GraphStore:
                     if not isinstance(ev, dict):
                         continue
                     idx = int(ev.get("idx") or (i + 1))
-                    ev_type = str(ev.get("event_type") or event_type or "event")
+                    ev_type = _clean_event_type(str(ev.get("event_type") or event_type or "activity"))
                     ev_time_iso_i = ev.get("event_time_iso") or event_time_iso
                     ev_time_text_i = ev.get("event_time_text") or ""
                     ev_time_conf_i = ev.get("event_time_confidence") or event_time_conf or 0.6
@@ -477,7 +692,16 @@ class GraphStore:
 
                     def _norm_list(v):
                         if isinstance(v, list):
-                            return [str(x).strip().lower() for x in v if str(x).strip()]
+                            out = []
+                            for x in v:
+                                s = str(x).strip().lower()
+                                if not s or _is_placeholder_value(s):
+                                    continue
+                                # Drop very short noise tokens that often come from bad extraction.
+                                if len(s) <= 2 and s not in {"ai", "ia"}:
+                                    continue
+                                out.append(s)
+                            return out
                         return []
 
                     people_lower = _norm_list(people)
@@ -497,7 +721,9 @@ class GraphStore:
                     day_bucket_ev = day_bucket_ev or day_bucket
 
                     key_people_ev = sorted(people_lower) or key_people
-                    key_places_ev = sorted(physical_places_lower) or key_places
+                    # IMPORTANT: never fallback to global extracted places for event core.
+                    # If physical place is unknown, keep it empty in event key.
+                    key_places_ev = sorted(physical_places_lower)
                     # Event core key should not include context topics; context becomes a separate node.
                     key_concepts_ev: List[str] = []
 
@@ -527,6 +753,7 @@ class GraphStore:
                             "topics_lower": topics_lower,
                             "context_concepts_lower": context_concepts_lower,
                             "context_text": context_text,
+                            "has_context_text": bool(context_text.strip()),
                             "ctx_key": f"{entry_id}|{idx}",
                         }
                     )
@@ -539,10 +766,10 @@ class GraphStore:
                 if not isinstance(emotions, list):
                     emotions = []
 
-                # Create Event occurrences + connect Entry -> each occurrence.
+                # Create CIDOC activity occurrences + connect Entry -> each occurrence.
                 for evn in events_norm:
                     tx.run("""
-                        MERGE (ev:Event {key: $event_key})
+                        MERGE (ev:E7_Activity:E5_Event {key: $event_key})
                         ON CREATE SET ev.first_seen = datetime($input_ts)
                         SET ev.last_seen = datetime($input_ts),
                             ev.event_time_iso = $event_time_iso,
@@ -551,8 +778,8 @@ class GraphStore:
                             ev.event_time_text = $event_time_text,
                             ev.occurrence_index = $idx
                         WITH ev
-                        MATCH (j:Entry {id: $entry_id})
-                        MERGE (j)-[:REFERS_TO]->(ev)
+                        MATCH (j:E73_Information_Object {id: $entry_id})
+                        MERGE (j)-[:P67_refers_to {ref_type: 'about_activity'}]->(ev)
                     """,
                            event_key=evn["event_key"],
                            input_ts=input_ts_str,
@@ -563,72 +790,51 @@ class GraphStore:
                            idx=evn["idx"],
                            entry_id=entry_id)
 
-                    # Create Context node (non-temporal explanation/reflection) and attach to Event.
-                    ctx_text = evn.get("context_text") or ""
-                    has_ctx = bool(ctx_text.strip()) or bool(evn.get("context_places_lower")) or bool(evn.get("topics_lower")) or bool(evn.get("context_concepts_lower"))
-                    if has_ctx:
-                        ctx_name = ctx_text.strip()
-                        if len(ctx_name) > 80:
-                            ctx_name = ctx_name[:80] + "..."
-                        try:
-                            if len(ctx_name) > 80:
-                                ctx_name = ctx_name[:80] + "..."
-                        except Exception:
-                            ctx_name = str(evn.get("event_type") or "context")
+                    raw_type = str(evn.get("event_type") or "activity")
+                    tx.run("""
+                        MATCH (cev:E7_Activity {key: $event_key})
+                        SET cev.name = coalesce($event_type, cev.name, 'activity')
+                    """, event_key=evn["event_key"], event_type=raw_type)
 
-                        tx.run(
-                            """
-                            MERGE (ctx:Context {key: $ck})
-                            SET ctx.text = $ct,
-                                ctx.name = $cn,
-                                ctx.idx = $idx,
-                                ctx.entry_id = $entry_id
-                            WITH ctx
-                            MATCH (ev:Event {key: $event_key})
-                            MERGE (ev)-[:HAS_CONTEXT]->(ctx)
-                            """,
-                            ck=evn["ctx_key"],
-                            ct=str(ctx_text),
-                            cn=ctx_name,
-                            idx=int(evn["idx"]),
-                            entry_id=entry_id,
-                            event_key=evn["event_key"],
-                        )
+                    # Time is stored on the activity node properties + day bucket only.
+                    # No separate E52 for the event-specific time (avoids noise nodes).
+
+                    # Context text is stored as metadata on the entry node, not as
+                    # a separate E73 node (avoids noise nodes in the graph).
 
                     tx.run("""
-                        MERGE (d:Day {date: $day})
+                        MERGE (d:E52_Time_Span {key: $day})
+                        SET d.date = $day,
+                            d.name = $day
                         WITH d
-                        MATCH (ev:Event {key: $event_key})
-                        MERGE (ev)-[:ON_DAY]->(d)
+                        MATCH (ev:E7_Activity {key: $event_key})
+                        MERGE (ev)-[:P4_has_time_span]->(d)
                     """, day=evn["day_bucket"], event_key=evn["event_key"])
 
-                    if evn.get("event_type"):
+                    if evn.get("event_type") and not _is_placeholder_value(str(evn.get("event_type"))):
                         tx.run("""
-                            MERGE (t:EventType {name: $name})
+                            MERGE (t:E55_Type {name: $name})
                             WITH t
-                            MATCH (ev:Event {key: $event_key})
-                            MERGE (ev)-[:HAS_TYPE]->(t)
+                            MATCH (ev:E7_Activity {key: $event_key})
+                            MERGE (ev)-[:P2_has_type]->(t)
                         """, name=str(evn["event_type"]).strip(), event_key=evn["event_key"])
 
                     if user_name:
                         tx.run("""
-                            MERGE (u:User {name: $name})
+                            MERGE (u:E21_Person:E39_Actor {name: $name})
                             ON CREATE SET u.first_seen = datetime($ts)
                             ON MATCH SET u.last_seen = datetime($ts)
                             WITH u
-                            MATCH (ev:Event {key: $event_key})
-                            MERGE (u)-[:PARTICIPATED_IN]->(ev)
+                            MERGE (ut:E55_Type {name: 'User'})
+                            MERGE (u)-[:P2_has_type]->(ut)
+                            WITH u
+                            MATCH (ev:E7_Activity {key: $event_key})
+                            MERGE (ev)-[:P14_carried_out_by]->(u)
+                            MERGE (u)-[:P14i_performed]->(ev)
                         """, name=user_name, ts=input_ts_str, event_key=evn["event_key"])
 
-                    for emo in emotions:
-                        if not isinstance(emo, str) or not emo.strip():
-                            continue
-                        tx.run("""
-                            MERGE (e:Emotion {name: $name})
-                            WITH e
-                            MATCH (ev:Event {key: $event_key})
-                            MERGE (ev)-[:HAS_EMOTION]->(e)
-                        """, name=emo.strip().lower(), event_key=evn["event_key"])
+                    # Emotions: skip writing as separate nodes to avoid noise.
+                    # They are preserved in extraction metadata for later use.
 
                 # Pre-resolve persons to stable IDs (Consolidator).
                 places_ctx = [e.text for e in entities if e.label == "Place"]
@@ -660,23 +866,25 @@ class GraphStore:
                 # Link all extracted entities to each micro-event (best-effort).
                 for ent in entities:
                     if user_name and ent.text.strip().lower() == user_name.lower():
-                        node_type = "User"
+                        node_type = "E39_Actor"
                     else:
                         node_type = self._get_node_type(ent)
                     ent_text = (ent.text or "").strip()
                     if not ent_text:
                         continue
 
-                    if node_type == "Person":
+                    if node_type == "E52_Time_Span":
+                        continue
+                    if node_type == "E21_Person":
                         resolved = person_map.get(ent_text) or {}
                         pid = resolved.get("id")
                         if pid:
                             tx.run("""
-                                MATCH (p:Person {id: $id})
+                                MATCH (p:E21_Person {id: $id})
                                 SET p.last_seen = datetime($ts),
                                     p.mention_count = coalesce(p.mention_count, 0) + 1
                             """, id=pid, ts=input_ts_str)
-                    else:
+                    elif node_type not in ("E39_Actor",):
                         tx.run(f"""
                             MERGE (e:{node_type} {{name: $name}})
                             ON CREATE SET e.first_seen = datetime($ts), e.mention_count = 1
@@ -685,74 +893,100 @@ class GraphStore:
 
                     for evn in events_norm:
                         ev_key = evn["event_key"]
-                        if node_type == "User":
+                        if node_type == "E39_Actor":
                             tx.run("""
-                                MATCH (u:User {name: $name})
-                                MATCH (ev:Event {key: $event_key})
-                                MERGE (u)-[:PARTICIPATED_IN]->(ev)
+                                MATCH (u:E21_Person {name: $name})
+                                MATCH (ev:E7_Activity {key: $event_key})
+                                MERGE (ev)-[:P14_carried_out_by]->(u)
+                                MERGE (u)-[:P14i_performed]->(ev)
                             """, name=ent_text, event_key=ev_key)
-                        elif node_type == "Person":
+                            tx.run("""
+                                MERGE (ca:E39_Actor {name: $name})
+                                WITH ca
+                                MATCH (cev:E7_Activity {key: $event_key})
+                                MERGE (cev)-[:P14_carried_out_by]->(ca)
+                                MERGE (ca)-[:P14i_performed]->(cev)
+                            """, name=ent_text, event_key=ev_key)
+                        elif node_type == "E21_Person":
                             resolved = person_map.get(ent_text) or {}
                             pid = resolved.get("id")
                             if pid:
                                 tx.run("""
-                                    MATCH (p:Person {id: $id})
-                                    MATCH (ev:Event {key: $event_key})
-                                    MERGE (p)-[:PARTICIPATED_IN]->(ev)
+                                    MATCH (p:E21_Person {id: $id})
+                                    MATCH (ev:E7_Activity {key: $event_key})
+                                    MERGE (ev)-[:P14_carried_out_by]->(p)
+                                    MERGE (p)-[:P14i_performed]->(ev)
                                 """, id=pid, event_key=ev_key)
-                        elif node_type == "Place":
-                            ent_lower = ent_text.lower()
-                            if ent_lower in evn.get("physical_places_lower", set()):
                                 tx.run("""
-                                    MATCH (pl:Place {name: $name})
-                                    MATCH (ev:Event {key: $event_key})
-                                    MERGE (ev)-[:OCCURRED_AT]->(pl)
-                                """, name=ent_text, event_key=ev_key)
-                            elif ent_lower in evn.get("context_places_lower", set()):
-                                tx.run("""
-                                    MERGE (ctx:Context {key: $ck})
-                                    WITH ctx
-                                    MATCH (pl:Place {name: $name})
-                                    MERGE (ctx)-[r:MENTIONS]->(pl)
-                                    ON CREATE SET r.score = 0.5, r.last_updated = datetime($ts)
-                                    ON MATCH SET r.last_updated = datetime($ts)
-                                """, name=ent_text, ck=evn["ctx_key"], ts=input_ts_str)
-                        elif node_type == "Date":
+                                    MATCH (p:E21_Person {id: $id})
+                                    MERGE (ca:E39_Actor {id: $id})
+                                    SET ca.name = coalesce(p.name, ca.name, $fallback_name)
+                                    WITH ca
+                                    MATCH (cev:E7_Activity {key: $event_key})
+                                    MERGE (cev)-[:P14_carried_out_by]->(ca)
+                                    MERGE (ca)-[:P14i_performed]->(cev)
+                                """, id=pid, fallback_name=ent_text, event_key=ev_key)
+                        elif node_type == "E53_Place":
+                            # All places are contextual mentions on the journal entry.
+                            # Physical place assignment requires explicit clarification.
+                            continue
+                        elif node_type == "E52_Time_Span":
                             # ignore Date mentions in multi-event visualization; we use Day buckets
                             continue
                         else:
-                            ent_lower = ent_text.lower()
-                            topics_lower = evn.get("topics_lower", set())
-                            ctx_concepts_lower = evn.get("context_concepts_lower", set())
+                            # All other entity types: skip per-event linking.
+                            # They are linked to the journal entry in the entry-level references block.
+                            continue
 
-                            if ent_lower not in topics_lower and ent_lower not in ctx_concepts_lower:
-                                continue
+                # All places, topics, concepts from extraction are linked as P67_refers_to
+                # on the main journal entry (E73_Information_Object), not on separate context nodes.
+                try:
+                    extracted_place_lowers = {
+                        str(e.text or "").strip().lower()
+                        for e in entities
+                        if e.label == "Place" and (e.text or "").strip()
+                    }
+                    extracted_org_lowers = {
+                        str(e.text or "").strip().lower()
+                        for e in entities
+                        if e.label == "Organization" and (e.text or "").strip()
+                    }
 
-                            score = 0.5
-                            for r in relations:
-                                if r.obj.lower() == ent_text.lower():
-                                    score = r.sentiment
-                                    break
+                    def _infer_ctx_node_label(item_lower: str) -> str:
+                        if item_lower in extracted_place_lowers:
+                            return "E53_Place"
+                        if item_lower in extracted_org_lowers:
+                            return "E74_Group"
+                        return "E28_Conceptual_Object"
 
-                            # Attach non-place context elements to the Context node (not the Event core).
-                            if ent_lower in topics_lower:
-                                tx.run(f"""
-                                    MATCH (t:{node_type} {{name: $name}})
-                                    MERGE (ctx:Context {{key: $ck}})
-                                    MERGE (ctx)-[r:HAS_TOPIC]->(t)
-                                    ON CREATE SET r.score = $score, r.last_updated = datetime($ts)
-                                    ON MATCH SET r.score = (r.score * 0.7) + ($score * 0.3), r.last_updated = datetime($ts)
-                                """, name=ent_text, ck=evn["ctx_key"], score=score, ts=input_ts_str)
-                            else:
-                                tx.run(f"""
-                                    MATCH (t:{node_type} {{name: $name}})
-                                    MERGE (ctx:Context {{key: $ck}})
-                                    MERGE (ctx)-[r:HAS_CONTEXT]->(t)
-                                    ON CREATE SET r.score = $score, r.last_updated = datetime($ts)
-                                    ON MATCH SET r.score = (r.score * 0.7) + ($score * 0.3), r.last_updated = datetime($ts)
-                                """, name=ent_text, ck=evn["ctx_key"], score=score, ts=input_ts_str)
+                    all_context_items: set = set()
+                    for evn in events_norm:
+                        for p_l in evn.get("context_places_lower", set()):
+                            all_context_items.add(("mention", p_l))
+                        for topic_l in evn.get("topics_lower", set()):
+                            all_context_items.add(("topic", topic_l))
+                        for ctxc_l in evn.get("context_concepts_lower", set()):
+                            all_context_items.add(("context", ctxc_l))
 
-                # Create micro-event relations (PRECEDES/CAUSES/IMPACTS/...)
+                    for ref_type, item_lower in all_context_items:
+                        label = _infer_ctx_node_label(item_lower)
+                        display = entity_name_map.get(item_lower, item_lower)
+                        tx.run(
+                            f"""
+                            MATCH (j:E73_Information_Object {{id: $entry_id}})
+                            MERGE (t:{label} {{name: $name}})
+                            MERGE (j)-[:P67_refers_to {{ref_type: $rt}}]->(t)
+                            """,
+                            entry_id=entry_id,
+                            name=display,
+                            rt=ref_type,
+                        )
+                except Exception:
+                    pass
+
+                # Create micro-event relations using CIDOC-compatible properties.
+                # PRECEDES -> P120_occurs_before
+                # CAUSES/ENABLES/IMPACTS/INFLUENCES -> target event P15_was_influenced_by source event
                 allowed_rel_types = {"PRECEDES", "CAUSES", "ENABLES", "IMPACTS", "INFLUENCES"}
                 if isinstance(event_relations_meta, list):
                     for rel in event_relations_meta:
@@ -777,18 +1011,310 @@ class GraphStore:
                             conf_f = 0.5
                         evidence = str(rel.get("evidence") or "").strip()
 
-                        tx.run(
-                            f"""
-                            MATCH (a:Event {{key: $ka}})
-                            MATCH (b:Event {{key: $kb}})
-                            MERGE (a)-[r:{pred}]->(b)
-                            SET r.confidence = $conf, r.evidence = $evidence
-                            """,
-                            ka=idx_to_event_key[from_i],
-                            kb=idx_to_event_key[to_i],
-                            conf=conf_f,
-                            evidence=evidence,
+                        if pred == "PRECEDES":
+                            tx.run(
+                                """
+                                MATCH (a:E7_Activity {key: $ka})
+                                MATCH (b:E7_Activity {key: $kb})
+                                MERGE (a)-[r:P120_occurs_before]->(b)
+                                SET r.confidence = $conf, r.evidence = $evidence, r.inference_type = $pred
+                                """,
+                                ka=idx_to_event_key[from_i],
+                                kb=idx_to_event_key[to_i],
+                                conf=conf_f,
+                                evidence=evidence,
+                                pred=pred,
+                            )
+                        else:
+                            tx.run(
+                                """
+                                MATCH (a:E7_Activity {key: $ka})
+                                MATCH (b:E7_Activity {key: $kb})
+                                MERGE (b)-[r:P15_was_influenced_by]->(a)
+                                SET r.confidence = $conf, r.evidence = $evidence, r.inference_type = $pred
+                                """,
+                                ka=idx_to_event_key[from_i],
+                                kb=idx_to_event_key[to_i],
+                                conf=conf_f,
+                                evidence=evidence,
+                                pred=pred,
+                            )
+
+                # Causal factor policy (habit vs today-specific vs propositional).
+                # Priority rule:
+                # - if a today_specific factor exists for a target event, it is the causal driver.
+                # - habit/propositional stay as context references (no direct P15 edge) for that target.
+                def _looks_today_specific(s: str) -> bool:
+                    x = (s or "").strip().lower()
+                    return any(k in x for k in [
+                        "no teaching today", "no lecture today", "no lectures today",
+                        "pas de cours aujourd", "pas de cours aujourd'hui", "aucun cours aujourd",
+                        "pas de conférence aujourd", "no class today"
+                    ])
+
+                cf_list = causal_factors_meta if isinstance(causal_factors_meta, list) else []
+                # If extractor didn't provide explicit causal_factors, derive from Prep Agent hints.
+                if not cf_list and isinstance(prep_v1, dict):
+                    facts_today = prep_v1.get("facts_today") if isinstance(prep_v1.get("facts_today"), list) else []
+                    habits = prep_v1.get("habits") if isinstance(prep_v1.get("habits"), list) else []
+                    causal_rules = prep_v1.get("causal_rules") if isinstance(prep_v1.get("causal_rules"), list) else []
+                    target_idx_default = 1
+                    for f in facts_today:
+                        txt = str(f or "").strip()
+                        if not txt:
+                            continue
+                        if _looks_today_specific(txt):
+                            cf_list.append(
+                                {
+                                    "target_idx": target_idx_default,
+                                    "factor_kind": "today_specific",
+                                    "text": txt,
+                                    "relation": "INFLUENCES",
+                                    "confidence": 0.7,
+                                    "evidence": txt[:160],
+                                }
+                            )
+                    for h in habits:
+                        txt = str(h or "").strip()
+                        if not txt:
+                            continue
+                        cf_list.append(
+                            {
+                                "target_idx": target_idx_default,
+                                "factor_kind": "habit",
+                                "text": txt,
+                                "relation": "INFLUENCES",
+                                "confidence": 0.6,
+                                "evidence": txt[:160],
+                            }
                         )
+                    for c in causal_rules:
+                        txt = str(c or "").strip()
+                        if not txt:
+                            continue
+                        kind = "propositional"
+                        if _looks_today_specific(txt):
+                            kind = "today_specific"
+                        cf_list.append(
+                            {
+                                "target_idx": target_idx_default,
+                                "factor_kind": kind,
+                                "text": txt,
+                                "relation": "INFLUENCES",
+                                "confidence": 0.6,
+                                "evidence": txt[:160],
+                            }
+                        )
+                if not cf_list:
+                    # Fallback extraction from context_text when LLM omits causal_factors.
+                    for evn in events_norm:
+                        ctext = str(evn.get("context_text") or "").strip()
+                        if not ctext:
+                            continue
+                        if _looks_today_specific(ctext):
+                            cf_list.append(
+                                {
+                                    "target_idx": int(evn.get("idx", 0)),
+                                    "factor_kind": "today_specific",
+                                    "text": "no teaching today",
+                                    "relation": "INFLUENCES",
+                                    "confidence": 0.7,
+                                    "evidence": ctext[:160],
+                                }
+                            )
+
+                if isinstance(cf_list, list):
+                    by_target = {}
+                    for cf in cf_list:
+                        if not isinstance(cf, dict):
+                            continue
+                        try:
+                            t_idx = int(cf.get("target_idx"))
+                        except Exception:
+                            continue
+                        t_key = idx_to_event_key.get(t_idx)
+                        if not t_key:
+                            continue
+                        txt = str(cf.get("text") or "").strip()
+                        if not txt:
+                            continue
+                        kind = str(cf.get("factor_kind") or "").strip().lower()
+                        if kind not in {"habit", "today_specific", "propositional"}:
+                            continue
+                        evd = str(cf.get("evidence") or "").strip()
+                        try:
+                            cconf = float(cf.get("confidence", 0.6))
+                        except Exception:
+                            cconf = 0.6
+                        by_target.setdefault(t_idx, {"event_key": t_key, "habit": [], "today_specific": [], "propositional": []})
+                        by_target[t_idx][kind].append({"text": txt, "evidence": evd, "conf": cconf})
+
+                    for t_idx, payload in by_target.items():
+                        t_key = payload["event_key"]
+                        has_today_specific = bool(payload["today_specific"])
+
+                        # 1) today-specific conditions as propositional objects influencing event
+                        for f in payload["today_specific"]:
+                            tx.run(
+                                """
+                                MERGE (c:E89_Propositional_Object {name: $name})
+                                MERGE (ct:E55_Type {name: 'NoTeachingTodayCondition'})
+                                MERGE (c)-[:P2_has_type]->(ct)
+                                WITH c
+                                MATCH (ev:E7_Activity {key: $event_key})
+                                MERGE (ev)-[r:P15_was_influenced_by]->(c)
+                                SET r.confidence = $conf, r.evidence = $evidence, r.inference_type = 'TODAY_SPECIFIC'
+                                """,
+                                name=f["text"],
+                                event_key=t_key,
+                                conf=f["conf"],
+                                evidence=f["evidence"],
+                            )
+
+                        # 2) habits as conceptual objects.
+                        # The event does not directly influence/reference the habit.
+                        # Instead a Reflection activity bridges them:
+                        #   Event ←[P17_was_motivated_by]— Reflection —[P67_refers_to]→ Habit
+                        for h in payload["habit"]:
+                            refl_key = f"{t_key}|reflection|{h['text'][:40]}"
+                            tx.run(
+                                """
+                                MERGE (hb:E28_Conceptual_Object {name: $hname})
+                                MERGE (ht:E55_Type {name: 'Habit'})
+                                MERGE (hb)-[:P2_has_type]->(ht)
+                                WITH hb
+                                MERGE (ref:E7_Activity {key: $rkey})
+                                SET ref.name = 'reflection'
+                                WITH ref, hb
+                                MERGE (rt:E55_Type {name: 'Reflection'})
+                                MERGE (ref)-[:P2_has_type]->(rt)
+                                WITH ref, hb
+                                MATCH (ev:E7_Activity {key: $event_key})
+                                MERGE (ref)-[:P17_was_motivated_by]->(ev)
+                                WITH ref, hb
+                                MERGE (ref)-[:P67_refers_to {ref_type: 'about_habit'}]->(hb)
+                                """,
+                                hname=h["text"],
+                                rkey=refl_key,
+                                event_key=t_key,
+                            )
+                            if user_name:
+                                tx.run(
+                                    """
+                                    MATCH (ref:E7_Activity {key: $rkey})
+                                    MERGE (u:E21_Person:E39_Actor {name: $uname})
+                                    MERGE (ref)-[:P14_carried_out_by]->(u)
+                                    MERGE (u)-[:P14i_performed]->(ref)
+                                    """,
+                                    rkey=refl_key,
+                                    uname=user_name,
+                                )
+
+                        # 3) propositions influence habit when habit exists; otherwise influence event directly.
+                        # If a today-specific condition exists, do not create direct proposition->event links.
+                        if payload["habit"] and payload["propositional"]:
+                            for p in payload["propositional"]:
+                                for h in payload["habit"]:
+                                    tx.run(
+                                        """
+                                        MERGE (pr:E89_Propositional_Object {name: $pname})
+                                        MERGE (hb:E28_Conceptual_Object {name: $hname})
+                                        MERGE (hb)-[r:P15_was_influenced_by]->(pr)
+                                        SET r.confidence = $conf, r.evidence = $evidence, r.inference_type = 'PROPOSITION_TO_HABIT'
+                                        """,
+                                        pname=p["text"],
+                                        hname=h["text"],
+                                        conf=min(p["conf"], h["conf"]),
+                                        evidence=(p["evidence"] or h["evidence"]),
+                                    )
+                        else:
+                            for p in payload["propositional"]:
+                                if has_today_specific:
+                                    tx.run(
+                                        """
+                                        MERGE (pr:E89_Propositional_Object {name: $name})
+                                        """,
+                                        name=p["text"],
+                                    )
+                                else:
+                                    tx.run(
+                                        """
+                                        MERGE (pr:E89_Propositional_Object {name: $name})
+                                        WITH pr
+                                        MATCH (ev:E7_Activity {key: $event_key})
+                                        MERGE (ev)-[r:P15_was_influenced_by]->(pr)
+                                        SET r.confidence = $conf, r.evidence = $evidence, r.inference_type = 'PROPOSITION'
+                                        """,
+                                        name=p["text"],
+                                        event_key=t_key,
+                                        conf=p["conf"],
+                                        evidence=p["evidence"],
+                                    )
+
+                    # Ensure journal entry context explicitly references causal nodes (target RDF style).
+                    for cf in cf_list:
+                        if not isinstance(cf, dict):
+                            continue
+                        kind = str(cf.get("factor_kind") or "").strip().lower()
+                        nm = str(cf.get("text") or "").strip()
+                        if not nm:
+                            continue
+                        if kind == "today_specific" or kind == "propositional":
+                            tx.run(
+                                """
+                                MATCH (j:E73_Information_Object {id: $entry_id})
+                                MERGE (n:E89_Propositional_Object {name: $name})
+                                MERGE (j)-[:P67_refers_to {ref_type:'context'}]->(n)
+                                """,
+                                entry_id=entry_id,
+                                name=nm,
+                            )
+                        elif kind == "habit":
+                            tx.run(
+                                """
+                                MATCH (j:E73_Information_Object {id: $entry_id})
+                                MERGE (n:E28_Conceptual_Object {name: $name})
+                                MERGE (j)-[:P67_refers_to {ref_type:'reflection_about'}]->(n)
+                                """,
+                                entry_id=entry_id,
+                                name=nm,
+                            )
+
+                    # Also keep entry-level references for explicitly extracted entities.
+                    for ent in entities:
+                        ent_text = (ent.text or "").strip()
+                        if not ent_text or _is_placeholder_value(ent_text):
+                            continue
+                        if ent.label == "Place":
+                            tx.run(
+                                """
+                                MATCH (j:E73_Information_Object {id: $entry_id})
+                                MERGE (p:E53_Place {name: $name})
+                                MERGE (j)-[:P67_refers_to {ref_type:'mention'}]->(p)
+                                """,
+                                entry_id=entry_id,
+                                name=ent_text,
+                            )
+                        elif ent.label == "Organization":
+                            tx.run(
+                                """
+                                MATCH (j:E73_Information_Object {id: $entry_id})
+                                MERGE (g:E74_Group {name: $name})
+                                MERGE (j)-[:P67_refers_to {ref_type:'topic'}]->(g)
+                                """,
+                                entry_id=entry_id,
+                                name=ent_text,
+                            )
+                        elif ent.label == "Concept":
+                            tx.run(
+                                """
+                                MATCH (j:E73_Information_Object {id: $entry_id})
+                                MERGE (c:E28_Conceptual_Object {name: $name})
+                                MERGE (j)-[:P67_refers_to {ref_type:'context'}]->(c)
+                                """,
+                                entry_id=entry_id,
+                                name=ent_text,
+                            )
 
                 # Heuristic fallback for causal links when LLM provides a "because" style relation
                 # at the entity-level but didn't emit event_relations.
@@ -818,10 +1344,11 @@ class GraphStore:
                             if cause_idx in idx_to_event_key:
                                 tx.run(
                                     """
-                                    MATCH (a:Event {key: $ka})
-                                    MATCH (b:Event {key: $kb})
-                                    MERGE (a)-[rel:IMPACTS]->(b)
+                                    MATCH (a:E7_Activity {key: $ka})
+                                    MATCH (b:E7_Activity {key: $kb})
+                                    MERGE (b)-[rel:P15_was_influenced_by]->(a)
                                     SET rel.confidence = coalesce(rel.confidence, 0.0) + $delta,
+                                        rel.inference_type = 'IMPACTS',
                                         rel.evidence = CASE
                                             WHEN rel.evidence IS NULL OR rel.evidence = '' THEN $evidence
                                             ELSE rel.evidence + ' | ' + $evidence
@@ -864,10 +1391,11 @@ class GraphStore:
                         evidence = f"{r.predicate}: {r.obj}"
                         tx.run(
                             """
-                            MATCH (a:Event {key: $ka})
-                            MATCH (b:Event {key: $kb})
-                            MERGE (a)-[rel:IMPACTS]->(b)
+                            MATCH (a:E7_Activity {key: $ka})
+                            MATCH (b:E7_Activity {key: $kb})
+                            MERGE (b)-[rel:P15_was_influenced_by]->(a)
                             SET rel.confidence = coalesce(rel.confidence, 0.0) + $delta,
+                                rel.inference_type = 'IMPACTS',
                                 rel.evidence = CASE
                                     WHEN rel.evidence IS NULL OR rel.evidence = '' THEN $evidence
                                     ELSE rel.evidence + ' | ' + $evidence
@@ -884,55 +1412,50 @@ class GraphStore:
                 return
 
             tx.run("""
-                MERGE (ev:Event {key: $event_key})
+                MERGE (ev:E7_Activity:E5_Event {key: $event_key})
                 ON CREATE SET ev.first_seen = datetime($input_ts)
                 SET ev.last_seen = datetime($input_ts),
                     ev.event_time_iso = $event_time_iso,
                     ev.event_time_confidence = $event_time_conf,
-                    ev.event_type = $event_type
+                    ev.event_type = $event_type,
+                    ev.name = coalesce($event_type, ev.name, 'activity')
                 WITH ev
-                MATCH (j:Entry {id: $entry_id})
-                MERGE (j)-[:REFERS_TO]->(ev)
+                MATCH (j:E73_Information_Object {id: $entry_id})
+                MERGE (j)-[:P67_refers_to {ref_type: 'about_activity'}]->(ev)
             """, event_key=event_key, input_ts=input_ts_str, event_time_iso=event_time_iso, event_time_conf=event_time_conf, event_type=event_type, entry_id=entry_id)
 
             # Day node (absolute date)
             tx.run("""
-                MERGE (d:Day {date: $day})
+                MERGE (d:E52_Time_Span {key: $day})
+                SET d.date = $day,
+                    d.name = $day
                 WITH d
-                MATCH (ev:Event {key: $event_key})
-                MERGE (ev)-[:ON_DAY]->(d)
+                MATCH (ev:E7_Activity {key: $event_key})
+                MERGE (ev)-[:P4_has_time_span]->(d)
             """, day=day_bucket, event_key=event_key)
 
-            # Event type as node + relation (instead of HAS_TOPIC)
+            # Event type as node + relation
             if event_type and isinstance(event_type, str):
                 tx.run("""
-                    MERGE (t:EventType {name: $name})
+                    MERGE (t:E55_Type {name: $name})
                     WITH t
-                    MATCH (ev:Event {key: $event_key})
-                    MERGE (ev)-[:HAS_TYPE]->(t)
+                    MATCH (ev:E7_Activity {key: $event_key})
+                    MERGE (ev)-[:P2_has_type]->(t)
                 """, name=event_type.strip(), event_key=event_key)
-
-            # Emotions as nodes + relations
-            emotions = meta.get("emotions", [])
-            if isinstance(emotions, list):
-                for emo in emotions:
-                    if isinstance(emo, str) and emo.strip():
-                        tx.run("""
-                            MERGE (e:Emotion {name: $name})
-                            WITH e
-                            MATCH (ev:Event {key: $event_key})
-                            MERGE (ev)-[:HAS_EMOTION]->(e)
-                        """, name=emo.strip().lower(), event_key=event_key)
 
             # User (journal owner) always participates
             if user_name:
                 tx.run("""
-                    MERGE (u:User {name: $name})
+                    MERGE (u:E21_Person:E39_Actor {name: $name})
                     ON CREATE SET u.first_seen = datetime($ts)
                     ON MATCH SET u.last_seen = datetime($ts)
                     WITH u
-                    MATCH (ev:Event {key: $event_key})
-                    MERGE (u)-[:PARTICIPATED_IN]->(ev)
+                    MERGE (ut:E55_Type {name: 'User'})
+                    MERGE (u)-[:P2_has_type]->(ut)
+                    WITH u
+                    MATCH (ev:E7_Activity {key: $event_key})
+                    MERGE (ev)-[:P14_carried_out_by]->(u)
+                    MERGE (u)-[:P14i_performed]->(ev)
                 """, name=user_name, ts=input_ts_str, event_key=event_key)
 
             # Pre-resolve persons to stable IDs (Consolidator)
@@ -964,71 +1487,163 @@ class GraphStore:
 
             for ent in entities:
                 if user_name and ent.text.strip().lower() == user_name.lower():
-                    node_type = "User"
+                    node_type = "E39_Actor"
                 else:
                     node_type = self._get_node_type(ent)
-                if node_type == "Person":
+                if _is_placeholder_value(ent.text):
+                    continue
+                if node_type == "E52_Time_Span":
+                    continue
+                if node_type == "E21_Person":
                     resolved = person_map.get(ent.text) or {}
                     pid = resolved.get("id")
                     if not pid:
                         continue
                     tx.run(
                         """
-                        MATCH (p:Person {id: $id})
+                        MATCH (p:E21_Person {id: $id})
                         SET p.last_seen = datetime($ts), p.mention_count = coalesce(p.mention_count, 0) + 1
                         """,
                         id=pid,
                         ts=input_ts_str,
                     )
-                else:
+                elif node_type not in ("E39_Actor",):
                     tx.run(f"""
                         MERGE (e:{node_type} {{name: $name}})
                         ON CREATE SET e.first_seen = datetime($ts), e.mention_count = 1
                         ON MATCH SET e.last_seen = datetime($ts), e.mention_count = e.mention_count + 1
                     """, name=ent.text, ts=input_ts_str)
 
-                if node_type in ("Person", "User"):
-                    if node_type == "User":
+                if node_type in ("E21_Person", "E39_Actor"):
+                    if node_type == "E39_Actor":
                         tx.run("""
-                            MATCH (u:User {name: $name})
-                            MATCH (ev:Event {key: $event_key})
-                            MERGE (u)-[:PARTICIPATED_IN]->(ev)
+                            MATCH (u:E21_Person {name: $name})
+                            MATCH (ev:E7_Activity {key: $event_key})
+                            MERGE (ev)-[:P14_carried_out_by]->(u)
+                            MERGE (u)-[:P14i_performed]->(ev)
                         """, name=ent.text, event_key=event_key)
                     else:
                         resolved = person_map.get(ent.text) or {}
                         pid = resolved.get("id")
                         if pid:
                             tx.run("""
-                                MATCH (p:Person {id: $id})
-                                MATCH (ev:Event {key: $event_key})
-                                MERGE (p)-[:PARTICIPATED_IN]->(ev)
+                                MATCH (p:E21_Person {id: $id})
+                                MATCH (ev:E7_Activity {key: $event_key})
+                                MERGE (ev)-[:P14_carried_out_by]->(p)
+                                MERGE (p)-[:P14i_performed]->(ev)
                             """, id=pid, event_key=event_key)
-                elif node_type == "Place":
+                elif node_type == "E53_Place":
                     tx.run("""
-                        MATCH (pl:Place {name: $name})
-                        MATCH (ev:Event {key: $event_key})
-                        MERGE (ev)-[:OCCURRED_AT]->(pl)
-                    """, name=ent.text, event_key=event_key)
-                elif node_type == "Date":
-                    tx.run("""
-                        MATCH (d:Date {name: $name})
-                        MATCH (ev:Event {key: $event_key})
-                        MERGE (ev)-[:OCCURRED_ON]->(d)
-                    """, name=ent.text, event_key=event_key)
+                        MATCH (j:E73_Information_Object {id: $entry_id})
+                        MERGE (pl:E53_Place {name: $name})
+                        MERGE (j)-[:P67_refers_to {ref_type:'mention'}]->(pl)
+                    """, name=ent.text, entry_id=entry_id)
+                elif node_type == "E52_Time_Span":
+                    continue
                 else:
-                    score = 0.5
-                    for r in relations:
-                        if r.obj.lower() == ent.text.lower():
-                            score = r.sentiment
-                            break
-                    # Concept / Organization -> HAS_TOPIC (topics only)
                     tx.run(f"""
-                        MATCH (t:{node_type} {{name: $name}})
-                        MATCH (ev:Event {{key: $event_key}})
-                        MERGE (ev)-[r:HAS_TOPIC]->(t)
-                        ON CREATE SET r.score = $score, r.last_updated = datetime($ts)
-                        ON MATCH SET r.score = (r.score * 0.7) + ($score * 0.3), r.last_updated = datetime($ts)
-                    """, name=ent.text, event_key=event_key, score=score, ts=input_ts_str)
+                        MATCH (j:E73_Information_Object {{id: $entry_id}})
+                        MERGE (t:{node_type} {{name: $name}})
+                        MERGE (j)-[:P67_refers_to {{ref_type: 'mention'}}]->(t)
+                    """, entry_id=entry_id, name=ent.text)
+
+            # Single-event causal factors: preserve CIDOC causal modeling even without metadata.events.
+            cf_list = causal_factors_meta if isinstance(causal_factors_meta, list) else []
+            if not cf_list and isinstance(prep_v1, dict):
+                def _looks_today_specific_local(s: str) -> bool:
+                    x = (s or "").strip().lower()
+                    return any(k in x for k in [
+                        "no teaching today", "no lecture today", "no lectures today",
+                        "pas de cours aujourd", "pas de cours aujourd'hui", "aucun cours aujourd",
+                        "pas de conférence aujourd", "no class today"
+                    ])
+                facts_today = prep_v1.get("facts_today") if isinstance(prep_v1.get("facts_today"), list) else []
+                habits = prep_v1.get("habits") if isinstance(prep_v1.get("habits"), list) else []
+                causal_rules = prep_v1.get("causal_rules") if isinstance(prep_v1.get("causal_rules"), list) else []
+                for f in facts_today:
+                    if isinstance(f, str) and f.strip():
+                        kind = "today_specific" if _looks_today_specific_local(f) else "propositional"
+                        cf_list.append({"factor_kind": kind, "text": f.strip(), "confidence": 0.7, "evidence": f.strip()[:160]})
+                for h in habits:
+                    if isinstance(h, str) and h.strip():
+                        kind = "today_specific" if _looks_today_specific_local(h) else "habit"
+                        cf_list.append({"factor_kind": kind, "text": h.strip(), "confidence": 0.6, "evidence": h.strip()[:160]})
+                for c in causal_rules:
+                    if isinstance(c, str) and c.strip():
+                        kind = "today_specific" if _looks_today_specific_local(c) else "propositional"
+                        cf_list.append({"factor_kind": kind, "text": c.strip(), "confidence": 0.6, "evidence": c.strip()[:160]})
+
+            today = [c for c in cf_list if isinstance(c, dict) and str(c.get("factor_kind") or "").lower() == "today_specific"]
+            habits = [c for c in cf_list if isinstance(c, dict) and str(c.get("factor_kind") or "").lower() == "habit"]
+            props = [c for c in cf_list if isinstance(c, dict) and str(c.get("factor_kind") or "").lower() == "propositional"]
+
+            for c in today:
+                txt = str(c.get("text") or "").strip()
+                if not txt:
+                    continue
+                tx.run("""
+                    MERGE (cond:E89_Propositional_Object {name:$name})
+                    MERGE (ct:E55_Type {name:'NoTeachingTodayCondition'})
+                    MERGE (cond)-[:P2_has_type]->(ct)
+                    WITH cond
+                    MATCH (ev:E7_Activity {key:$event_key})
+                    MERGE (ev)-[r:P15_was_influenced_by]->(cond)
+                    SET r.inference_type='TODAY_SPECIFIC', r.confidence=$conf, r.evidence=$evidence
+                """, name=txt, event_key=event_key, conf=float(c.get("confidence", 0.7) or 0.7), evidence=str(c.get("evidence") or "")[:220])
+
+            has_today_specific = len(today) > 0
+            for h in habits:
+                txt = str(h.get("text") or "").strip()
+                if not txt:
+                    continue
+                refl_key = f"{event_key}|reflection|{txt[:40]}"
+                tx.run("""
+                    MERGE (hb:E28_Conceptual_Object {name:$name})
+                    MERGE (ht:E55_Type {name:'Habit'})
+                    MERGE (hb)-[:P2_has_type]->(ht)
+                    WITH hb
+                    MERGE (ref:E7_Activity {key: $rkey})
+                    SET ref.name = 'reflection'
+                    WITH ref, hb
+                    MERGE (rt:E55_Type {name: 'Reflection'})
+                    MERGE (ref)-[:P2_has_type]->(rt)
+                    WITH ref, hb
+                    MATCH (ev:E7_Activity {key: $event_key})
+                    MERGE (ref)-[:P17_was_motivated_by]->(ev)
+                    WITH ref, hb
+                    MERGE (ref)-[:P67_refers_to {ref_type: 'about_habit'}]->(hb)
+                """, name=txt, rkey=refl_key, event_key=event_key)
+                if user_name:
+                    tx.run("""
+                        MATCH (ref:E7_Activity {key: $rkey})
+                        MERGE (u:E21_Person:E39_Actor {name: $uname})
+                        MERGE (ref)-[:P14_carried_out_by]->(u)
+                        MERGE (u)-[:P14i_performed]->(ref)
+                    """, rkey=refl_key, uname=user_name)
+
+            for p in props:
+                ptxt = str(p.get("text") or "").strip()
+                if not ptxt:
+                    continue
+                if habits:
+                    for h in habits:
+                        htxt = str(h.get("text") or "").strip()
+                        if not htxt:
+                            continue
+                        tx.run("""
+                            MERGE (pr:E89_Propositional_Object {name:$pname})
+                            MERGE (hb:E28_Conceptual_Object {name:$hname})
+                            MERGE (hb)-[r:P15_was_influenced_by]->(pr)
+                            SET r.inference_type='PROPOSITION_TO_HABIT', r.confidence=$conf, r.evidence=$evidence
+                        """, pname=ptxt, hname=htxt, conf=0.6, evidence=str(p.get("evidence") or "")[:220])
+                elif not has_today_specific:
+                    tx.run("""
+                        MERGE (pr:E89_Propositional_Object {name:$name})
+                        WITH pr
+                        MATCH (ev:E7_Activity {key:$event_key})
+                        MERGE (ev)-[r:P15_was_influenced_by]->(pr)
+                        SET r.inference_type='PROPOSITION', r.confidence=$conf, r.evidence=$evidence
+                    """, name=ptxt, event_key=event_key, conf=float(p.get("confidence", 0.6) or 0.6), evidence=str(p.get("evidence") or "")[:220])
 
         with self.driver.session() as session:
             session.execute_write(_store)
@@ -1038,16 +1653,22 @@ class GraphStore:
     def _get_node_type(self, entity: ExtractedEntity) -> str:
         # Event entity text stored as Concept; Date stays Date
         if entity.label == "Event":
-            return "Concept"
-        valid = ("Person", "Place", "Organization", "Concept", "Date")
-        return entity.label if entity.label in valid else "Concept"
+            return "E28_Conceptual_Object"
+        mapping = {
+            "Person": "E21_Person",
+            "Place": "E53_Place",
+            "Organization": "E74_Group",
+            "Concept": "E28_Conceptual_Object",
+            "Date": "E52_Time_Span",
+        }
+        return mapping.get(entity.label, "E28_Conceptual_Object")
 
     def query_entities(self, limit: int = 50) -> List[dict]:
         def _query(tx):
             result = tx.run("""
-                MATCH (e) WHERE e:Person OR e:Place OR e:Organization OR e:Concept OR e:User
+                MATCH (e) WHERE e:E21_Person OR e:E53_Place OR e:E74_Group OR e:E28_Conceptual_Object
                 RETURN labels(e)[0] as type,
-                       CASE WHEN e:Person THEN e.name ELSE e.name END as name,
+                       e.name as name,
                        e.mention_count as mentions,
                        e.last_seen as last_seen
                 ORDER BY coalesce(e.mention_count, 0) DESC
@@ -1061,12 +1682,13 @@ class GraphStore:
     def search_by_entity(self, entity_name: str) -> List[dict]:
         def _query(tx):
             result = tx.run("""
-                MATCH (j:Entry)-[:REFERS_TO]->(ev:Event)
-                OPTIONAL MATCH (u:User {name: $name})-[:PARTICIPATED_IN]->(ev)
-                OPTIONAL MATCH (p:Person)-[:PARTICIPATED_IN]->(ev)
-                OPTIONAL MATCH (a:Alias {text: $name})-[:REFERS_TO]->(p)
-                OPTIONAL MATCH (pl:Place {name: $name})<-[:OCCURRED_AT]-(ev)
-                OPTIONAL MATCH (c:Concept {name: $name})<-[:HAS_TOPIC]-(ev)
+                MATCH (j:E73_Information_Object)-[:P67_refers_to]->(ev:E7_Activity)
+                WHERE coalesce(j.entry_kind,'') = 'journal_entry'
+                OPTIONAL MATCH (ev)-[:P14_carried_out_by]->(u:E21_Person {name: $name})
+                OPTIONAL MATCH (ev)-[:P14_carried_out_by]->(p:E21_Person)
+                OPTIONAL MATCH (a:Alias {text: $name})-[:P67_refers_to]->(p)
+                OPTIONAL MATCH (pl:E53_Place {name: $name})<-[:P7_took_place_at]-(ev)
+                OPTIONAL MATCH (c:E28_Conceptual_Object {name: $name})<-[:P67_refers_to]-(ev)
                 WITH j, ev,
                      (u IS NOT NULL OR a IS NOT NULL) as personMatch,
                      (pl IS NOT NULL) as placeMatch,

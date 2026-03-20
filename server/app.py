@@ -184,7 +184,7 @@ def _apply_location_clarification(
     entities = list(extraction.entities)
     if is_remote_context:
         # v2: keep all extracted Place mentions as Place nodes.
-        # Storage will decide which Place is OCCURRED_AT (physical) vs HAS_CONTEXT (remote/context)
+        # Storage decides whether place is physical occurrence vs contextual reference.
         # using the metadata clarified_* overrides.
         has_current_city_place = False
         for e in entities:

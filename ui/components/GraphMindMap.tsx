@@ -5,7 +5,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { apiGet } from "@/lib/api";
 
-type Person = { id: string; name: string; role?: string; mentions?: number };
 type RootEntity = { ref: string; name: string; type: string; mentions?: number };
 
 type ApiNode = {
@@ -25,16 +24,14 @@ type GraphApiOut = { nodes: ApiNode[]; edges: ApiEdge[] };
 
 function kindFromLabels(labels?: string[]) {
   const s = new Set(labels || []);
-  if (s.has("Person")) return "Person";
-  if (s.has("User")) return "User";
-  if (s.has("Place")) return "Place";
-  if (s.has("Concept")) return "Concept";
-  if (s.has("Context")) return "Context";
-  if (s.has("Event")) return "Event";
-  if (s.has("Entry")) return "Entry";
-  if (s.has("Day")) return "Day";
-  if (s.has("Emotion")) return "Emotion";
-  if (s.has("EventType")) return "EventType";
+  if (s.has("E7_Activity")) return "E7_Activity";
+  if (s.has("E21_Person")) return "E21_Person";
+  if (s.has("E52_Time_Span")) return "E52_Time_Span";
+  if (s.has("E53_Place")) return "E53_Place";
+  if (s.has("E39_Actor")) return "E39_Actor";
+  if (s.has("E73_Information_Object")) return "E73_Information_Object";
+  if (s.has("E28_Conceptual_Object")) return "E28_Conceptual_Object";
+  if (s.has("E74_Group")) return "E74_Group";
   if (s.has("Alias")) return "Alias";
   if (s.has("DisambiguationTask")) return "DisambiguationTask";
   return (labels && labels[0]) || "Node";
@@ -43,25 +40,16 @@ function kindFromLabels(labels?: string[]) {
 function labelForNode(n: ApiNode) {
   // Prefer compact, human-friendly captions (Neo4j Browser style).
   const labels = n._labels || [];
-  if (labels.includes("Entry") && typeof n.text === "string") {
+  if (labels.includes("E73_Information_Object") && typeof n.text === "string") {
     const t = n.text.replace(/\s+/g, " ").trim();
     return t.length > 80 ? t.slice(0, 80) + "…" : t;
   }
-  if (labels.includes("Event") && typeof n.key === "string") {
-    // event key is typically: day|event_type|... (keep the action, not the date)
-    const parts = n.key.split("|").map((s: string) => s.trim());
-    const action =
-      (typeof n.event_type === "string" && n.event_type) ||
-      (typeof n.action === "string" && n.action) ||
-      (typeof n.type === "string" && n.type) ||
-      parts[1] ||
-      "event";
-    return String(action);
+  if (labels.includes("E7_Activity")) {
+    return String(n.name || "E7 Activity");
   }
-  if (labels.includes("Context") && typeof n.text === "string") {
-    const t = n.text.replace(/\s+/g, " ").trim();
-    if (!t) return "Context";
-    return t.length > 90 ? t.slice(0, 90) + "…" : t;
+  if (labels.includes("E73_Information_Object")) {
+    const t = String(n.content || n.name || "").replace(/\s+/g, " ").trim();
+    return t.length > 90 ? t.slice(0, 90) + "…" : t || "E73 Information Object";
   }
   return n.name || n.text || n.mention || n.date || (typeof n.key === "string" ? n.key.split("|")[0] : "") || n.id || "—";
 }
@@ -71,14 +59,17 @@ function humanizeRel(type: string) {
   const map: Record<string, string> = {
     PARTICIPATED_IN: "participated in",
     OCCURRED_AT: "at",
-    HAS_TOPIC: "topic",
-    HAS_CONTEXT: "context",
     HAS_EMOTION: "emotion",
+    P17_was_motivated_by: "P17 motivated by",
+    P7_took_place_at: "P7 took place at",
+    P4_has_time_span: "P4 has time-span",
+    P14_carried_out_by: "P14 carried out by",
+    P14i_performed: "P14i performed",
+    P67_refers_to: "P67 refers to",
     FROM_ENTRY: "from entry",
     ON_DAY: "on day",
     HAS_ALIAS: "has alias",
     ALIAS_OF: "alias of",
-    MENTIONS: "mentions",
   };
   if (map[t]) return map[t];
   return t ? t.toLowerCase().replace(/_/g, " ") : "rel";
@@ -93,20 +84,22 @@ function isDirectionalRel(type: string) {
 
 function colorForKind(kind: string) {
   switch (kind) {
-    case "Person":
+    case "E7_Activity":
+      return "#fbbf24"; // amber-300
+    case "E52_Time_Span":
+      return "#fcd34d"; // amber-200
+    case "E53_Place":
+      return "#93c5fd"; // blue-300
+    case "E39_Actor":
+      return "#6ee7b7"; // emerald-300
+    case "E73_Information_Object":
+      return "#c4b5fd"; // violet-300
+    case "E28_Conceptual_Object":
+      return "#f9a8d4"; // pink-300
+    case "E74_Group":
+      return "#d1d5db"; // gray-300
+    case "E21_Person":
       return "#34d399"; // emerald
-    case "User":
-      return "#a78bfa"; // violet
-    case "Context":
-      return "#fb7185"; // rose
-    case "Place":
-      return "#60a5fa"; // blue
-    case "Concept":
-      return "#f472b6"; // pink
-    case "Event":
-      return "#f59e0b"; // amber
-    case "Day":
-      return "#94a3b8"; // slate
     case "Alias":
       return "#e5e7eb"; // zinc-200
     case "DisambiguationTask":
@@ -213,14 +206,13 @@ export function GraphMindMap({
     const root = nodes.find((n) => {
       if (!selectedRef) return false;
       const [label, key] = selectedRef.split(":", 2);
-      if (label === "Person") return n.kind === "Person" && String(n.raw?.id || "") === key;
-      if (label === "User") return n.kind === "User" && String(n.raw?.name || "") === key;
-      if (label === "Place") return n.kind === "Place" && String(n.raw?.name || "") === key;
-      if (label === "Concept") return n.kind === "Concept" && String(n.raw?.name || "") === key;
-      if (label === "Context") return n.kind === "Context" && String(n.raw?.key || "") === key;
-      if (label === "Event") return n.kind === "Event" && String(n.raw?.key || "") === key;
-      if (label === "Day") return n.kind === "Day" && String(n.raw?.date || "") === key;
-      if (label === "EventType") return n.kind === "EventType" && String(n.raw?.name || "") === key;
+      if (label === "E21_Person") return n.kind === "E21_Person" && String(n.raw?.id || "") === key;
+      if (label === "E53_Place") return n.kind === "E53_Place" && String(n.raw?.name || "") === key;
+      if (label === "E28_Conceptual_Object") return n.kind === "E28_Conceptual_Object" && String(n.raw?.name || "") === key;
+      if (label === "E73_Information_Object") return n.kind === "E73_Information_Object" && String(n.raw?.key || "") === key;
+      if (label === "Event") return n.kind === "E7_Activity" && String(n.raw?.key || "") === key;
+      if (label === "E52_Time_Span") return n.kind === "E52_Time_Span" && String(n.raw?.key || n.raw?.date || "") === key;
+      if (label === "E55_Type") return n.kind === "E55_Type" && String(n.raw?.name || "") === key;
       return false;
     });
     if (!root) return { nodes, edges };
@@ -235,7 +227,7 @@ export function GraphMindMap({
     for (const nbr of Array.from(adj.get(root.id) || [])) {
       keep.add(nbr);
       const node = nodes.find((n) => n.id === nbr);
-      if (node?.kind === "Event") {
+      if (node?.kind === "E7_Activity") {
         for (const ctx of Array.from(adj.get(nbr) || [])) keep.add(ctx);
       }
     }
@@ -253,7 +245,7 @@ export function GraphMindMap({
     for (const e of edges2) {
       const s = nodeById.get(e.source);
       const t = nodeById.get(e.target);
-      const eventId = s?.kind === "Event" ? e.source : t?.kind === "Event" ? e.target : "";
+      const eventId = s?.kind === "E7_Activity" ? e.source : t?.kind === "E7_Activity" ? e.target : "";
       if (!eventId) continue;
       const otherId = eventId === e.source ? e.target : e.source;
       const other = nodeById.get(otherId);
@@ -265,11 +257,11 @@ export function GraphMindMap({
       const ctx = eventCtx.get(eventId)!;
 
       // Relationship-driven enrichment
-      if (e.type === "ON_DAY" && other.kind === "Day") ctx.day = other.label;
-      if (e.type === "OCCURRED_AT" && other.kind === "Place") ctx.place = other.label;
-      if (e.type === "HAS_TOPIC" && (other.kind === "Concept" || other.kind === "Organization")) ctx.topics.add(other.label);
-      if (e.type === "HAS_EMOTION" && other.kind === "Emotion") ctx.emotions.add(other.label);
-      if (e.type === "HAS_TYPE" && other.kind === "EventType") ctx.type = other.label;
+      if (e.type === "P4_has_time_span" && other.kind === "E52_Time_Span") ctx.day = other.label;
+      if (e.type === "P7_took_place_at" && other.kind === "E53_Place") ctx.place = other.label;
+      if (e.type === "P67_refers_to" && (other.kind === "E28_Conceptual_Object" || other.kind === "E74_Group")) ctx.topics.add(other.label);
+      if (e.type === "P67_refers_to" && other.kind === "E55_Type") ctx.emotions.add(other.label);
+      if (e.type === "P2_has_type" && other.kind === "E55_Type") ctx.type = other.label;
     }
 
     const nodes3 = nodes2.map((n) => {
@@ -278,16 +270,16 @@ export function GraphMindMap({
       if (!compactMode) {
         // Non-compact: keep the current behavior (show context nodes & edges).
         let base = n.label;
-        if (n.kind === "Event") {
+        if (n.kind === "E7_Activity") {
           const ctx = eventCtx.get(n.id);
           if (ctx?.place) base = `${base} @ ${ctx.place}`;
         }
-        const label = n.kind === "Entry" ? `Entry: ${base}` : `${prefix}: ${base}`;
+        const label = n.kind === "E73_Information_Object" ? `Entry: ${base}` : `${prefix}: ${base}`;
         return { ...n, label };
       }
 
       // Compact card: encode Event attributes; hide context nodes later.
-      if (n.kind === "Event") {
+      if (n.kind === "E7_Activity") {
         const ctx = eventCtx.get(n.id);
         const raw = (n.raw || {}) as any;
 
@@ -317,7 +309,7 @@ export function GraphMindMap({
       }
 
       // Keep Person readable with type prefix.
-      const label = n.kind === "Entry" ? `Entry: ${n.label}` : `${prefix}: ${n.label}`;
+      const label = n.kind === "E73_Information_Object" ? `Entry: ${n.label}` : `${prefix}: ${n.label}`;
       return { ...n, label };
     });
 
@@ -325,8 +317,17 @@ export function GraphMindMap({
       return { nodes: nodes3, edges: edges2 };
     }
 
-    // Compact: only Person/User/Event/Context nodes.
-    const baseKinds = new Set<string>(["Person", "User", "Event", "Context"]);
+    // Compact: only CIDOC core nodes.
+    const baseKinds = new Set<string>([
+      "E21_Person",
+      "E7_Activity",
+      "E73_Information_Object",
+      "E28_Conceptual_Object",
+      "E52_Time_Span",
+      "E53_Place",
+      "E39_Actor",
+      "E74_Group",
+    ]);
     const idsDisplayed = new Set<string>();
     for (const n of nodes3) {
       if (baseKinds.has(n.kind)) idsDisplayed.add(n.id);
@@ -344,24 +345,22 @@ export function GraphMindMap({
           id: n.id,
           kind: n.kind,
           label: n.label,
-          personId: n.kind === "Person" ? String(n.raw?.id || "") : "",
+          personId: n.kind === "E21_Person" ? String(n.raw?.id || "") : "",
           ref:
-            n.kind === "Person"
-              ? `Person:${String(n.raw?.id || "")}`
-              : n.kind === "User"
-                ? `User:${String(n.raw?.name || "")}`
-                : n.kind === "Place"
-                  ? `Place:${String(n.raw?.name || "")}`
-                  : n.kind === "Concept"
-                    ? `Concept:${String(n.raw?.name || "")}`
-                  : n.kind === "Context"
-                    ? `Context:${String(n.raw?.key || "")}`
-                    : n.kind === "Event"
+            n.kind === "E21_Person"
+              ? `E21_Person:${String(n.raw?.id || "")}`
+              : n.kind === "E53_Place"
+                ? `E53_Place:${String(n.raw?.name || "")}`
+                : n.kind === "E28_Conceptual_Object"
+                  ? `E28_Conceptual_Object:${String(n.raw?.name || "")}`
+                  : n.kind === "E73_Information_Object"
+                      ? `E73_Information_Object:${String(n.raw?.key || "")}`
+                    : n.kind === "E7_Activity"
                       ? `Event:${String(n.raw?.key || "")}`
-                      : n.kind === "Day"
-                        ? `Day:${String(n.raw?.date || "")}`
-                        : n.kind === "EventType"
-                          ? `EventType:${String(n.raw?.name || "")}`
+                      : n.kind === "E52_Time_Span"
+                        ? `E52_Time_Span:${String(n.raw?.key || n.raw?.date || "")}`
+                        : n.kind === "E55_Type"
+                          ? `E55_Type:${String(n.raw?.name || "")}`
                           : "",
           color: colorForKind(n.kind),
         },
@@ -453,7 +452,7 @@ export function GraphMindMap({
         },
       },
       {
-        selector: 'node[kind = "Event"]',
+        selector: 'node[kind = "E7_Activity"]',
         style: {
           shape: "round-rectangle",
           width: compactMode ? 160 : 92,
@@ -462,7 +461,7 @@ export function GraphMindMap({
         },
       },
       {
-        selector: 'node[kind = "Entry"]',
+        selector: 'node[kind = "E73_Information_Object"]',
         style: {
           shape: "round-rectangle",
           width: 118,
@@ -472,7 +471,7 @@ export function GraphMindMap({
         },
       },
       {
-        selector: 'node[kind = "Context"]',
+        selector: 'node[kind = "E73_Information_Object"]',
         style: {
           shape: "ellipse",
           width: compactMode ? 150 : 95,
@@ -481,7 +480,7 @@ export function GraphMindMap({
         },
       },
       {
-        selector: 'node[kind = "Day"]',
+        selector: 'node[kind = "E52_Time_Span"]',
         style: { "font-size": 24, width: 86, height: 86, "text-max-width": 320 },
       },
       {

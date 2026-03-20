@@ -13,6 +13,7 @@ from typing import Any, Dict, Optional, TypedDict
 from langgraph.graph import StateGraph, END
 
 from .llm_extractor import LLMExtractor
+from .prep_agent import PrepAgent
 from .graph_store import GraphStore
 from .vector_store import VectorStore
 from .pipeline import MemoryPipeline
@@ -20,6 +21,7 @@ from .pipeline import MemoryPipeline
 
 class AgenticState(TypedDict, total=False):
     text: str
+    prep: Dict[str, Any]
     entry_id: str
     extraction: Any
     graph_status: str
@@ -30,6 +32,7 @@ class AgenticState(TypedDict, total=False):
 @dataclass
 class AgenticRunner:
     extractor: LLMExtractor
+    prep_agent: Optional[PrepAgent]
     graph_store: Optional[GraphStore]
     vector_store: Optional[VectorStore]
     user_name: str = ""
@@ -37,8 +40,23 @@ class AgenticRunner:
     def build(self):
         g: StateGraph = StateGraph(AgenticState)
 
+        def prep_node(state: AgenticState) -> AgenticState:
+            if not self.prep_agent:
+                return {**state, "prep": {}}
+            try:
+                prep = self.prep_agent.run(state["text"])
+                return {**state, "prep": prep}
+            except Exception:
+                return {**state, "prep": {}}
+
         def extract_node(state: AgenticState) -> AgenticState:
-            extraction = self.extractor.extract(state["text"])
+            prep = state.get("prep") or {}
+            extract_input = (prep.get("normalized_text") or "").strip() if isinstance(prep, dict) else ""
+            extract_input = extract_input if extract_input else state["text"]
+            extraction = self.extractor.extract(extract_input, prep_context=prep if isinstance(prep, dict) else None)
+            if isinstance(extraction.metadata, dict):
+                extraction.metadata["prep_v1"] = prep
+                extraction.metadata["raw_text"] = state["text"]
             return {**state, "extraction": extraction}
 
         def normalize_node(state: AgenticState) -> AgenticState:
@@ -83,13 +101,15 @@ class AgenticRunner:
             except Exception as e:
                 return {**state, "vector_status": f"error: {e}"}
 
+        g.add_node("prep", prep_node)
         g.add_node("extract", extract_node)
         g.add_node("normalize", normalize_node)
         g.add_node("consolidate", consolidate_node)
         g.add_node("persist_graph", persist_graph_node)
         g.add_node("persist_vector", persist_vector_node)
 
-        g.set_entry_point("extract")
+        g.set_entry_point("prep")
+        g.add_edge("prep", "extract")
         g.add_edge("extract", "normalize")
         g.add_edge("normalize", "consolidate")
         g.add_edge("consolidate", "persist_graph")

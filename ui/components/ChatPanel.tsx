@@ -141,6 +141,14 @@ export function ChatPanel() {
           <textarea
             value={text}
             onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key !== "Enter") return;
+              if (e.shiftKey) return;
+              // Keep IME composition (e.g. accented chars) working correctly.
+              if ((e.nativeEvent as any).isComposing) return;
+              e.preventDefault();
+              if (!busy && canSend) void send();
+            }}
             rows={4}
             className="min-h-[96px] flex-1 resize-y rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm outline-none placeholder:text-zinc-500 focus:border-zinc-600"
             placeholder="Write an entry…"

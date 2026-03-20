@@ -5,6 +5,7 @@ import uuid
 
 from .graph_store import GraphStore
 from .llm_extractor import LLMExtractor
+from .prep_agent import PrepAgent
 from .vector_store import VectorStore
 
 from config import (
@@ -44,6 +45,12 @@ class MemoryPipeline:
             api_version=AZURE_OPENAI_API_VERSION,
             user_name=USER_NAME,
         )
+        self.prep_agent = PrepAgent(
+            api_key=AZURE_OPENAI_API_KEY,
+            model=deployment,
+            azure_endpoint=AZURE_OPENAI_ENDPOINT.strip(),
+            api_version=AZURE_OPENAI_API_VERSION,
+        )
         
         self.graph_store = None
         if use_graph:
@@ -71,7 +78,17 @@ class MemoryPipeline:
         entry_id = entry_id or str(uuid.uuid4())
 
         # 1. Extract entities (LLM-only)
-        extraction = self.extractor.extract(text)
+        prep = {}
+        try:
+            prep = self.prep_agent.run(text)
+        except Exception:
+            prep = {}
+        extract_input = (prep.get("normalized_text") or "").strip() if isinstance(prep, dict) else ""
+        extract_input = extract_input if extract_input else text
+        extraction = self.extractor.extract(extract_input, prep_context=prep if isinstance(prep, dict) else None)
+        if isinstance(extraction.metadata, dict):
+            extraction.metadata["prep_v1"] = prep
+            extraction.metadata["raw_text"] = text
 
         # Resolve relative dates like "aujourd'hui" -> absolute event_time_iso,
         # then drop those Date entities so we don't store them as Date nodes.
@@ -86,6 +103,7 @@ class MemoryPipeline:
         entry_id = entry_id or str(uuid.uuid4())
         runner = AgenticRunner(
             extractor=self.extractor,
+            prep_agent=self.prep_agent,
             graph_store=self.graph_store,
             vector_store=self.vector_store,
             user_name=USER_NAME,
