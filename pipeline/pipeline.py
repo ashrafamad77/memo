@@ -97,31 +97,61 @@ class MemoryPipeline:
         return self.persist_extraction(text=text, extraction=extraction, entry_id=entry_id)
 
     def process_agentic(self, text: str, entry_id: Optional[str] = None) -> dict:
-        """Run the same pipeline through a minimal LangGraph workflow."""
+        """Run the v2 pipeline: Prep → Model → TypeResolve → WriteGraph → WriteVector."""
         from .agentic import AgenticRunner
+        from .modeling_agent import ModelingAgent
+        from .type_resolver import TypeResolver
+        from .graph_writer import GraphWriter
 
         entry_id = entry_id or str(uuid.uuid4())
+        deployment = (AZURE_OPENAI_DEPLOYMENT or "gpt-4o-mini").strip()
+
+        modeling_agent = ModelingAgent(
+            api_key=AZURE_OPENAI_API_KEY,
+            model=deployment,
+            azure_endpoint=AZURE_OPENAI_ENDPOINT.strip(),
+            api_version=AZURE_OPENAI_API_VERSION,
+        )
+
+        type_resolver = None
+        graph_writer = None
+        if self.graph_store and self.graph_store.driver:
+            type_resolver = TypeResolver(self.graph_store.driver)
+            graph_writer = GraphWriter(self.graph_store.driver)
+
+        day_bucket = datetime.now().strftime("%Y-%m-%d")
+
         runner = AgenticRunner(
-            extractor=self.extractor,
             prep_agent=self.prep_agent,
+            modeling_agent=modeling_agent,
+            type_resolver=type_resolver,
+            graph_writer=graph_writer,
             graph_store=self.graph_store,
             vector_store=self.vector_store,
+            extractor=self.extractor,
             user_name=USER_NAME,
         )
         app = runner.build()
-        out = app.invoke({"text": text, "entry_id": entry_id})
-        extraction = out.get("extraction")
-        entities = [{"text": e.text, "type": e.label} for e in getattr(extraction, "entities", [])]
-        relations = [
-            {"subject": r.subject, "predicate": r.predicate, "object": r.obj, "sentiment": r.sentiment}
-            for r in getattr(extraction, "relations", [])
+        out = app.invoke({
+            "text": text,
+            "entry_id": entry_id,
+            "day_bucket": day_bucket,
+        })
+
+        prep = out.get("prep") or {}
+        entities_raw = prep.get("entities", [])
+        entities = [
+            {"text": e.get("name", ""), "type": e.get("type", "")}
+            for e in entities_raw if isinstance(e, dict)
         ]
         return {
             "entry_id": entry_id,
             "entities": entities,
-            "relations": relations,
+            "relations": [],
             "graph": out.get("graph_status", "skipped"),
             "vector": out.get("vector_status", "skipped"),
+            "prep": prep,
+            "graph_spec": out.get("graph_spec", {}),
         }
 
     def persist_extraction(self, text: str, extraction, entry_id: Optional[str] = None) -> dict:

@@ -1,40 +1,45 @@
 """Agentic orchestration (LangGraph) for the memory pipeline.
 
-This is intentionally minimal: Extract -> Normalize -> Persist.
-We will extend it with a real Consolidator (entity resolution) next.
+Flow: Prep → Model → TypeResolve → WriteGraph → WriteVector
 """
-
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, Optional, TypedDict
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, TypedDict
 
 from langgraph.graph import StateGraph, END
 
-from .llm_extractor import LLMExtractor
 from .prep_agent import PrepAgent
+from .modeling_agent import ModelingAgent
+from .type_resolver import TypeResolver
+from .graph_writer import GraphWriter
 from .graph_store import GraphStore
 from .vector_store import VectorStore
+from .llm_extractor import LLMExtractor
 from .pipeline import MemoryPipeline
 
 
 class AgenticState(TypedDict, total=False):
     text: str
-    prep: Dict[str, Any]
     entry_id: str
+    day_bucket: str
+    prep: Dict[str, Any]
+    graph_spec: Dict[str, Any]
     extraction: Any
     graph_status: str
     vector_status: str
-    consolidation: Dict[str, Any]
 
 
 @dataclass
 class AgenticRunner:
-    extractor: LLMExtractor
     prep_agent: Optional[PrepAgent]
+    modeling_agent: Optional[ModelingAgent]
+    type_resolver: Optional[TypeResolver]
+    graph_writer: Optional[GraphWriter]
     graph_store: Optional[GraphStore]
     vector_store: Optional[VectorStore]
+    extractor: Optional[LLMExtractor] = None
     user_name: str = ""
 
     def build(self):
@@ -46,38 +51,40 @@ class AgenticRunner:
             try:
                 prep = self.prep_agent.run(state["text"])
                 return {**state, "prep": prep}
-            except Exception:
-                return {**state, "prep": {}}
+            except Exception as e:
+                return {**state, "prep": {"_error": str(e)}}
 
-        def extract_node(state: AgenticState) -> AgenticState:
+        def model_node(state: AgenticState) -> AgenticState:
             prep = state.get("prep") or {}
-            extract_input = (prep.get("normalized_text") or "").strip() if isinstance(prep, dict) else ""
-            extract_input = extract_input if extract_input else state["text"]
-            extraction = self.extractor.extract(extract_input, prep_context=prep if isinstance(prep, dict) else None)
-            if isinstance(extraction.metadata, dict):
-                extraction.metadata["prep_v1"] = prep
-                extraction.metadata["raw_text"] = state["text"]
-            return {**state, "extraction": extraction}
-
-        def normalize_node(state: AgenticState) -> AgenticState:
-            extraction = state["extraction"]
-            extraction = MemoryPipeline._resolve_relative_dates(extraction, input_dt=datetime.now())
-            return {**state, "extraction": extraction}
-
-        def consolidate_node(state: AgenticState) -> AgenticState:
-            # Non-blocking HITL: consolidation happens during persistence (GraphStore.store_entry),
-            # which can emit DisambiguationTask nodes for the UI Inbox.
-            return {**state, "consolidation": {"status": "skipped"}}
+            if not self.modeling_agent or not prep.get("micro_events"):
+                return {**state, "graph_spec": {"nodes": [], "edges": []}}
+            try:
+                existing_types: List[str] = []
+                if self.type_resolver:
+                    existing_types = self.type_resolver.get_existing_types()
+                spec = self.modeling_agent.run(
+                    prep=prep,
+                    user_name=self.user_name,
+                    existing_types=existing_types,
+                    day_bucket=state.get("day_bucket", ""),
+                )
+                if self.type_resolver:
+                    spec = self.type_resolver.resolve_graph_spec(spec, existing_types)
+                return {**state, "graph_spec": spec}
+            except Exception as e:
+                return {**state, "graph_spec": {"nodes": [], "edges": [], "_error": str(e)}}
 
         def persist_graph_node(state: AgenticState) -> AgenticState:
-            if not self.graph_store:
+            spec = state.get("graph_spec") or {}
+            if not self.graph_writer or not spec.get("nodes"):
                 return {**state, "graph_status": "skipped"}
             try:
-                self.graph_store.store_entry(
+                self.graph_writer.write(
+                    spec=spec,
                     entry_id=state["entry_id"],
-                    text=state["text"],
-                    extraction=state["extraction"],
+                    raw_text=state["text"],
                     user_name=self.user_name,
+                    day_bucket=state.get("day_bucket", ""),
                 )
                 return {**state, "graph_status": "ok"}
             except Exception as e:
@@ -87,14 +94,18 @@ class AgenticRunner:
             if not self.vector_store:
                 return {**state, "vector_status": "skipped"}
             try:
-                extraction = state["extraction"]
+                prep = state.get("prep") or {}
+                entities = prep.get("entities", [])
+                entity_names = [
+                    e.get("name", "") for e in entities
+                    if isinstance(e, dict) and e.get("name")
+                ][:10]
                 self.vector_store.add_entry(
                     entry_id=state["entry_id"],
                     text=state["text"],
                     metadata={
-                        "entity_count": len(extraction.entities),
-                        "entities": [e.text for e in extraction.entities if e.label != "Date"][:10],
-                        "metadata": extraction.metadata,
+                        "entity_count": len(entities),
+                        "entities": entity_names,
                     },
                 )
                 return {**state, "vector_status": "ok"}
@@ -102,19 +113,14 @@ class AgenticRunner:
                 return {**state, "vector_status": f"error: {e}"}
 
         g.add_node("prep", prep_node)
-        g.add_node("extract", extract_node)
-        g.add_node("normalize", normalize_node)
-        g.add_node("consolidate", consolidate_node)
+        g.add_node("model", model_node)
         g.add_node("persist_graph", persist_graph_node)
         g.add_node("persist_vector", persist_vector_node)
 
         g.set_entry_point("prep")
-        g.add_edge("prep", "extract")
-        g.add_edge("extract", "normalize")
-        g.add_edge("normalize", "consolidate")
-        g.add_edge("consolidate", "persist_graph")
+        g.add_edge("prep", "model")
+        g.add_edge("model", "persist_graph")
         g.add_edge("persist_graph", "persist_vector")
         g.add_edge("persist_vector", END)
 
         return g.compile()
-

@@ -645,10 +645,14 @@ class GraphStore:
             sentiment_map[(r.subject.lower(), r.obj.lower())] = r.sentiment
 
         def _store(tx):
+            short = (text or "")[:60].strip()
+            if len(text or "") > 60:
+                short += "..."
             tx.run("""
                 MERGE (j:E73_Information_Object {id: $id})
-                SET j.text = $text, j.input_time = datetime($input_ts), j.entry_kind = 'journal_entry'
-            """, id=entry_id, text=text[:5000], input_ts=input_ts_str)
+                SET j.text = $text, j.input_time = datetime($input_ts), j.entry_kind = 'journal_entry',
+                    j.name = $short_name
+            """, id=entry_id, text=text[:5000], input_ts=input_ts_str, short_name=short)
 
             # Multi-event mode: create multiple Event occurrences and sequence/impact edges.
             # This is a best-effort implementation driven by LLM metadata.events / metadata.event_relations.
