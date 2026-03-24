@@ -1,5 +1,10 @@
-export const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE || "http://127.0.0.1:8000";
+function getApiBase(): string {
+  if (process.env.NEXT_PUBLIC_API_BASE) return process.env.NEXT_PUBLIC_API_BASE;
+  if (typeof window !== "undefined")
+    return `${window.location.protocol}//${window.location.hostname}:8000`;
+  return "http://127.0.0.1:8000";
+}
+export const API_BASE = getApiBase();
 
 export async function apiGet<T>(path: string): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, { cache: "no-store" });

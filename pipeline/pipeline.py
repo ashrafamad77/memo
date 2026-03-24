@@ -149,6 +149,7 @@ class MemoryPipeline:
             "entities": entities,
             "relations": [],
             "graph": out.get("graph_status", "skipped"),
+            "audit": out.get("graph_audit", {}),
             "vector": out.get("vector_status", "skipped"),
             "prep": prep,
             "graph_spec": out.get("graph_spec", {}),

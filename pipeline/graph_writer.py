@@ -5,7 +5,7 @@ No hardcoded semantic logic — all intelligence is in the Modeling Agent.
 """
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -64,13 +64,13 @@ class GraphWriter:
         user_name: str = "",
         day_bucket: str = "",
         input_ts: Optional[str] = None,
-    ) -> None:
+    ) -> Dict[str, Any]:
         if not spec or (not spec.get("nodes") and not spec.get("edges")):
-            return
+            return {"status": "skipped", "reason": "empty_spec"}
         ts = input_ts or datetime.now().astimezone().isoformat()
 
         with self.driver.session() as session:
-            session.execute_write(
+            return session.execute_write(
                 self._write_tx,
                 spec=spec,
                 entry_id=entry_id,
@@ -89,9 +89,238 @@ class GraphWriter:
         user_name: str,
         day_bucket: str,
         ts: str,
-    ) -> None:
+    ) -> Dict[str, Any]:
         nodes: List[Dict] = spec.get("nodes", [])
         edges: List[Dict] = spec.get("edges", [])
+
+        # Build node label lookup from the spec for edge validation/repair.
+        # We validate at write-time so malformed LLM output cannot corrupt CIDOC directionality.
+        id_to_label: Dict[str, str] = {}
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            nid = str(node.get("id", ""))
+            label = str(node.get("label", ""))
+            if nid and label:
+                id_to_label[nid] = label
+
+        def _is_activity(label: str) -> bool:
+            return label in {"E5_Event", "E7_Activity", "E10_Transfer_of_Custody"}
+
+        def _is_actor(label: str) -> bool:
+            return label in {"E39_Actor", "E21_Person"}
+
+        def _is_transfer_intent(text: str) -> bool:
+            t = (text or "").lower()
+            transfer_markers = [
+                "donne", "donné", "donner", "gave", "give", "lent", "prêt", "preter",
+                "retourne", "returned", "return", "took", "pris", "book", "livre",
+            ]
+            return any(m in t for m in transfer_markers)
+
+        def _is_state_intent(text: str) -> bool:
+            t = (text or "").lower()
+            state_markers = [
+                "fait mal", "mal", "douleur", "pain", "hurt", "triste", "decu",
+                "déçu", "deception", "disappointment", "attente", "expectation",
+            ]
+            return any(m in t for m in state_markers)
+
+        def _get_node_name(nid: str) -> str:
+            for n in nodes:
+                if isinstance(n, dict) and str(n.get("id", "")) == nid:
+                    return str(n.get("name", ""))
+            return ""
+
+        def _add_node_once(nid: str, label: str, name: str, types: Optional[List[str]] = None) -> None:
+            if nid in id_to_label:
+                return
+            nodes.append(
+                {
+                    "id": nid,
+                    "label": label,
+                    "name": name,
+                    "types": types or [],
+                    "properties": {},
+                }
+            )
+            id_to_label[nid] = label
+
+        def _edge_allowed(prop: str, from_label: str, to_label: str) -> bool:
+            if prop == "P2_has_type":
+                return to_label == "E55_Type"
+            if prop == "P4_has_time_span":
+                return _is_activity(from_label) and to_label == "E52_Time_Span"
+            if prop == "P7_took_place_at":
+                return _is_activity(from_label) and to_label == "E53_Place"
+            if prop == "P14_carried_out_by":
+                return _is_activity(from_label) and _is_actor(to_label)
+            if prop == "P14i_performed":
+                return _is_actor(from_label) and _is_activity(to_label)
+            if prop == "P15_was_influenced_by":
+                return _is_activity(from_label)
+            if prop == "P17_was_motivated_by":
+                return _is_activity(from_label)
+            if prop in {"P28_custody_surrendered_by", "P29_custody_received_by"}:
+                return from_label == "E10_Transfer_of_Custody" and _is_actor(to_label)
+            if prop == "P30_transferred_custody_of":
+                return from_label == "E10_Transfer_of_Custody" and to_label == "E22_Human_Made_Object"
+            if prop == "P67_refers_to":
+                return from_label in {"E73_Information_Object", "E89_Propositional_Object", "E7_Activity", "E13_Attribute_Assignment"}
+            if prop == "P120_occurs_before":
+                return _is_activity(from_label) and _is_activity(to_label)
+            if prop == "P140_assigned_attribute_to":
+                return from_label == "E13_Attribute_Assignment"
+            if prop == "P141_assigned":
+                return from_label == "E13_Attribute_Assignment" and to_label in {"E55_Type", "E28_Conceptual_Object", "E89_Propositional_Object"}
+            return False
+
+        def _normalize_edge(edge: Dict[str, Any]) -> Optional[Tuple[str, str, str, Dict[str, Any]]]:
+            from_id = str(edge.get("from", ""))
+            to_id = str(edge.get("to", ""))
+            prop = str(edge.get("property", ""))
+            eprops = edge.get("properties", {})
+            if not isinstance(eprops, dict):
+                eprops = {}
+            if not from_id or not to_id or not prop:
+                return None
+            if prop not in VALID_PROPERTIES:
+                logger.warning("Unknown property %s, skipping edge", prop)
+                return None
+            fl = id_to_label.get(from_id, "")
+            tl = id_to_label.get(to_id, "")
+            if not fl or not tl:
+                return None
+
+            # Auto-repair known inverse mistakes from LLM output.
+            if prop == "P14i_performed" and _is_activity(fl) and _is_actor(tl):
+                from_id, to_id = to_id, from_id
+                fl, tl = tl, fl
+            elif prop == "P140_assigned_attribute_to" and fl != "E13_Attribute_Assignment" and tl == "E13_Attribute_Assignment":
+                from_id, to_id = to_id, from_id
+                fl, tl = tl, fl
+            elif prop == "P141_assigned" and fl != "E13_Attribute_Assignment" and tl == "E13_Attribute_Assignment":
+                from_id, to_id = to_id, from_id
+                fl, tl = tl, fl
+
+            if not _edge_allowed(prop, fl, tl):
+                logger.warning(
+                    "CIDOC validation rejected edge: %s (%s -> %s), skipping",
+                    prop,
+                    fl,
+                    tl,
+                )
+                return None
+            return from_id, to_id, prop, eprops
+
+        normalized_edges: List[Tuple[str, str, str, Dict[str, Any]]] = []
+        for edge in edges:
+            if not isinstance(edge, dict):
+                continue
+            norm = _normalize_edge(edge)
+            if norm:
+                normalized_edges.append(norm)
+
+        transfer_intent = _is_transfer_intent(raw_text)
+        state_intent = _is_state_intent(raw_text)
+
+        actor_ids = [nid for nid, lab in id_to_label.items() if _is_actor(lab)]
+        user_actor_id = ""
+        for aid in actor_ids:
+            if _get_node_name(aid).strip().lower() == (user_name or "").strip().lower() and user_name.strip():
+                user_actor_id = aid
+                break
+        if not user_actor_id and user_name.strip():
+            user_actor_id = "auto_user_actor"
+            _add_node_once(user_actor_id, "E21_Person", user_name.strip(), ["User"])
+            actor_ids.append(user_actor_id)
+
+        other_actor_id = ""
+        for aid in actor_ids:
+            if aid != user_actor_id:
+                other_actor_id = aid
+                break
+
+        transfer_ids = [nid for nid, lab in id_to_label.items() if lab == "E10_Transfer_of_Custody"]
+        if transfer_intent and not transfer_ids:
+            transfer_name = "transfer of custody"
+            txt = (raw_text or "").lower()
+            if "livre" in txt or "book" in txt:
+                transfer_name = "don de livre"
+            tid = "auto_transfer_1"
+            _add_node_once(tid, "E10_Transfer_of_Custody", transfer_name, ["BookLending"])
+            transfer_ids.append(tid)
+
+        # Completeness rule: every transfer should point to an object via P30.
+        transfer_with_p30 = {f for (f, _t, p, _ep) in normalized_edges if p == "P30_transferred_custody_of"}
+        book_hint = "book"
+        text_l = (raw_text or "").lower()
+        if "livre" in text_l:
+            book_hint = "livre"
+        for tid in transfer_ids:
+            if tid in transfer_with_p30:
+                continue
+            oid = f"auto_obj_{tid}"
+            if oid not in id_to_label:
+                nodes.append(
+                    {
+                        "id": oid,
+                        "label": "E22_Human_Made_Object",
+                        "name": book_hint,
+                        "types": [],
+                        "properties": {},
+                    }
+                )
+                id_to_label[oid] = "E22_Human_Made_Object"
+            normalized_edges.append((tid, oid, "P30_transferred_custody_of", {}))
+
+        # Completeness rule: attach transfer actors when available.
+        p28_from = {f for (f, _t, p, _ep) in normalized_edges if p == "P28_custody_surrendered_by"}
+        p29_from = {f for (f, _t, p, _ep) in normalized_edges if p == "P29_custody_received_by"}
+        for tid in transfer_ids:
+            if user_actor_id and tid not in p28_from:
+                normalized_edges.append((tid, user_actor_id, "P28_custody_surrendered_by", {}))
+            if other_actor_id and tid not in p29_from:
+                normalized_edges.append((tid, other_actor_id, "P29_custody_received_by", {}))
+
+        # Completeness rule: when emotional/expectation intent exists, ensure E13 assignment exists.
+        assignment_ids = [nid for nid, lab in id_to_label.items() if lab == "E13_Attribute_Assignment"]
+        if state_intent and not assignment_ids:
+            sid = "auto_state_1"
+            state_type = "EmotionalPain"
+            if any(k in text_l for k in ["expect", "attente", "retour"]):
+                state_type = "Expectation"
+            _add_node_once(sid, "E13_Attribute_Assignment", "state assignment")
+            stid = "auto_state_type_1"
+            _add_node_once(stid, "E55_Type", state_type)
+            target_id = user_actor_id or (actor_ids[0] if actor_ids else "")
+            if target_id:
+                normalized_edges.append((sid, target_id, "P140_assigned_attribute_to", {}))
+            normalized_edges.append((sid, stid, "P141_assigned", {}))
+            assignment_ids.append(sid)
+
+        # Completeness rule: each E13 must have P140 + P141.
+        for aid in assignment_ids:
+            has_p140 = any(f == aid and p == "P140_assigned_attribute_to" for (f, _t, p, _ep) in normalized_edges)
+            has_p141 = any(f == aid and p == "P141_assigned" for (f, _t, p, _ep) in normalized_edges)
+
+            if not has_p140:
+                target_id = user_actor_id or (actor_ids[0] if actor_ids else "")
+                if target_id:
+                    normalized_edges.append((aid, target_id, "P140_assigned_attribute_to", {}))
+
+            if not has_p141:
+                assigned_type_name = "AssignedState"
+                for n in nodes:
+                    if not isinstance(n, dict) or str(n.get("id", "")) != aid:
+                        continue
+                    ntypes = n.get("types", [])
+                    if isinstance(ntypes, list) and ntypes:
+                        assigned_type_name = str(ntypes[0] or "").strip() or assigned_type_name
+                    break
+                p141_tid = f"auto_p141_type_{aid}"
+                _add_node_once(p141_tid, "E55_Type", assigned_type_name)
+                normalized_edges.append((aid, p141_tid, "P141_assigned", {}))
 
         short_name = raw_text[:60].strip()
         if len(raw_text) > 60:
@@ -120,6 +349,7 @@ class GraphWriter:
             )
 
         id_to_key: Dict[str, str] = {}
+        id_to_type_name: Dict[str, str] = {}
 
         for node in nodes:
             if not isinstance(node, dict):
@@ -137,31 +367,42 @@ class GraphWriter:
                 logger.warning("Unknown label %s for node %s, skipping", label, nid)
                 continue
 
-            neo_label = MULTI_LABEL_MAP.get(label, label)
-            key = f"{entry_id}|{nid}"
-            id_to_key[nid] = key
+            # E55 types are global vocabulary nodes and should be merged by name,
+            # not per-entry key (prevents duplicates like multiple "Emotion" nodes).
+            if label == "E55_Type":
+                tx.run(
+                    """
+                    MERGE (n:E55_Type {name: $name})
+                    """,
+                    name=name,
+                )
+                id_to_type_name[nid] = name
+            else:
+                neo_label = MULTI_LABEL_MAP.get(label, label)
+                key = f"{entry_id}|{nid}"
+                id_to_key[nid] = key
 
-            prop_sets = []
-            prop_params: Dict[str, Any] = {"key": key, "name": name, "ts": ts}
+                prop_sets = []
+                prop_params: Dict[str, Any] = {"key": key, "name": name, "ts": ts}
 
-            if "event_time_iso" in props:
-                prop_sets.append("n.event_time_iso = $eti")
-                prop_params["eti"] = str(props["event_time_iso"])
-            if "event_time_text" in props:
-                prop_sets.append("n.event_time_text = $ett")
-                prop_params["ett"] = str(props["event_time_text"])
+                if "event_time_iso" in props:
+                    prop_sets.append("n.event_time_iso = $eti")
+                    prop_params["eti"] = str(props["event_time_iso"])
+                if "event_time_text" in props:
+                    prop_sets.append("n.event_time_text = $ett")
+                    prop_params["ett"] = str(props["event_time_text"])
 
-            extra = (", " + ", ".join(prop_sets)) if prop_sets else ""
+                extra = (", " + ", ".join(prop_sets)) if prop_sets else ""
 
-            tx.run(
-                f"""
-                MERGE (n:{neo_label} {{key: $key}})
-                ON CREATE SET n.first_seen = datetime($ts)
-                SET n.last_seen = datetime($ts),
-                    n.name = $name{extra}
-                """,
-                **prop_params,
-            )
+                tx.run(
+                    f"""
+                    MERGE (n:{neo_label} {{key: $key}})
+                    ON CREATE SET n.first_seen = datetime($ts)
+                    SET n.last_seen = datetime($ts),
+                        n.name = $name{extra}
+                    """,
+                    **prop_params,
+                )
 
             if isinstance(types, list):
                 for t in types:
@@ -178,6 +419,7 @@ class GraphWriter:
                         tname=tname,
                     )
 
+            neo_label = MULTI_LABEL_MAP.get(label, label)
             is_activity = label in (
                 "E7_Activity",
                 "E10_Transfer_of_Custody",
@@ -193,58 +435,58 @@ class GraphWriter:
                     day=day_bucket,
                 )
 
-            tx.run(
-                """
-                MATCH (j:E73_Information_Object {id: $entry_id})
-                MATCH (n {key: $key})
-                MERGE (j)-[:P67_refers_to {ref_type: 'about'}]->(n)
-                """,
-                entry_id=entry_id,
-                key=key,
-            )
+            # Do not attach journal -> E55 type by P67; types classify entities/events.
+            if label != "E55_Type":
+                tx.run(
+                    """
+                    MATCH (j:E73_Information_Object {id: $entry_id})
+                    MATCH (n {key: $key})
+                    MERGE (j)-[:P67_refers_to {ref_type: 'about'}]->(n)
+                    """,
+                    entry_id=entry_id,
+                    key=key,
+                )
 
-        for edge in edges:
-            if not isinstance(edge, dict):
-                continue
-            from_id = str(edge.get("from", ""))
-            to_id = str(edge.get("to", ""))
-            prop = str(edge.get("property", ""))
-            eprops = edge.get("properties", {})
-            if not isinstance(eprops, dict):
-                eprops = {}
-
-            if not from_id or not to_id or not prop:
-                continue
-            if prop not in VALID_PROPERTIES:
-                logger.warning("Unknown property %s, skipping edge", prop)
-                continue
-
+        for from_id, to_id, prop, eprops in normalized_edges:
             from_key = id_to_key.get(from_id)
             to_key = id_to_key.get(to_id)
-            if not from_key or not to_key:
+            from_type_name = id_to_type_name.get(from_id)
+            to_type_name = id_to_type_name.get(to_id)
+            if not (from_key or from_type_name):
+                continue
+            if not (to_key or to_type_name):
                 continue
 
             ref_type = str(eprops.get("ref_type", ""))
+            match_a = "MATCH (a {key: $fk})" if from_key else "MATCH (a:E55_Type {name: $fn})"
+            match_b = "MATCH (b {key: $tk})" if to_key else "MATCH (b:E55_Type {name: $tn})"
+            params: Dict[str, Any] = {}
+            if from_key:
+                params["fk"] = from_key
+            else:
+                params["fn"] = from_type_name
+            if to_key:
+                params["tk"] = to_key
+            else:
+                params["tn"] = to_type_name
             if ref_type:
                 tx.run(
                     f"""
-                    MATCH (a {{key: $fk}})
-                    MATCH (b {{key: $tk}})
+                    {match_a}
+                    {match_b}
                     MERGE (a)-[r:{prop} {{ref_type: $rt}}]->(b)
                     """,
-                    fk=from_key,
-                    tk=to_key,
                     rt=ref_type,
+                    **params,
                 )
             else:
                 tx.run(
                     f"""
-                    MATCH (a {{key: $fk}})
-                    MATCH (b {{key: $tk}})
+                    {match_a}
+                    {match_b}
                     MERGE (a)-[:{prop}]->(b)
                     """,
-                    fk=from_key,
-                    tk=to_key,
+                    **params,
                 )
 
         if user_name:
@@ -260,3 +502,94 @@ class GraphWriter:
                 name=user_name,
                 ts=ts,
             )
+
+        # Post-write CIDOC audit for this entry scope (entry node + keyed nodes).
+        audit = {}
+        # Neo4j subquery aliases need stable names; use separate run for clarity/safety.
+        wrong_p140 = tx.run(
+            """
+            MATCH (j:E73_Information_Object {id: $entry_id})-[:P67_refers_to]->(s)
+            WITH collect(DISTINCT s) as scope
+            MATCH (a:E7_Activity)-[r:P140_assigned_attribute_to]->(b:E13_Attribute_Assignment)
+            WHERE a IN scope OR b IN scope
+            RETURN count(r) as c
+            """,
+            entry_id=entry_id,
+        ).single()["c"]
+        wrong_p141 = tx.run(
+            """
+            MATCH (j:E73_Information_Object {id: $entry_id})-[:P67_refers_to]->(s)
+            WITH collect(DISTINCT s) as scope
+            MATCH (a:E7_Activity)-[r:P141_assigned]->(b:E13_Attribute_Assignment)
+            WHERE a IN scope OR b IN scope
+            RETURN count(r) as c
+            """,
+            entry_id=entry_id,
+        ).single()["c"]
+        wrong_p14i = tx.run(
+            """
+            MATCH (j:E73_Information_Object {id: $entry_id})-[:P67_refers_to]->(s)
+            WITH collect(DISTINCT s) as scope
+            MATCH (a:E7_Activity)-[r:P14i_performed]->(b:E39_Actor)
+            WHERE a IN scope OR b IN scope
+            RETURN count(r) as c
+            """,
+            entry_id=entry_id,
+        ).single()["c"]
+        transfer_missing_object = tx.run(
+            """
+            MATCH (j:E73_Information_Object {id: $entry_id})-[:P67_refers_to]->(s)
+            WITH collect(DISTINCT s) as scope
+            MATCH (t:E10_Transfer_of_Custody)
+            WHERE t IN scope AND NOT (t)-[:P30_transferred_custody_of]->(:E22_Human_Made_Object)
+            RETURN count(t) as c
+            """,
+            entry_id=entry_id,
+        ).single()["c"]
+        transfer_count = tx.run(
+            """
+            MATCH (j:E73_Information_Object {id: $entry_id})-[:P67_refers_to]->(s:E10_Transfer_of_Custody)
+            RETURN count(s) as c
+            """,
+            entry_id=entry_id,
+        ).single()["c"]
+        assignment_count = tx.run(
+            """
+            MATCH (j:E73_Information_Object {id: $entry_id})-[:P67_refers_to]->(s:E13_Attribute_Assignment)
+            RETURN count(s) as c
+            """,
+            entry_id=entry_id,
+        ).single()["c"]
+        assignment_missing_p140 = tx.run(
+            """
+            MATCH (j:E73_Information_Object {id: $entry_id})-[:P67_refers_to]->(s:E13_Attribute_Assignment)
+            WHERE NOT (s)-[:P140_assigned_attribute_to]->()
+            RETURN count(s) as c
+            """,
+            entry_id=entry_id,
+        ).single()["c"]
+        assignment_missing_p141 = tx.run(
+            """
+            MATCH (j:E73_Information_Object {id: $entry_id})-[:P67_refers_to]->(s:E13_Attribute_Assignment)
+            WHERE NOT (s)-[:P141_assigned]->(:E55_Type)
+            RETURN count(s) as c
+            """,
+            entry_id=entry_id,
+        ).single()["c"]
+        audit = {
+            "wrong_p140": int(wrong_p140),
+            "wrong_p141": int(wrong_p141),
+            "wrong_p14i": int(wrong_p14i),
+            "transfer_missing_object": int(transfer_missing_object),
+            "transfer_count": int(transfer_count),
+            "assignment_count": int(assignment_count),
+            "assignment_missing_p140": int(assignment_missing_p140),
+            "assignment_missing_p141": int(assignment_missing_p141),
+            "is_valid": int(wrong_p140) == 0
+            and int(wrong_p141) == 0
+            and int(wrong_p14i) == 0
+            and int(transfer_missing_object) == 0
+            and int(assignment_missing_p140) == 0
+            and int(assignment_missing_p141) == 0,
+        }
+        return audit

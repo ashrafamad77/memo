@@ -26,6 +26,12 @@ USER_NAME = os.getenv("USER_NAME", "")  # e.g. Ashraf
 USER_AGE = os.getenv("USER_AGE", "")  # optional
 USER_LANG = os.getenv("USER_LANG", "")  # optional, e.g. french
 
+# CORS – frontend origin (port 3000), same setup locally and on VPS
+CORS_ORIGINS = os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:3000,http://127.0.0.1:3000,http://88.223.92.163:3000",
+)
+
 # LLM extraction (Azure AI Foundry)
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY", "")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "")  # e.g. https://xxx.cognitiveservices.azure.com/

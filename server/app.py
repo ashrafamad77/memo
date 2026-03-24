@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from .neo4j_repo import Neo4jRepo
 from pipeline import MemoryPipeline
 from pipeline.extractor import ExtractedEntity
-from config import USER_NAME
+from config import USER_NAME, CORS_ORIGINS
 
 
 class ChatIn(BaseModel):
@@ -214,11 +214,11 @@ def create_app() -> FastAPI:
         "pending": None,  # for clarifier payload
     }
 
-    # Local-first: allow the local Next.js dev server
+    # CORS: allow localhost (dev) and VPS
+    origins = [o.strip() for o in CORS_ORIGINS.split(",") if o.strip()]
     app.add_middleware(
         CORSMiddleware,
-        # Allow any local dev port (Next.js often runs on 3000/3001/3002...)
-        allow_origin_regex=r"^http://(localhost|127\.0\.0\.1)(:\d+)?$",
+        allow_origins=origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -359,7 +359,7 @@ def create_app() -> FastAPI:
                     is_remote_context=True,
                         non_local_places=pending.get("non_local_places", []),
                 )
-            result = pipeline.persist_extraction(text=original_text, extraction=extraction)
+            result = pipeline.process_agentic(text=original_text)
             chat_state["mode"] = None
             chat_state["pending"] = None
             return {"type": "add_entry", "result": result}
@@ -394,7 +394,7 @@ def create_app() -> FastAPI:
                 }
                 return {"type": "question", "mode": "clarification", "question": ambiguity["question"]}
 
-            result = pipeline.persist_extraction(text=text, extraction=extraction)
+            result = pipeline.process_agentic(text=text)
             return {"type": "add_entry", "result": result}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e)) from e

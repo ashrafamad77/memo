@@ -28,6 +28,7 @@ class AgenticState(TypedDict, total=False):
     graph_spec: Dict[str, Any]
     extraction: Any
     graph_status: str
+    graph_audit: Dict[str, Any]
     vector_status: str
 
 
@@ -77,18 +78,18 @@ class AgenticRunner:
         def persist_graph_node(state: AgenticState) -> AgenticState:
             spec = state.get("graph_spec") or {}
             if not self.graph_writer or not spec.get("nodes"):
-                return {**state, "graph_status": "skipped"}
+                return {**state, "graph_status": "skipped", "graph_audit": {"status": "skipped"}}
             try:
-                self.graph_writer.write(
+                audit = self.graph_writer.write(
                     spec=spec,
                     entry_id=state["entry_id"],
                     raw_text=state["text"],
                     user_name=self.user_name,
                     day_bucket=state.get("day_bucket", ""),
                 )
-                return {**state, "graph_status": "ok"}
+                return {**state, "graph_status": "ok", "graph_audit": audit}
             except Exception as e:
-                return {**state, "graph_status": f"error: {e}"}
+                return {**state, "graph_status": f"error: {e}", "graph_audit": {"status": "error", "detail": str(e)}}
 
         def persist_vector_node(state: AgenticState) -> AgenticState:
             if not self.vector_store:
