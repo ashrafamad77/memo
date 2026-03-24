@@ -114,11 +114,14 @@ class GraphWriter:
 
         def _is_transfer_intent(text: str) -> bool:
             t = (text or "").lower()
-            transfer_markers = [
-                "donne", "donné", "donner", "gave", "give", "lent", "prêt", "preter",
-                "retourne", "returned", "return", "took", "pris", "book", "livre",
+            # Strict pattern to avoid hallucinated custody events for unrelated verbs.
+            transfer_verbs = [
+                "donne", "donné", "donner", "gave", "give", "lending", "lend",
+                "prête", "prêt", "preter", "prêter", "borrow", "emprunt",
+                "retourne le", "returned the", "return the",
             ]
-            return any(m in t for m in transfer_markers)
+            transfer_objects = ["livre", "book", "objet", "item", "cadeau", "gift"]
+            return any(v in t for v in transfer_verbs) and any(o in t for o in transfer_objects)
 
         def _is_state_intent(text: str) -> bool:
             t = (text or "").lower()
@@ -387,6 +390,7 @@ class GraphWriter:
 
         id_to_key: Dict[str, str] = {}
         id_to_type_name: Dict[str, str] = {}
+        id_to_person_name: Dict[str, str] = {}
 
         for node in nodes:
             if not isinstance(node, dict):
@@ -404,8 +408,7 @@ class GraphWriter:
                 logger.warning("Unknown label %s for node %s, skipping", label, nid)
                 continue
 
-            # E55 types are global vocabulary nodes and should be merged by name,
-            # not per-entry key (prevents duplicates like multiple "Emotion" nodes).
+            # E55 types are global vocabulary nodes and should be merged by name.
             if label == "E55_Type":
                 tx.run(
                     """
@@ -414,6 +417,18 @@ class GraphWriter:
                     name=name,
                 )
                 id_to_type_name[nid] = name
+            elif label == "E21_Person":
+                # Merge people globally by name so user/known persons are not duplicated per entry.
+                tx.run(
+                    """
+                    MERGE (n:E21_Person:E39_Actor {name: $name})
+                    ON CREATE SET n.first_seen = datetime($ts), n.id = coalesce(n.id, randomUUID())
+                    SET n.last_seen = datetime($ts)
+                    """,
+                    name=name,
+                    ts=ts,
+                )
+                id_to_person_name[nid] = name
             else:
                 neo_label = MULTI_LABEL_MAP.get(label, label)
                 key = f"{entry_id}|{nid}"
@@ -446,34 +461,65 @@ class GraphWriter:
                     tname = str(t or "").strip()
                     if not tname:
                         continue
-                    tx.run(
-                        """
-                        MATCH (n {key: $key})
-                        MERGE (t:E55_Type {name: $tname})
-                        MERGE (n)-[:P2_has_type]->(t)
-                        """,
-                        key=key,
-                        tname=tname,
-                    )
+                    if label == "E55_Type":
+                        tx.run(
+                            """
+                            MATCH (n:E55_Type {name: $name})
+                            MERGE (t:E55_Type {name: $tname})
+                            MERGE (n)-[:P2_has_type]->(t)
+                            """,
+                            name=name,
+                            tname=tname,
+                        )
+                    elif label == "E21_Person":
+                        tx.run(
+                            """
+                            MATCH (n:E21_Person {name: $name})
+                            MERGE (t:E55_Type {name: $tname})
+                            MERGE (n)-[:P2_has_type]->(t)
+                            """,
+                            name=name,
+                            tname=tname,
+                        )
+                    else:
+                        tx.run(
+                            """
+                            MATCH (n {key: $key})
+                            MERGE (t:E55_Type {name: $tname})
+                            MERGE (n)-[:P2_has_type]->(t)
+                            """,
+                            key=key,
+                            tname=tname,
+                        )
 
             neo_label = MULTI_LABEL_MAP.get(label, label)
             is_activity = label in (
                 "E7_Activity",
                 "E10_Transfer_of_Custody",
             ) or "E7_Activity" in neo_label or "E10_Transfer_of_Custody" in neo_label
-            if day_bucket and is_activity:
+            if day_bucket and is_activity and nid in id_to_key:
                 tx.run(
                     """
                     MATCH (n {key: $key})
                     MATCH (d:E52_Time_Span {key: $day})
                     MERGE (n)-[:P4_has_time_span]->(d)
                     """,
-                    key=key,
+                    key=id_to_key[nid],
                     day=day_bucket,
                 )
 
             # Do not attach journal -> E55 type by P67; types classify entities/events.
-            if label != "E55_Type":
+            if label == "E21_Person":
+                tx.run(
+                    """
+                    MATCH (j:E73_Information_Object {id: $entry_id})
+                    MATCH (n:E21_Person {name: $name})
+                    MERGE (j)-[:P67_refers_to {ref_type: 'about'}]->(n)
+                    """,
+                    entry_id=entry_id,
+                    name=name,
+                )
+            elif label != "E55_Type":
                 tx.run(
                     """
                     MATCH (j:E73_Information_Object {id: $entry_id})
@@ -481,7 +527,7 @@ class GraphWriter:
                     MERGE (j)-[:P67_refers_to {ref_type: 'about'}]->(n)
                     """,
                     entry_id=entry_id,
-                    key=key,
+                    key=id_to_key[nid],
                 )
 
         for from_id, to_id, prop, eprops in normalized_edges:
@@ -489,23 +535,39 @@ class GraphWriter:
             to_key = id_to_key.get(to_id)
             from_type_name = id_to_type_name.get(from_id)
             to_type_name = id_to_type_name.get(to_id)
-            if not (from_key or from_type_name):
+            from_person_name = id_to_person_name.get(from_id)
+            to_person_name = id_to_person_name.get(to_id)
+            if not (from_key or from_type_name or from_person_name):
                 continue
-            if not (to_key or to_type_name):
+            if not (to_key or to_type_name or to_person_name):
                 continue
 
             ref_type = str(eprops.get("ref_type", ""))
-            match_a = "MATCH (a {key: $fk})" if from_key else "MATCH (a:E55_Type {name: $fn})"
-            match_b = "MATCH (b {key: $tk})" if to_key else "MATCH (b:E55_Type {name: $tn})"
+            if from_key:
+                match_a = "MATCH (a {key: $fk})"
+            elif from_type_name:
+                match_a = "MATCH (a:E55_Type {name: $fn})"
+            else:
+                match_a = "MATCH (a:E21_Person {name: $fp})"
+            if to_key:
+                match_b = "MATCH (b {key: $tk})"
+            elif to_type_name:
+                match_b = "MATCH (b:E55_Type {name: $tn})"
+            else:
+                match_b = "MATCH (b:E21_Person {name: $tp})"
             params: Dict[str, Any] = {}
             if from_key:
                 params["fk"] = from_key
-            else:
+            elif from_type_name:
                 params["fn"] = from_type_name
+            else:
+                params["fp"] = from_person_name
             if to_key:
                 params["tk"] = to_key
-            else:
+            elif to_type_name:
                 params["tn"] = to_type_name
+            else:
+                params["tp"] = to_person_name
             if ref_type:
                 tx.run(
                     f"""
