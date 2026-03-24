@@ -41,6 +41,7 @@ CIDOC CRM proprietes disponibles (edges):
 - P120_occurs_before: activite -> activite qui suit
 - P140_assigned_attribute_to: E13 -> entite a laquelle l'attribut est assigne
 - P141_assigned: E13 -> valeur/concept assigne
+- P129_is_about: activite/evenement -> sujet/objet concerne
 """
 
 MODELING_PROMPT = """Tu es un agent de modelisation CIDOC CRM.
@@ -88,6 +89,7 @@ Regles de modelisation:
 9. Les expectations deviennent E13_Attribute_Assignment avec type specifique (ex: "ReturnExpectation").
 10. Les reflections deviennent E7_Activity avec type "Reflection", liees par P17_was_motivated_by a l'evenement source, et P67_refers_to vers les sujets de reflexion.
 11. Les event_links "sequence" deviennent P120_occurs_before. "causes"/"impacts"/"influences" deviennent P15_was_influenced_by.
+11b. Pour un evenement de non-retour/vol/perte d'objet, lie l'evenement a l'objet physique via P129_is_about (pas P15).
 12. Les propositions (influenced_by_propositions dans habits) deviennent E89_Propositional_Object.
 13. Le journal entry principal est un E73_Information_Object qui P67_refers_to toutes les entites mentionnees.
 14. Utilise P2_has_type pour typer les noeuds avec des E55_Type. Les noms de types sont en CamelCase (ex: WakeUp, BookLending, EmotionalPain).

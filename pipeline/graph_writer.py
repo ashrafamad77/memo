@@ -41,6 +41,8 @@ VALID_PROPERTIES = {
     "P120_occurs_before",
     "P140_assigned_attribute_to",
     "P141_assigned",
+    "P129_is_about",
+    "P129i_is_subject_of",
 }
 
 MULTI_LABEL_MAP = {
@@ -105,7 +107,7 @@ class GraphWriter:
                 id_to_label[nid] = label
 
         def _is_activity(label: str) -> bool:
-            return label in {"E5_Event", "E7_Activity", "E10_Transfer_of_Custody"}
+            return label in {"E5_Event", "E7_Activity", "E10_Transfer_of_Custody", "E13_Attribute_Assignment"}
 
         def _is_actor(label: str) -> bool:
             return label in {"E39_Actor", "E21_Person"}
@@ -173,6 +175,10 @@ class GraphWriter:
                 return from_label == "E13_Attribute_Assignment"
             if prop == "P141_assigned":
                 return from_label == "E13_Attribute_Assignment" and to_label in {"E55_Type", "E28_Conceptual_Object", "E89_Propositional_Object"}
+            if prop == "P129_is_about":
+                return _is_activity(from_label)
+            if prop == "P129i_is_subject_of":
+                return _is_activity(to_label)
             return False
 
         def _normalize_edge(edge: Dict[str, Any]) -> Optional[Tuple[str, str, str, Dict[str, Any]]]:
@@ -202,6 +208,16 @@ class GraphWriter:
             elif prop == "P141_assigned" and fl != "E13_Attribute_Assignment" and tl == "E13_Attribute_Assignment":
                 from_id, to_id = to_id, from_id
                 fl, tl = tl, fl
+            elif prop == "P15_was_influenced_by" and _is_activity(fl) and tl == "E22_Human_Made_Object":
+                # For "non-return of X", the object is the subject of the event, not its influencer.
+                prop = "P129_is_about"
+            elif prop == "P129i_is_subject_of" and _is_activity(fl):
+                # If modeled in the wrong inverse direction, normalize to event -> object.
+                prop = "P129_is_about"
+            elif prop == "P129i_is_subject_of" and _is_activity(tl):
+                from_id, to_id = to_id, from_id
+                fl, tl = tl, fl
+                prop = "P129_is_about"
 
             if not _edge_allowed(prop, fl, tl):
                 logger.warning(
@@ -321,6 +337,27 @@ class GraphWriter:
                 p141_tid = f"auto_p141_type_{aid}"
                 _add_node_once(p141_tid, "E55_Type", assigned_type_name)
                 normalized_edges.append((aid, p141_tid, "P141_assigned", {}))
+
+        # Precision rule: emotional/expectation assignments should point to a triggering activity.
+        activity_ids = [nid for nid, lab in id_to_label.items() if _is_activity(lab) and lab != "E13_Attribute_Assignment"]
+        trigger_candidates = []
+        for eid in activity_ids:
+            n = _get_node_name(eid).lower()
+            score = 0
+            if "non-retour" in n or "non return" in n or "failure" in n:
+                score = 2
+            elif "retour" in n or "return" in n:
+                score = 1
+            trigger_candidates.append((score, eid))
+        trigger_candidates.sort(reverse=True)
+        default_trigger = trigger_candidates[0][1] if trigger_candidates else (activity_ids[-1] if activity_ids else "")
+        for aid in assignment_ids:
+            has_causal = any(
+                f == aid and p in {"P15_was_influenced_by", "P17_was_motivated_by"} and _is_activity(id_to_label.get(t, ""))
+                for (f, t, p, _ep) in normalized_edges
+            )
+            if not has_causal and default_trigger:
+                normalized_edges.append((aid, default_trigger, "P15_was_influenced_by", {}))
 
         short_name = raw_text[:60].strip()
         if len(raw_text) > 60:
