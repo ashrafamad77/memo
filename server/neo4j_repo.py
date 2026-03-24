@@ -1,11 +1,50 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from neo4j import GraphDatabase
 
 from config import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
+
+POSITIVE_EMOTION_TAGS = {
+    "joy",
+    "joie",
+    "gratitude",
+    "reconnaissance",
+    "relief",
+    "soulagement",
+    "calm",
+    "calme",
+    "confidence",
+    "confiance",
+    "fierte",
+    "pride",
+    "satisfaction",
+    "motivation",
+    "hope",
+    "espoir",
+}
+
+NEGATIVE_EMOTION_TAGS = {
+    "pain",
+    "douleur",
+    "stress",
+    "anxiety",
+    "anxiete",
+    "fear",
+    "peur",
+    "triste",
+    "sadness",
+    "deception",
+    "disappointment",
+    "frustration",
+    "colere",
+    "anger",
+    "burnout",
+    "emotionalpain",
+}
 
 
 @dataclass
@@ -631,6 +670,251 @@ class Neo4jRepo:
                     }
                 )
         return {"nodes": nodes_out, "edges": edges}
+
+    @staticmethod
+    def _emotion_polarity(tag: str) -> str:
+        t = (tag or "").strip().lower()
+        if t in NEGATIVE_EMOTION_TAGS:
+            return "negative"
+        if t in POSITIVE_EMOTION_TAGS:
+            return "positive"
+        return "neutral"
+
+    def insights(self, user_name: str, days: int = 30, people_limit: int = 12) -> Dict[str, Any]:
+        days = max(7, min(int(days), 365))
+        people_limit = max(5, min(int(people_limit), 50))
+        since_expr = f"datetime() - duration('P{days}D')"
+
+        emotion_rows: List[Dict[str, Any]] = []
+        people_rows: List[Dict[str, Any]] = []
+        custody_rows: List[Dict[str, Any]] = []
+        expectation_rows: List[Dict[str, Any]] = []
+        entry_count_window = 0
+
+        with self._driver.session() as s:
+            emotion_rows = [
+                dict(r)
+                for r in s.run(
+                    f"""
+                    MATCH (j:E73_Information_Object)-[:P67_refers_to]->(a:E13_Attribute_Assignment)
+                    WHERE coalesce(j.entry_kind,'') = 'journal_entry'
+                      AND j.input_time >= {since_expr}
+                    OPTIONAL MATCH (a)-[:P141_assigned]->(t1:E55_Type)
+                    OPTIONAL MATCH (a)-[:P2_has_type]->(t2:E55_Type)
+                    RETURN toString(date(j.input_time)) as day,
+                           coalesce(toLower(t1.name), toLower(t2.name), toLower(a.name), '') as tag,
+                           count(*) as c
+                    ORDER BY day ASC
+                    """
+                )
+            ]
+
+            people_rows = [
+                dict(r)
+                for r in s.run(
+                    f"""
+                    MATCH (j:E73_Information_Object)-[:P67_refers_to]->(a:E13_Attribute_Assignment)-[:P15_was_influenced_by]->(ev:E7_Activity)-[:P14_carried_out_by]->(p:E21_Person)
+                    WHERE coalesce(j.entry_kind,'') = 'journal_entry'
+                      AND j.input_time >= {since_expr}
+                    OPTIONAL MATCH (a)-[:P141_assigned]->(t1:E55_Type)
+                    OPTIONAL MATCH (a)-[:P2_has_type]->(t2:E55_Type)
+                    RETURN p.name as person,
+                           coalesce(toLower(t1.name), toLower(t2.name), toLower(a.name), '') as tag,
+                           count(*) as c
+                    """
+                )
+            ]
+
+            custody_rows = [
+                dict(r)
+                for r in s.run(
+                    f"""
+                    MATCH (j:E73_Information_Object)-[:P67_refers_to]->(tr:E10_Transfer_of_Custody)-[:P30_transferred_custody_of]->(o:E22_Human_Made_Object)
+                    WHERE coalesce(j.entry_kind,'') = 'journal_entry'
+                      AND j.input_time >= {since_expr}
+                    OPTIONAL MATCH (ret:E7_Activity)-[:P129_is_about]->(o)
+                    WHERE toLower(coalesce(ret.name,'')) CONTAINS 'retour'
+                       OR toLower(coalesce(ret.name,'')) CONTAINS 'return'
+                    OPTIONAL MATCH (a:E13_Attribute_Assignment)-[:P17_was_motivated_by]->(tr)
+                    OPTIONAL MATCH (a)-[:P141_assigned]->(t1:E55_Type)
+                    OPTIONAL MATCH (a)-[:P2_has_type]->(t2:E55_Type)
+                    WITH j, tr, o, count(ret) as returns,
+                         collect(toLower(coalesce(t1.name, t2.name, a.name, ''))) as tags
+                    WITH j, tr, o, returns,
+                         any(tag IN tags WHERE tag CONTAINS 'expect' OR tag CONTAINS 'attente' OR tag CONTAINS 'returnexpectation') as has_return_expectation
+                    WHERE returns = 0
+                      AND has_return_expectation
+                    RETURN tr.key as transfer_key,
+                           coalesce(tr.name,'transfer') as transfer_name,
+                           o.name as object_name,
+                           toString(j.input_time) as input_time
+                    ORDER BY j.input_time DESC
+                    LIMIT 30
+                    """
+                )
+            ]
+
+            expectation_rows = [
+                dict(r)
+                for r in s.run(
+                    f"""
+                    MATCH (j:E73_Information_Object)-[:P67_refers_to]->(a:E13_Attribute_Assignment)
+                    WHERE coalesce(j.entry_kind,'') = 'journal_entry'
+                      AND j.input_time >= {since_expr}
+                    OPTIONAL MATCH (a)-[:P141_assigned]->(t1:E55_Type)
+                    OPTIONAL MATCH (a)-[:P2_has_type]->(t2:E55_Type)
+                    WITH j, a, toLower(coalesce(t1.name, t2.name, a.name, '')) as tag
+                    WHERE tag CONTAINS 'expect' OR tag CONTAINS 'attente' OR tag CONTAINS 'returnexpectation'
+                    RETURN a.key as assignment_key,
+                           coalesce(a.name, 'expectation') as assignment_name,
+                           toString(j.input_time) as input_time
+                    ORDER BY j.input_time DESC
+                    LIMIT 30
+                    """
+                )
+            ]
+
+            row = s.run(
+                f"""
+                MATCH (j:E73_Information_Object)
+                WHERE coalesce(j.entry_kind,'') = 'journal_entry'
+                  AND j.input_time >= {since_expr}
+                RETURN count(j) as c
+                """
+            ).single()
+            entry_count_window = int((row or {}).get("c") or 0)
+
+        # Emotions by day
+        by_day: Dict[str, Dict[str, int]] = {}
+        total_pos = 0
+        total_neg = 0
+        total_neu = 0
+        for r in emotion_rows:
+            d = str(r.get("day") or "")
+            tag = str(r.get("tag") or "")
+            c = int(r.get("c") or 0)
+            pol = self._emotion_polarity(tag)
+            if d not in by_day:
+                by_day[d] = {"positive": 0, "negative": 0, "neutral": 0}
+            by_day[d][pol] += c
+            if pol == "positive":
+                total_pos += c
+            elif pol == "negative":
+                total_neg += c
+            else:
+                total_neu += c
+        emotions_per_day = [
+            {"day": d, **vals}
+            for d, vals in sorted(by_day.items(), key=lambda x: x[0])
+        ]
+
+        # People impact
+        people_acc: Dict[str, Dict[str, Any]] = {}
+        for r in people_rows:
+            person = str(r.get("person") or "").strip()
+            if not person:
+                continue
+            tag = str(r.get("tag") or "")
+            c = int(r.get("c") or 0)
+            pol = self._emotion_polarity(tag)
+            if person not in people_acc:
+                people_acc[person] = {"person": person, "positive": 0, "negative": 0, "neutral": 0, "sample_size": 0}
+            people_acc[person][pol] += c
+            people_acc[person]["sample_size"] += c
+
+        people_impact: List[Dict[str, Any]] = []
+        for person, v in people_acc.items():
+            total = max(1, int(v["sample_size"]))
+            net = (int(v["positive"]) - int(v["negative"])) / float(total)
+            if total < 2:
+                label = "Uncertain"
+            elif net >= 0.25:
+                label = "Supportive"
+            elif net <= -0.25:
+                label = "Draining"
+            else:
+                label = "Mixed"
+            people_impact.append(
+                {
+                    "person": person,
+                    "positive": int(v["positive"]),
+                    "negative": int(v["negative"]),
+                    "neutral": int(v["neutral"]),
+                    "sample_size": int(v["sample_size"]),
+                    "net_score": round(net, 3),
+                    "label": label,
+                }
+            )
+        people_impact.sort(key=lambda x: (x["net_score"], x["sample_size"]), reverse=True)
+        people_impact = people_impact[:people_limit]
+
+        # Pulse
+        emotion_total = max(1, total_pos + total_neg + total_neu)
+        neg_ratio = total_neg / float(emotion_total)
+        support_count = len([p for p in people_impact if p["label"] == "Supportive"])
+        draining_count = len([p for p in people_impact if p["label"] == "Draining"])
+        support_ratio = support_count / float(max(1, support_count + draining_count))
+        open_obligations = len(custody_rows) + len(expectation_rows)
+        raw_pulse = 100.0
+        raw_pulse -= neg_ratio * 40.0
+        raw_pulse -= min(open_obligations, 10) / 10.0 * 30.0
+        raw_pulse += support_ratio * 30.0
+        # Confidence calibration for sparse datasets:
+        # with few entries, shrink toward neutral baseline to avoid overconfident scores.
+        confidence = min(1.0, entry_count_window / 12.0)
+        pulse = (confidence * raw_pulse) + ((1.0 - confidence) * 60.0)
+        pulse = max(0.0, min(100.0, pulse))
+
+        # Recommendations
+        recs: List[Dict[str, Any]] = []
+        if total_neg > total_pos:
+            recs.append(
+                {
+                    "title": "Stabilize emotional load",
+                    "why": "Negative emotional assignments currently exceed positive ones.",
+                    "action": "Plan one low-friction recovery block this week (walk, deep rest, or journaling closure).",
+                    "confidence": "medium",
+                }
+            )
+        if open_obligations > 0:
+            recs.append(
+                {
+                    "title": "Close open obligations",
+                    "why": f"There are {open_obligations} unresolved custody/expectation items.",
+                    "action": "Pick one unresolved item and close it in the next 48 hours.",
+                    "confidence": "high",
+                }
+            )
+        best_supportive = next((p for p in people_impact if p["label"] == "Supportive"), None)
+        if best_supportive:
+            recs.append(
+                {
+                    "title": "Leverage a supportive relationship",
+                    "why": f"{best_supportive['person']} is associated with better emotional outcomes.",
+                    "action": f"Schedule one intentional interaction with {best_supportive['person']} this week.",
+                    "confidence": "medium",
+                }
+            )
+        recs = recs[:3]
+
+        return {
+            "window_days": days,
+            "life_pulse": {
+                "score": round(pulse, 1),
+                "confidence": round(confidence, 3),
+                "entries_in_window": entry_count_window,
+                "emotion_load_negative_ratio": round(neg_ratio, 3),
+                "open_obligations": open_obligations,
+                "support_ratio": round(support_ratio, 3),
+            },
+            "emotions_per_day": emotions_per_day,
+            "people_impact": people_impact,
+            "open_obligations": {
+                "custody_open": custody_rows,
+                "expectations_open": expectation_rows,
+            },
+            "weekly_recommendations": recs,
+        }
 
     def inbox(self, status: str = "open", limit: int = 50) -> List[Dict[str, Any]]:
         q = """

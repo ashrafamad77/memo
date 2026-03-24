@@ -273,6 +273,11 @@ def create_app() -> FastAPI:
     def inbox(status: str = "open", limit: int = 50):
         return {"items": repo.inbox(status=status, limit=limit)}
 
+    @app.get("/insights")
+    def insights(days: int = 30):
+        user_name = (USER_NAME or "").strip() or "User"
+        return repo.insights(user_name=user_name, days=days)
+
     @app.post("/inbox/{task_id}/resolve")
     def resolve_task(task_id: str, payload: ResolveTaskIn):
         try:
