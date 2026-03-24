@@ -26,6 +26,7 @@ class AgenticState(TypedDict, total=False):
     day_bucket: str
     prep: Dict[str, Any]
     graph_spec: Dict[str, Any]
+    person_resolution: Dict[str, Any]
     extraction: Any
     graph_status: str
     graph_audit: Dict[str, Any]
@@ -91,6 +92,68 @@ class AgenticRunner:
             except Exception as e:
                 return {**state, "graph_status": f"error: {e}", "graph_audit": {"status": "error", "detail": str(e)}}
 
+        def disambiguate_persons_node(state: AgenticState) -> AgenticState:
+            spec = state.get("graph_spec") or {}
+            if not self.graph_store or not isinstance(spec, dict):
+                return {**state, "person_resolution": {"status": "skipped"}}
+            nodes = spec.get("nodes", [])
+            if not isinstance(nodes, list):
+                return {**state, "person_resolution": {"status": "skipped"}}
+
+            prep = state.get("prep") or {}
+            entities = prep.get("entities", []) if isinstance(prep, dict) else []
+            places_ctx: List[str] = []
+            topics_ctx: List[str] = []
+            for e in entities:
+                if not isinstance(e, dict):
+                    continue
+                nm = str(e.get("name", "")).strip()
+                tp = str(e.get("type", "")).strip().lower()
+                if not nm:
+                    continue
+                if tp == "place":
+                    places_ctx.append(nm)
+                elif tp in {"concept", "object", "organization"}:
+                    topics_ctx.append(nm)
+
+            updated = 0
+            try:
+                for n in nodes:
+                    if not isinstance(n, dict):
+                        continue
+                    if str(n.get("label", "")) != "E21_Person":
+                        continue
+                    mention = str(n.get("name", "")).strip()
+                    if not mention:
+                        continue
+                    if self.user_name and mention.lower() == self.user_name.lower():
+                        continue
+
+                    props = n.get("properties", {})
+                    if not isinstance(props, dict):
+                        props = {}
+                    role = str(props.get("role", "") or "").strip()
+
+                    resolved = self.graph_store.resolve_person(
+                        mention=mention,
+                        entry_text=state.get("text", ""),
+                        places=places_ctx,
+                        topics=topics_ctx,
+                        role=role,
+                        entry_id=state.get("entry_id"),
+                        interactive=False,
+                    )
+                    rid = str(resolved.get("id", "") or "").strip() if isinstance(resolved, dict) else ""
+                    if rid:
+                        props["person_id"] = rid
+                        n["properties"] = props
+                        if resolved.get("name"):
+                            n["name"] = str(resolved["name"])
+                        updated += 1
+                return {**state, "graph_spec": spec, "person_resolution": {"status": "ok", "updated": updated}}
+            except Exception as e:
+                return {**state, "person_resolution": {"status": "error", "detail": str(e), "updated": updated}}
+
         def persist_vector_node(state: AgenticState) -> AgenticState:
             if not self.vector_store:
                 return {**state, "vector_status": "skipped"}
@@ -115,12 +178,14 @@ class AgenticRunner:
 
         g.add_node("prep", prep_node)
         g.add_node("model", model_node)
+        g.add_node("disambiguate_persons", disambiguate_persons_node)
         g.add_node("persist_graph", persist_graph_node)
         g.add_node("persist_vector", persist_vector_node)
 
         g.set_entry_point("prep")
         g.add_edge("prep", "model")
-        g.add_edge("model", "persist_graph")
+        g.add_edge("model", "disambiguate_persons")
+        g.add_edge("disambiguate_persons", "persist_graph")
         g.add_edge("persist_graph", "persist_vector")
         g.add_edge("persist_vector", END)
 

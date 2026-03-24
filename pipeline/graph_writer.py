@@ -391,6 +391,7 @@ class GraphWriter:
         id_to_key: Dict[str, str] = {}
         id_to_type_name: Dict[str, str] = {}
         id_to_person_name: Dict[str, str] = {}
+        id_to_person_id: Dict[str, str] = {}
 
         for node in nodes:
             if not isinstance(node, dict):
@@ -419,16 +420,35 @@ class GraphWriter:
                 id_to_type_name[nid] = name
             elif label == "E21_Person":
                 # Merge people globally by name so user/known persons are not duplicated per entry.
-                tx.run(
-                    """
-                    MERGE (n:E21_Person:E39_Actor {name: $name})
-                    ON CREATE SET n.first_seen = datetime($ts), n.id = coalesce(n.id, randomUUID())
-                    SET n.last_seen = datetime($ts)
-                    """,
-                    name=name,
-                    ts=ts,
-                )
+                person_id = str(props.get("person_id", "") or "").strip()
+                if person_id:
+                    row = tx.run(
+                        """
+                        MERGE (n:E21_Person:E39_Actor {id: $pid})
+                        ON CREATE SET n.first_seen = datetime($ts)
+                        SET n.last_seen = datetime($ts),
+                            n.name = coalesce(n.name, $name)
+                        RETURN n.id as id
+                        """,
+                        pid=person_id,
+                        name=name,
+                        ts=ts,
+                    ).single()
+                else:
+                    row = tx.run(
+                        """
+                        MERGE (n:E21_Person:E39_Actor {name: $name})
+                        ON CREATE SET n.first_seen = datetime($ts)
+                        SET n.last_seen = datetime($ts),
+                            n.id = coalesce(n.id, randomUUID())
+                        RETURN n.id as id
+                        """,
+                        name=name,
+                        ts=ts,
+                    ).single()
                 id_to_person_name[nid] = name
+                if row and row.get("id"):
+                    id_to_person_id[nid] = str(row.get("id"))
             else:
                 neo_label = MULTI_LABEL_MAP.get(label, label)
                 key = f"{entry_id}|{nid}"
@@ -474,11 +494,11 @@ class GraphWriter:
                     elif label == "E21_Person":
                         tx.run(
                             """
-                            MATCH (n:E21_Person {name: $name})
+                            MATCH (n:E21_Person {id: $id})
                             MERGE (t:E55_Type {name: $tname})
                             MERGE (n)-[:P2_has_type]->(t)
                             """,
-                            name=name,
+                            id=id_to_person_id.get(nid, ""),
                             tname=tname,
                         )
                     else:
@@ -513,11 +533,11 @@ class GraphWriter:
                 tx.run(
                     """
                     MATCH (j:E73_Information_Object {id: $entry_id})
-                    MATCH (n:E21_Person {name: $name})
+                    MATCH (n:E21_Person {id: $pid})
                     MERGE (j)-[:P67_refers_to {ref_type: 'about'}]->(n)
                     """,
                     entry_id=entry_id,
-                    name=name,
+                    pid=id_to_person_id.get(nid, ""),
                 )
             elif label != "E55_Type":
                 tx.run(
@@ -537,9 +557,11 @@ class GraphWriter:
             to_type_name = id_to_type_name.get(to_id)
             from_person_name = id_to_person_name.get(from_id)
             to_person_name = id_to_person_name.get(to_id)
-            if not (from_key or from_type_name or from_person_name):
+            from_person_id = id_to_person_id.get(from_id)
+            to_person_id = id_to_person_id.get(to_id)
+            if not (from_key or from_type_name or from_person_name or from_person_id):
                 continue
-            if not (to_key or to_type_name or to_person_name):
+            if not (to_key or to_type_name or to_person_name or to_person_id):
                 continue
 
             ref_type = str(eprops.get("ref_type", ""))
@@ -547,12 +569,16 @@ class GraphWriter:
                 match_a = "MATCH (a {key: $fk})"
             elif from_type_name:
                 match_a = "MATCH (a:E55_Type {name: $fn})"
+            elif from_person_id:
+                match_a = "MATCH (a:E21_Person {id: $fpid})"
             else:
                 match_a = "MATCH (a:E21_Person {name: $fp})"
             if to_key:
                 match_b = "MATCH (b {key: $tk})"
             elif to_type_name:
                 match_b = "MATCH (b:E55_Type {name: $tn})"
+            elif to_person_id:
+                match_b = "MATCH (b:E21_Person {id: $tpid})"
             else:
                 match_b = "MATCH (b:E21_Person {name: $tp})"
             params: Dict[str, Any] = {}
@@ -560,12 +586,16 @@ class GraphWriter:
                 params["fk"] = from_key
             elif from_type_name:
                 params["fn"] = from_type_name
+            elif from_person_id:
+                params["fpid"] = from_person_id
             else:
                 params["fp"] = from_person_name
             if to_key:
                 params["tk"] = to_key
             elif to_type_name:
                 params["tn"] = to_type_name
+            elif to_person_id:
+                params["tpid"] = to_person_id
             else:
                 params["tp"] = to_person_name
             if ref_type:
