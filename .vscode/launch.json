@@ -2,13 +2,39 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Debug MEMO",
+      "name": "CLI: add (legacy path)",
       "type": "python",
       "request": "launch",
       "program": "${workspaceFolder}/main.py",
       "console": "integratedTerminal",
       "envFile": "${workspaceFolder}/.env",
       "args": ["add", "Aujourd'hui j'ai déjeuné avec Marie à Paris."]
+    },
+    {
+      "name": "CLI: add-agentic (current path)",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "console": "integratedTerminal",
+      "envFile": "${workspaceFolder}/.env",
+      "args": ["add-agentic", "Today I met Julien in Paris and we had lunch."]
+    },
+    {
+      "name": "API: uvicorn create_app (debug)",
+      "type": "python",
+      "request": "launch",
+      "module": "uvicorn",
+      "console": "integratedTerminal",
+      "envFile": "${workspaceFolder}/.env",
+      "args": [
+        "server.app:create_app",
+        "--factory",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--reload"
+      ]
     }
   ]
 }
