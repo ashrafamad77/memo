@@ -3,16 +3,34 @@
 import { useMemo, useState } from "react";
 
 import { LazyJournalBody } from "@/components/LinkedExplorerPanels";
-import type { ExplorerGraphModel, ExplorerGraphNode } from "@/lib/linkedExplorer/buildLinkedExplorerGraph";
+import type {
+  ExplorerGraphModel,
+  ExplorerGraphNode,
+  ExplorerNodeVisualGroup,
+} from "@/lib/linkedExplorer/buildLinkedExplorerGraph";
 
-const PALETTE = [
-  { from: "from-emerald-500", to: "to-teal-600" },
-  { from: "from-sky-500", to: "to-indigo-600" },
-  { from: "from-violet-500", to: "to-fuchsia-600" },
-  { from: "from-amber-500", to: "to-orange-600" },
-  { from: "from-cyan-500", to: "to-blue-700" },
-  { from: "from-slate-500", to: "to-zinc-700" },
-] as const;
+/** One gradient per semantic type — all places share blue, all situations green, etc. */
+const NODE_GRADIENT: Record<ExplorerNodeVisualGroup, { from: string; to: string }> = {
+  hub: { from: "from-teal-500", to: "to-cyan-600" },
+  category: { from: "from-slate-600", to: "to-zinc-800" },
+  person: { from: "from-violet-500", to: "to-fuchsia-600" },
+  place: { from: "from-sky-500", to: "to-blue-600" },
+  situation: { from: "from-green-500", to: "to-emerald-700" },
+  feeling: { from: "from-amber-500", to: "to-orange-600" },
+  note: { from: "from-slate-500", to: "to-zinc-600" },
+  day: { from: "from-indigo-500", to: "to-purple-700" },
+  idea: { from: "from-pink-500", to: "to-rose-600" },
+  group: { from: "from-blue-600", to: "to-indigo-800" },
+  nav: { from: "from-cyan-500", to: "to-teal-600" },
+  bucket: { from: "from-orange-500", to: "to-amber-600" },
+  system: { from: "from-rose-600", to: "to-red-800" },
+  generic: { from: "from-zinc-500", to: "to-neutral-700" },
+};
+
+function gradientForNode(node: ExplorerGraphNode): { from: string; to: string } {
+  const g = node.visualGroup ?? "generic";
+  return NODE_GRADIENT[g] ?? NODE_GRADIENT.generic;
+}
 
 function NodeInfoPeek({
   title,
@@ -54,16 +72,14 @@ function NodeInfoPeek({
 
 function GraphNodeVisual({
   node,
-  paletteIndex,
   isCenter,
   onClick,
 }: {
   node: ExplorerGraphNode;
-  paletteIndex: number;
   isCenter: boolean;
   onClick: () => void;
 }) {
-  const pal = PALETTE[paletteIndex % PALETTE.length];
+  const pal = gradientForNode(node);
   const hasInfo = Boolean(node.infoTitle || node.infoBody || node.entryId);
 
   return (
@@ -158,14 +174,13 @@ export function LinkedGraphView({
         >
           <GraphNodeVisual
             node={model.center}
-            paletteIndex={0}
             isCenter
             onClick={() => onActivateNode(model.center!)}
           />
         </div>
       ) : null}
 
-      {layout.satPos.map(({ node, x, y }, i) => (
+      {layout.satPos.map(({ node, x, y }) => (
         <div
           key={node.id}
           className="absolute -translate-x-1/2 -translate-y-1/2"
@@ -173,7 +188,6 @@ export function LinkedGraphView({
         >
           <GraphNodeVisual
             node={node}
-            paletteIndex={i + 1}
             isCenter={false}
             onClick={() => onActivateNode(node)}
           />

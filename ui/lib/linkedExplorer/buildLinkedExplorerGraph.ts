@@ -14,6 +14,23 @@ import {
 /** Person content step: first ring = these groups; click one to show instances, then ← Types to go back. */
 export type PersonGraphBucket = "situations" | "feelings" | "notes" | "people";
 
+/** Stable graph node color — same semantic type → same gradient in the UI. */
+export type ExplorerNodeVisualGroup =
+  | "hub"
+  | "category"
+  | "person"
+  | "place"
+  | "situation"
+  | "feeling"
+  | "note"
+  | "day"
+  | "idea"
+  | "group"
+  | "nav"
+  | "bucket"
+  | "system"
+  | "generic";
+
 export type ExplorerGraphNode = {
   id: string;
   role: "center" | "satellite";
@@ -27,7 +44,101 @@ export type ExplorerGraphNode = {
   infoTitle?: string;
   infoBody?: string;
   entryId?: string;
+  visualGroup?: ExplorerNodeVisualGroup;
 };
+
+export function visualGroupFromExplorerCategoryId(id: string): ExplorerNodeVisualGroup {
+  const m: Record<string, ExplorerNodeVisualGroup> = {
+    person: "person",
+    feeling_tag: "feeling",
+    situation: "situation",
+    place: "place",
+    day: "day",
+    idea: "idea",
+    note: "note",
+    group: "group",
+  };
+  return m[id] || "category";
+}
+
+export function visualGroupFromEntityType(type: string): ExplorerNodeVisualGroup {
+  const m: Record<string, ExplorerNodeVisualGroup> = {
+    E21_Person: "person",
+    E53_Place: "place",
+    E7_Activity: "situation",
+    E55_Type: "feeling",
+    E73_Information_Object: "note",
+    E52_Time_Span: "day",
+    E28_Conceptual_Object: "idea",
+    E74_Group: "group",
+  };
+  return m[(type || "").trim()] || "generic";
+}
+
+export function visualGroupFromRef(ref: string): ExplorerNodeVisualGroup {
+  const r = (ref || "").trim();
+  if (!r) return "generic";
+  if (r.startsWith("E21_Person:")) return "person";
+  if (r.startsWith("E53_Place:")) return "place";
+  if (r.startsWith("Event:")) return "situation";
+  if (r.startsWith("E52_Time_Span:")) return "day";
+  if (r.startsWith("E55_Type:")) return "feeling";
+  if (r.startsWith("E73_Information_Object:")) return "note";
+  if (r.startsWith("E28_Conceptual_Object:")) return "idea";
+  if (r.startsWith("E74_Group:")) return "group";
+  return "generic";
+}
+
+function visualGroupFromNavOptionKey(key: string): ExplorerNodeVisualGroup {
+  switch (key) {
+    case "moments":
+    case "journal":
+    case "context":
+      return "note";
+    case "feelings":
+      return "feeling";
+    case "activity_type":
+    case "situations":
+    case "hub":
+      return "situation";
+    case "people":
+      return "person";
+    case "all":
+      return "day";
+    default:
+      return "nav";
+  }
+}
+
+function visualGroupFromLinkBucket(bucket: string): ExplorerNodeVisualGroup {
+  const b = (bucket || "other").trim().toLowerCase();
+  if (b === "person") return "person";
+  if (b === "situation") return "situation";
+  if (b === "place") return "place";
+  if (b === "tag") return "feeling";
+  if (b === "idea") return "idea";
+  if (b === "group") return "group";
+  if (b === "day") return "day";
+  return "generic";
+}
+
+function visualGroupForOverviewCenter(overview: Overview, selectedRef: string): ExplorerNodeVisualGroup {
+  const ref = (overview.kind === "Event" ? overview.ref : selectedRef) || selectedRef;
+  switch (overview.kind) {
+    case "Person":
+      return "person";
+    case "Feeling":
+      return "feeling";
+    case "Day":
+      return "day";
+    case "Event":
+      return ref.startsWith("E53_Place:") ? "place" : "situation";
+    case "E73_Information_Object":
+      return "note";
+    default:
+      return "generic";
+  }
+}
 
 export type ExplorerGraphModel = {
   hint: string;
@@ -39,6 +150,25 @@ function trunc(s: string, n: number) {
   const t = s.trim();
   if (t.length <= n) return t;
   return `${t.slice(0, n - 1)}…`;
+}
+
+/** Same E21 person whether ref is `E21_Person:id` or variants with same id. */
+function graphRefsEqualPerson(a: string, b: string): boolean {
+  const na = a.trim();
+  const nb = b.trim();
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  const tail = (s: string) => {
+    const i = s.lastIndexOf(":");
+    return i >= 0 ? s.slice(i + 1).trim() : s;
+  };
+  return tail(na) === tail(nb) && tail(na).length > 0;
+}
+
+/** On Feeling scoped to a person, that person is only the "← back" node — omit duplicate person satellites. */
+function skipPersonSatelliteForFeelingAnchor(overview: Overview, personRef: string): boolean {
+  if (overview.kind !== "Feeling" || !overview.anchor_person_ref) return false;
+  return graphRefsEqualPerson(personRef, overview.anchor_person_ref);
 }
 
 function addSat(
@@ -72,6 +202,7 @@ function collectPersonGraphNeighbors(
     role: "satellite",
     label: "Types",
     sub: "←",
+    visualGroup: "bucket",
     onActivate: () => setBucket(null),
     infoTitle: "Back to category ring",
     infoBody:
@@ -86,6 +217,7 @@ function collectPersonGraphNeighbors(
         role: "satellite",
         label: "Situations",
         sub: String(nSit),
+        visualGroup: "situation",
         onActivate: () => setBucket("situations"),
         infoTitle: "Situations",
         infoBody: `${nSit} distinct activities linked through journal moments that include this person.`,
@@ -97,6 +229,7 @@ function collectPersonGraphNeighbors(
         role: "satellite",
         label: "Feelings",
         sub: String(nFeel),
+        visualGroup: "feeling",
         onActivate: () => setBucket("feelings"),
         infoTitle: "Feelings & tags",
         infoBody: "Tags tied to this person in the graph; open one to follow that thread.",
@@ -108,6 +241,7 @@ function collectPersonGraphNeighbors(
         role: "satellite",
         label: "Notes",
         sub: String(nNotes),
+        visualGroup: "note",
         onActivate: () => setBucket("notes"),
         infoTitle: "Journal notes",
         infoBody: "Timeline rows (moments) where this person appears in linked notes.",
@@ -119,6 +253,7 @@ function collectPersonGraphNeighbors(
         role: "satellite",
         label: "People",
         sub: String(nPeople),
+        visualGroup: "person",
         onActivate: () => setBucket("people"),
         infoTitle: "People",
         infoBody: "Other people listed on the same moment rows as co-participants when the graph provides them.",
@@ -140,6 +275,7 @@ function collectPersonGraphNeighbors(
             label: "No links",
             sub: "yet",
             disabled: true,
+            visualGroup: "system",
             infoTitle: "No timeline rows",
             infoBody: emptyBody,
           },
@@ -159,6 +295,7 @@ function collectPersonGraphNeighbors(
         label: trunc(m.activityName || "Situation", 16),
         sub: trunc(m.activityKind || "", 14),
         ref,
+        visualGroup: "situation",
         infoTitle: m.activityName || "Situation",
         infoBody: [m.activityName, m.activityKind, m.activityDay].filter(Boolean).join("\n"),
       });
@@ -174,6 +311,7 @@ function collectPersonGraphNeighbors(
         label: trunc(t.name, 14),
         sub: `×${t.count}`,
         ref: t.ref,
+        visualGroup: "feeling",
         navigateOpts: { anchorPerson: selectedRef },
         infoTitle: t.name,
         infoBody: "Feeling or tag · opens that thread in the graph (scoped to this person when supported).",
@@ -191,6 +329,7 @@ function collectPersonGraphNeighbors(
         label: "Note",
         sub: trunc(m.day || m.time || "Journal", 12),
         entryId: m.entryId,
+        visualGroup: "note",
         infoTitle: "Journal note",
         infoBody: [m.recordTitle, m.entryPreview].filter(Boolean).join("\n\n") || undefined,
       });
@@ -207,6 +346,7 @@ function collectPersonGraphNeighbors(
         label: trunc(p.name, 14),
         sub: p.role || "Person",
         ref,
+        visualGroup: "person",
         infoTitle: p.name,
       });
     }
@@ -246,6 +386,7 @@ function collectContentNeighbors(
     infoTitle: contentHeader || "Focus",
     infoBody: centerBodyParts.join("\n\n"),
     ref: undefined,
+    visualGroup: visualGroupForOverviewCenter(overview, selectedRef),
   };
 
   if (overview.kind === "Person") {
@@ -266,6 +407,7 @@ function collectContentNeighbors(
         label: "Note",
         sub: trunc(m.day || m.time || "Journal", 12),
         entryId: m.entryId,
+        visualGroup: "note",
         infoTitle: "Journal note",
         infoBody: [m.recordTitle, m.entryPreview].filter(Boolean).join("\n\n") || "Hover loaded body via ⓘ",
       });
@@ -277,17 +419,20 @@ function collectContentNeighbors(
         label: trunc(m.activityName || "Situation", 16),
         sub: trunc(m.activityKind || "", 14),
         ref,
+        visualGroup: "situation",
         infoTitle: m.activityName || "Situation",
         infoBody: [m.activityName, m.activityKind, m.activityDay].filter(Boolean).join("\n"),
       });
     }
     for (const p of m.persons) {
       const ref = `E21_Person:${p.id}`;
+      if (skipPersonSatelliteForFeelingAnchor(overview, ref)) continue;
       addSat(map, {
         id: ref,
         label: trunc(p.name, 14),
         sub: p.role || "Person",
         ref,
+        visualGroup: "person",
         infoTitle: p.name,
       });
     }
@@ -296,11 +441,13 @@ function collectContentNeighbors(
   if (hub?.kind === "situation") {
     for (const p of hub.persons) {
       const ref = `E21_Person:${p.id}`;
+      if (skipPersonSatelliteForFeelingAnchor(overview, ref)) continue;
       addSat(map, {
         id: ref,
         label: trunc(p.name, 14),
         sub: p.role || "Person",
         ref,
+        visualGroup: "person",
         infoTitle: p.name,
       });
     }
@@ -310,6 +457,7 @@ function collectContentNeighbors(
         label: "Note",
         sub: trunc(e.input_time || e.day || "", 12),
         entryId: e.entry_id,
+        visualGroup: "note",
         infoTitle: "Journal note",
         infoBody: (e.text_preview || "").slice(0, 600) || undefined,
       });
@@ -318,11 +466,18 @@ function collectContentNeighbors(
 
   if (hub?.kind === "context") {
     for (const L of hub.linked) {
+      if (visualGroupFromRef(L.ref) === "person" && skipPersonSatelliteForFeelingAnchor(overview, L.ref)) {
+        continue;
+      }
       addSat(map, {
         id: `link:${L.ref}:${L.source}`,
         label: trunc(L.name, 14),
         sub: trunc(L.ref_type || "link", 10),
         ref: L.ref,
+        visualGroup: (() => {
+          const g = visualGroupFromRef(L.ref);
+          return g !== "generic" ? g : visualGroupFromLinkBucket(L.bucket);
+        })(),
         infoTitle: L.name,
         infoBody: L.source === "situation" ? "Linked via situation" : "Linked entity",
       });
@@ -333,6 +488,7 @@ function collectContentNeighbors(
         label: "Note",
         sub: "",
         entryId: e.entry_id,
+        visualGroup: "note",
         infoTitle: "Related note",
         infoBody: (e.text_preview || "").slice(0, 600),
       });
@@ -347,6 +503,7 @@ function collectContentNeighbors(
         label: trunc(s.title, 16),
         sub: trunc(s.event_type, 12),
         ref: s.ref,
+        visualGroup: visualGroupFromRef(s.ref),
         infoTitle: s.title,
         infoBody: [s.event_type, s.places.join(", ")].filter(Boolean).join("\n"),
       });
@@ -358,6 +515,7 @@ function collectContentNeighbors(
         label: trunc(p.name, 14),
         sub: p.role || "",
         ref,
+        visualGroup: "person",
         infoTitle: p.name,
       });
     }
@@ -367,6 +525,7 @@ function collectContentNeighbors(
         label: trunc(t.name, 12),
         sub: `×${t.count}`,
         ref: t.ref,
+        visualGroup: "feeling",
         infoTitle: t.name,
       });
     }
@@ -376,6 +535,7 @@ function collectContentNeighbors(
         label: "Note",
         sub: "",
         entryId: e.entry_id,
+        visualGroup: "note",
         infoTitle: "Journal note",
         infoBody: (e.text_preview || "").slice(0, 500),
       });
@@ -386,6 +546,7 @@ function collectContentNeighbors(
           label: trunc(e.activity_name || "Situation", 14),
           sub: "from note",
           ref,
+          visualGroup: "situation",
           infoTitle: e.activity_name || "Situation",
         });
       }
@@ -393,13 +554,15 @@ function collectContentNeighbors(
   }
 
   if (overview.kind === "Feeling" && overview.anchor_person_ref) {
+    const anchorName = (overview.anchor_person_name || "").trim() || "Person";
     addSat(map, {
       id: `back:${overview.anchor_person_ref}`,
-      label: "Person",
-      sub: "back",
+      label: trunc(anchorName, 18),
+      sub: "← back",
       ref: overview.anchor_person_ref,
-      infoTitle: overview.anchor_person_name || "Person",
-      infoBody: "Return to the anchored person view.",
+      visualGroup: "person",
+      infoTitle: `Back to ${anchorName}`,
+      infoBody: `Re-open the person overview you came from. Any other person nodes here are different people linked to this tag.`,
     });
   }
 
@@ -444,6 +607,7 @@ export type BuildGraphInput = {
 export function buildLinkedExplorerGraph(ex: BuildGraphInput): ExplorerGraphModel {
   const {
     wizardStep,
+    categoryId,
     categoryLabel,
     entityList,
     entityLoading,
@@ -484,6 +648,7 @@ export function buildLinkedExplorerGraph(ex: BuildGraphInput): ExplorerGraphMode
         role: "center",
         label: "Explore",
         sub: "Start",
+        visualGroup: "hub",
         infoTitle: "Linked graph",
         infoBody: "Pick what kind of entity you want in the center next. Same data as Entity Timeline.",
       },
@@ -492,6 +657,7 @@ export function buildLinkedExplorerGraph(ex: BuildGraphInput): ExplorerGraphMode
         role: "satellite" as const,
         label: trunc(c.label, 14),
         sub: trunc(c.hint, 18),
+        visualGroup: visualGroupFromExplorerCategoryId(c.id),
         onActivate: () => startCategory(c.id, c.label),
         infoTitle: c.label,
         infoBody: c.hint,
@@ -505,6 +671,7 @@ export function buildLinkedExplorerGraph(ex: BuildGraphInput): ExplorerGraphMode
       role: "center",
       label: trunc(categoryLabel || "Type", 18),
       sub: "Category",
+      visualGroup: visualGroupFromExplorerCategoryId(categoryId),
       onActivate: () => {
         setWizardStep("category");
         setNavError("");
@@ -519,6 +686,7 @@ export function buildLinkedExplorerGraph(ex: BuildGraphInput): ExplorerGraphMode
       label: trunc(e.name, 16),
       sub: trunc(formatEntityOption(e), 20),
       ref: e.ref?.trim() || undefined,
+      visualGroup: visualGroupFromEntityType(e.type),
       disabled: navLoading || !e.ref?.trim(),
       onActivate: e.ref?.trim() ? () => void jumpToEntity(e.ref) : undefined,
       infoTitle: e.name,
@@ -540,6 +708,7 @@ export function buildLinkedExplorerGraph(ex: BuildGraphInput): ExplorerGraphMode
           role: "center",
           label: "Error",
           sub: "List",
+          visualGroup: "system",
           infoTitle: "Could not load list",
           infoBody: entityError,
         },
@@ -556,6 +725,7 @@ export function buildLinkedExplorerGraph(ex: BuildGraphInput): ExplorerGraphMode
             role: "satellite",
             label: "Retry",
             sub: "open",
+            visualGroup: "system",
             onActivate: () => void runNavThenMaybeOverview(selectedRef),
             infoTitle: "Retry navigation",
             infoBody: navError,
@@ -576,6 +746,7 @@ export function buildLinkedExplorerGraph(ex: BuildGraphInput): ExplorerGraphMode
       role: "center",
       label: trunc(selectedDisplayName || selectedRef, 20),
       sub: "Selected",
+      visualGroup: visualGroupFromRef(selectedRef),
       infoTitle: selectedDisplayName || selectedRef,
       infoBody: "Choose how to lens this node. Each option pulls the same overview data as the timeline tab.",
       onActivate: () => {
@@ -594,6 +765,7 @@ export function buildLinkedExplorerGraph(ex: BuildGraphInput): ExplorerGraphMode
             id: "retry-nav2",
             role: "satellite",
             label: "Retry",
+            visualGroup: "system",
             onActivate: () => void runNavThenMaybeOverview(selectedRef),
             infoTitle: "Retry",
             infoBody: navError,
@@ -608,6 +780,7 @@ export function buildLinkedExplorerGraph(ex: BuildGraphInput): ExplorerGraphMode
       role: "satellite" as const,
       label: trunc(opt.title, 16),
       sub: String(opt.count),
+      visualGroup: visualGroupFromNavOptionKey(opt.key),
       disabled: !opt.enabled,
       onActivate: () => void selectExplorationOption(opt.key),
       infoTitle: opt.title,
@@ -629,6 +802,7 @@ export function buildLinkedExplorerGraph(ex: BuildGraphInput): ExplorerGraphMode
         role: "center",
         label: "Blocked",
         sub: "No lens",
+        visualGroup: "system",
         infoTitle: "Nothing to open yet",
         infoBody: "Try another entity or enrich the graph with journal links.",
       },
@@ -638,6 +812,7 @@ export function buildLinkedExplorerGraph(ex: BuildGraphInput): ExplorerGraphMode
           role: "satellite",
           label: "Others",
           sub: "items",
+          visualGroup: "nav",
           onActivate: () => {
             setWizardStep("pick_entity");
             setNavOptions(null);
@@ -649,6 +824,7 @@ export function buildLinkedExplorerGraph(ex: BuildGraphInput): ExplorerGraphMode
           role: "satellite",
           label: "Restart",
           sub: "wizard",
+          visualGroup: "bucket",
           onActivate: () => restartWizard(),
           infoTitle: "Start over",
         },
@@ -665,6 +841,7 @@ export function buildLinkedExplorerGraph(ex: BuildGraphInput): ExplorerGraphMode
           role: "center",
           label: "…",
           sub: "Loading",
+          visualGroup: "system",
           infoTitle: "Loading",
           infoBody: "Fetching overview from the same API as Entity Timeline.",
         },
@@ -679,6 +856,7 @@ export function buildLinkedExplorerGraph(ex: BuildGraphInput): ExplorerGraphMode
           role: "center",
           label: "Error",
           sub: "Overview",
+          visualGroup: "system",
           infoTitle: "Overview failed",
           infoBody: overviewError,
           onActivate: () => void loadOverview(selectedRef),
@@ -693,6 +871,7 @@ export function buildLinkedExplorerGraph(ex: BuildGraphInput): ExplorerGraphMode
           id: "empty",
           role: "center",
           label: "Empty",
+          visualGroup: "system",
           infoTitle: "No data",
           infoBody: "Nothing loaded.",
         },
@@ -717,6 +896,7 @@ export function buildLinkedExplorerGraph(ex: BuildGraphInput): ExplorerGraphMode
         label: "No edges",
         sub: "empty",
         disabled: true,
+        visualGroup: "generic",
         infoTitle: "Nothing to show",
         infoBody: "This lens has no extra nodes to draw yet.",
       });
