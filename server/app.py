@@ -244,12 +244,26 @@ def create_app() -> FastAPI:
         return {"items": repo.persons(query=query, limit=limit)}
 
     @app.get("/entities")
-    def entities(query: str = "", limit: int = 80):
-        return {"items": repo.entities(query=query, limit=limit)}
+    def entities(query: str = "", limit: int = 120, category: str = ""):
+        return {"items": repo.entities(query=query, limit=limit, category=category)}
+
+    @app.get("/entity/nav-options")
+    def entity_nav_options(ref: str, anchor_person: str = ""):
+        if not (ref or "").strip():
+            raise HTTPException(status_code=400, detail="ref is required")
+        try:
+            return repo.entity_navigation_options(ref=ref.strip(), anchor_person=(anchor_person or "").strip())
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
 
     @app.get("/entity/overview")
-    def entity_overview(ref: str, limit: int = 120):
-        return repo.entity_overview(ref=ref, limit=limit)
+    def entity_overview(ref: str, limit: int = 120, anchor_person: str = "", focus: str = ""):
+        return repo.entity_overview(
+            ref=ref,
+            limit=limit,
+            anchor_person=(anchor_person or "").strip(),
+            focus=(focus or "").strip(),
+        )
 
     @app.get("/person/{person_id}")
     def person_detail(person_id: str, entry_limit: int = 30):
@@ -277,6 +291,13 @@ def create_app() -> FastAPI:
     def insights(days: int = 30):
         user_name = (USER_NAME or "").strip() or "User"
         return repo.insights(user_name=user_name, days=days)
+
+    @app.get("/insights/person")
+    def insights_person(person: str, days: int = 30, limit: int = 40):
+        person_name = (person or "").strip()
+        if not person_name:
+            raise HTTPException(status_code=400, detail="person is required")
+        return repo.insights_person_detail(person_name=person_name, days=days, limit=limit)
 
     @app.post("/inbox/{task_id}/resolve")
     def resolve_task(task_id: str, payload: ResolveTaskIn):

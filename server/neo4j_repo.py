@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
-from typing import Any, Dict, List, Optional, Tuple
+from datetime import date, datetime, timedelta
+from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
 from neo4j import GraphDatabase
 
@@ -214,43 +214,100 @@ class Neo4jRepo:
                d.date as day,
                coalesce(types[0], ev.event_type, '') as event_type,
                places as places,
-               substring(e.text, 0, 260) as text_preview
+               substring(e.text, 0, 260) as text_preview,
+               coalesce(ev.key, '') as event_key,
+               coalesce(ev.name, '') as activity_name
         ORDER BY e.input_time DESC
         LIMIT $limit
         """
         with self._driver.session() as s:
             return [dict(r) for r in s.run(q, id=person_id, limit=int(limit))]
 
-    def entities(self, limit: int = 100, query: str = "") -> List[Dict[str, Any]]:
+    ENTITY_CATEGORY_PREDICATES: ClassVar[Dict[str, str]] = {
+        "person": "e:E21_Person",
+        "feeling_tag": "e:E55_Type",
+        "situation": "e:E7_Activity",
+        "place": "e:E53_Place",
+        "day": "e:E52_Time_Span",
+        "idea": "e:E28_Conceptual_Object",
+        "note": "e:E73_Information_Object",
+        "group": "e:E74_Group",
+    }
+
+    def entities(self, limit: int = 100, query: str = "", category: str = "") -> List[Dict[str, Any]]:
         """
         Mixed entity list for UI browsing.
+        Optional category filters to one family (person, feeling_tag, situation, place, day, idea, note, group).
         Returns items with:
           - type: primary Neo4j label (Person, Event, Place, Concept, User, Day, EventType, Emotion)
           - name: human display name
           - ref: a stable ref string usable with /entity/overview (ex: Person:<uuid>, Event:<key>, Day:<yyyy-mm-dd>, Context:<key>)
         """
-        q = """
+        cat = (category or "").strip().lower()
+        if cat and cat not in self.ENTITY_CATEGORY_PREDICATES:
+            cat = ""
+        if cat:
+            where_types = self.ENTITY_CATEGORY_PREDICATES[cat]
+        else:
+            where_types = (
+                "e:E21_Person OR e:E53_Place OR e:E28_Conceptual_Object OR e:E7_Activity OR "
+                "e:E52_Time_Span OR e:E55_Type OR e:E73_Information_Object OR e:E74_Group"
+            )
+
+        q = f"""
         MATCH (e)
-        WHERE e:E21_Person OR e:E53_Place OR e:E28_Conceptual_Object OR e:E7_Activity OR e:E52_Time_Span OR e:E55_Type OR e:E73_Information_Object OR e:E74_Group
-        WITH e, labels(e)[0] as type
+        WHERE {where_types}
+        WITH e,
+          CASE
+            WHEN e:E21_Person THEN 'E21_Person'
+            WHEN e:E7_Activity THEN 'E7_Activity'
+            WHEN e:E53_Place THEN 'E53_Place'
+            WHEN e:E28_Conceptual_Object THEN 'E28_Conceptual_Object'
+            WHEN e:E74_Group THEN 'E74_Group'
+            WHEN e:E52_Time_Span THEN 'E52_Time_Span'
+            WHEN e:E55_Type THEN 'E55_Type'
+            WHEN e:E73_Information_Object THEN 'E73_Information_Object'
+            ELSE coalesce(labels(e)[0], '')
+          END AS type
         WITH e, type,
           CASE
             WHEN type = "E21_Person" THEN e.name
             WHEN type = "E53_Place" THEN e.name
             WHEN type = "E28_Conceptual_Object" THEN e.name
             WHEN type = "E74_Group" THEN e.name
-            WHEN type = "E7_Activity" THEN coalesce(e.event_type, "event")
+            WHEN type = "E7_Activity" THEN
+              CASE
+                WHEN e.name IS NOT NULL AND trim(e.name) <> ''
+                 AND NOT toLower(trim(e.name)) IN ['activity', 'event', 'misc'] THEN trim(e.name)
+                WHEN e.event_type IS NOT NULL AND trim(e.event_type) <> ''
+                 AND NOT toLower(trim(e.event_type)) IN ['activity', 'event', 'misc'] THEN trim(e.event_type)
+                WHEN e.event_time_text IS NOT NULL AND trim(e.event_time_text) <> '' THEN trim(e.event_time_text)
+                WHEN e.event_time_iso IS NOT NULL AND trim(toString(e.event_time_iso)) <> ''
+                  THEN trim(replace(toString(e.event_time_iso), 'T', ' '))
+                WHEN e.key IS NOT NULL AND trim(e.key) <> '' THEN
+                  CASE
+                    WHEN size(split(e.key, '|')) > 1 THEN
+                      trim(split(e.key, '|')[0]) + ' · ' + trim(reverse(split(e.key, '|'))[0])
+                    ELSE substring(e.key, 0, 56)
+                  END
+                ELSE 'Situation'
+              END
             WHEN type = "E52_Time_Span" THEN toString(coalesce(e.date, e.key))
             WHEN type = "E55_Type" THEN e.name
-            WHEN type = "E73_Information_Object" THEN coalesce(e.name, substring(coalesce(e.content, ''), 0, 60))
+            WHEN type = "E73_Information_Object" THEN coalesce(e.name, substring(coalesce(e.text, e.content, ''), 0, 60))
             ELSE coalesce(e.name, type)
           END as name,
+          CASE
+            WHEN type = "E73_Information_Object" AND coalesce(e.entry_kind,'') = 'journal_entry' THEN 'journal'
+            WHEN type = "E73_Information_Object" THEN 'context'
+            ELSE null
+          END as note_role,
           CASE
             WHEN type = "E21_Person" THEN "E21_Person:" + e.id
             WHEN type = "E7_Activity" THEN "Event:" + e.key
             WHEN type = "E52_Time_Span" THEN "E52_Time_Span:" + toString(coalesce(e.key, e.date))
             WHEN type IN ["E53_Place","E28_Conceptual_Object","E74_Group","E55_Type"] THEN type + ":" + e.name
-            WHEN type = "E73_Information_Object" THEN "E73_Information_Object:" + e.key
+            WHEN type = "E73_Information_Object" THEN "E73_Information_Object:" + coalesce(e.id, e.key, elementId(e))
             ELSE type + ":" + coalesce(e.name, toString(e.id))
           END as ref,
           coalesce(e.mention_count, 0) as mentions,
@@ -259,24 +316,653 @@ class Neo4jRepo:
             ELSE toString(coalesce(e.last_seen, e.first_seen, e.created_at))
           END as last_seen
         WHERE $q = "" OR toLower(name) CONTAINS toLower($q)
-        RETURN type as type, name as name, ref as ref, mentions as mentions, last_seen as last_seen
+        RETURN type as type, name as name, ref as ref, mentions as mentions, last_seen as last_seen, note_role as note_role
         ORDER BY mentions DESC, last_seen DESC
         LIMIT $limit
         """
         with self._driver.session() as s:
             return [dict(r) for r in s.run(q, limit=int(limit), q=query or "")]
 
-    def entity_overview(self, ref: str, limit: int = 120) -> Dict[str, Any]:
+    def _person_feeling_tags(self, person_id: str, limit: int = 40) -> List[Dict[str, Any]]:
+        """
+        E55_Type tags (feelings / attributes) co-occurring with this person via:
+        - journal → E13 → tag, and the same journal or assignment ties to an activity
+          that lists this person (P14), including P15(ev) or direct j→ev.
+        """
+        q = """
+        MATCH (p:E21_Person {id: $id})
+        MATCH (j:E73_Information_Object)-[:P67_refers_to]->(a:E13_Attribute_Assignment)
+        WHERE coalesce(j.entry_kind,'') = 'journal_entry'
+        MATCH (a)-[:P141_assigned]->(tg:E55_Type)
+        WHERE coalesce(tg.name,'') <> 'User'
+        MATCH (ev:E7_Activity)-[:P14_carried_out_by]->(p)
+        WHERE (a)-[:P15_was_influenced_by]->(ev) OR (j)-[:P67_refers_to]->(ev)
+        RETURN tg.name as name, count(DISTINCT a) as cnt
+        ORDER BY cnt DESC
+        LIMIT $limit
+        """
+        out: List[Dict[str, Any]] = []
+        with self._driver.session() as s:
+            for r in s.run(q, id=person_id, limit=int(limit)):
+                nm = (r.get("name") or "").strip()
+                if not nm:
+                    continue
+                out.append(
+                    {
+                        "name": nm,
+                        "count": int(r.get("cnt") or 0),
+                        "ref": f"E55_Type:{nm}",
+                    }
+                )
+        return out
+
+    def _normalize_explore_ref(self, ref: str) -> str:
+        """
+        Browse lists used labels(e)[0], so :E21_Person:E39_Actor nodes could surface as E39_Actor:name.
+        Map those (and Person:) to E21_Person:id so nav-options and overview match.
+        """
+        ref = (ref or "").strip()
+        if not ref or ":" not in ref:
+            return ref
+        label, key = self._parse_ref(ref)
+        if label == "Person":
+            return f"E21_Person:{key}"
+        if label == "E21_Person":
+            return ref
+        if label != "E39_Actor":
+            return ref
+        with self._driver.session() as s:
+            row = s.run(
+                """
+                MATCH (p:E21_Person)
+                WHERE p.id = $k OR toLower(toString(p.name)) = toLower($k)
+                RETURN p.id as id
+                LIMIT 1
+                """,
+                k=key,
+            ).single()
+            if row and row.get("id"):
+                return f"E21_Person:{row['id']}"
+        return ref
+
+    def _person_id_from_anchor(self, anchor_person: str) -> Optional[str]:
+        ap = (anchor_person or "").strip()
+        if not ap or ":" not in ap:
+            return None
+        ap = self._normalize_explore_ref(ap)
+        label, key = self._parse_ref(ap)
+        return key if label == "E21_Person" else None
+
+    def entity_navigation_options(self, ref: str, anchor_person: str = "") -> Dict[str, Any]:
+        """
+        High-level exploration choices for a ref (counts + enabled flags for empty-safe UI).
+        """
+        if not ref or ":" not in ref:
+            raise ValueError("ref required")
+        ref = self._normalize_explore_ref(ref)
+        label, key = self._parse_ref(ref)
+        anchor_pid = self._person_id_from_anchor(anchor_person) or ""
+        options: List[Dict[str, Any]] = []
+        display_name = key
+
+        with self._driver.session() as s:
+            if label == "E21_Person":
+                row = s.run(
+                    "MATCH (p:E21_Person {id: $id}) RETURN coalesce(p.name, '') as name, coalesce(p.mention_count, 0) as mentions",
+                    id=key,
+                ).single()
+                display_name = (row.get("name") or "").strip() or key
+                mentions = int(row.get("mentions") or 0) if row else 0
+                crow = s.run(
+                    """
+                    MATCH (p:E21_Person {id: $id})
+                    MATCH (ev:E7_Activity)-[:P14_carried_out_by]->(p)
+                    MATCH (ev)<-[:P67_refers_to]-(e:E73_Information_Object)
+                    WHERE coalesce(e.entry_kind,'') = 'journal_entry'
+                    RETURN count(DISTINCT e) as c
+                    """,
+                    id=key,
+                ).single()
+                n = int(crow.get("c") or 0) if crow else 0
+                # Always allow opening: people appear in browse lists from mentions/aliases even when
+                # nothing is wired yet as Activity→P14→Person→journal (count can be 0).
+                desc = (
+                    "Each note where they appear, linked to a situation when the graph has one."
+                    if n > 0
+                    else (
+                        "No journal notes are linked through a situation yet for this person."
+                        + (f" They still have {mentions} recorded mention(s) in the graph." if mentions else "")
+                    )
+                )
+                options.append(
+                    {
+                        "key": "moments",
+                        "title": "Journal moments",
+                        "description": desc,
+                        "count": n,
+                        "enabled": True,
+                    }
+                )
+
+            elif label == "E55_Type":
+                row = s.run(
+                    """
+                    MATCH (t:E55_Type)
+                    WHERE t.name = $name OR toLower(t.name) = toLower($name)
+                    WITH t ORDER BY CASE WHEN t.name = $name THEN 0 ELSE 1 END, t.name
+                    LIMIT 1
+                    RETURN coalesce(t.name, $name) as name
+                    """,
+                    name=key,
+                ).single()
+                display_name = (row.get("name") or key).strip() if row else key
+                crow = s.run(
+                    """
+                    MATCH (tag:E55_Type)
+                    WHERE tag.name = $name OR toLower(tag.name) = toLower($name)
+                    WITH tag ORDER BY CASE WHEN tag.name = $name THEN 0 ELSE 1 END, tag.name
+                    LIMIT 1
+                    MATCH (j:E73_Information_Object)-[:P67_refers_to]->(a:E13_Attribute_Assignment)
+                    WHERE coalesce(j.entry_kind,'') = 'journal_entry'
+                      AND (a)-[:P141_assigned]->(tag)
+                      AND (
+                        $pid = ''
+                        OR (a)-[:P140_assigned_attribute_to]->(:E21_Person {id: $pid})
+                        OR EXISTS {
+                          MATCH (a)-[:P15_was_influenced_by]->(:E7_Activity)-[:P14_carried_out_by]->(:E21_Person {id: $pid})
+                        }
+                      )
+                    RETURN count(DISTINCT a) as c
+                    """,
+                    name=key,
+                    pid=anchor_pid,
+                ).single()
+                n = int(crow.get("c") or 0) if crow else 0
+                options.append(
+                    {
+                        "key": "feelings",
+                        "title": "How this shows in your notes",
+                        "description": "Journal assignments (E13) that use this type as the recorded value (P141).",
+                        "count": n,
+                        "enabled": n > 0,
+                    }
+                )
+                act = s.run(
+                    """
+                    MATCH (tag:E55_Type)
+                    WHERE tag.name = $name OR toLower(tag.name) = toLower($name)
+                    WITH tag ORDER BY CASE WHEN tag.name = $name THEN 0 ELSE 1 END, tag.name
+                    LIMIT 1
+                    MATCH (ev:E7_Activity)-[:P2_has_type]->(tag)
+                    MATCH (ev)<-[:P67_refers_to]-(j:E73_Information_Object)
+                    WHERE coalesce(j.entry_kind,'') = 'journal_entry'
+                      AND (
+                        $pid = ''
+                        OR (ev)-[:P14_carried_out_by]->(:E21_Person {id: $pid})
+                      )
+                    RETURN count(DISTINCT ev) as c
+                    """,
+                    name=key,
+                    pid=anchor_pid,
+                ).single()
+                n_act = int(act.get("c") or 0) if act else 0
+                options.append(
+                    {
+                        "key": "activity_type",
+                        "title": "Situations typed like this",
+                        "description": "Activities classified with this E55_Type (P2_has_type), e.g. lunch as “Consumption”.",
+                        "count": n_act,
+                        "enabled": n_act > 0,
+                    }
+                )
+
+            elif label == "Event":
+                row = s.run(
+                    "MATCH (ev:E7_Activity {key: $k}) RETURN coalesce(ev.name, ev.key, $k) as name",
+                    k=key,
+                ).single()
+                display_name = (row.get("name") or key).strip() if row else key
+                options.append(
+                    {
+                        "key": "hub",
+                        "title": "Situation overview",
+                        "description": "Who was involved and which journal notes mention it.",
+                        "count": 1,
+                        "enabled": True,
+                    }
+                )
+
+            elif label == "E73_Information_Object":
+                # Journal entries use `id`; context snippets may use `key` only.
+                row = s.run(
+                    """
+                    MATCH (x:E73_Information_Object)
+                    WHERE x.id = $k OR x.key = $k
+                    RETURN coalesce(x.name, '') as name
+                    LIMIT 1
+                    """,
+                    k=key,
+                ).single()
+                display_name = (row.get("name") or "Note").strip() or key
+                erow = s.run(
+                    """
+                    MATCH (ctx:E73_Information_Object)
+                    WHERE ctx.id = $k OR ctx.key = $k
+                    MATCH (ctx)-[:P67_refers_to {ref_type: 'context_of'}]->(ev:E7_Activity)
+                    MATCH (ev)<-[:P67_refers_to]-(e:E73_Information_Object)
+                    WHERE coalesce(e.entry_kind,'') = 'journal_entry'
+                    RETURN count(DISTINCT e) as c
+                    """,
+                    k=key,
+                ).single()
+                n = int(erow.get("c") or 0) if erow else 0
+                options.append(
+                    {
+                        "key": "context",
+                        "title": "Context & related notes",
+                        "description": "Phrases linked from this context plus related journal entries.",
+                        "count": max(1, n),
+                        "enabled": True,
+                    }
+                )
+
+            elif label == "E53_Place":
+                display_name = key
+                crow = s.run(
+                    """
+                    MATCH (pl:E53_Place {name: $name})<-[:P7_took_place_at]-(ev:E7_Activity)
+                    MATCH (ev)<-[:P67_refers_to]-(e:E73_Information_Object)
+                    WHERE coalesce(e.entry_kind,'') = 'journal_entry'
+                    RETURN count(DISTINCT e) as c
+                    """,
+                    name=key,
+                ).single()
+                n = int(crow.get("c") or 0) if crow else 0
+                options.append(
+                    {
+                        "key": "hub",
+                        "title": "What happened here",
+                        "description": "Journal notes tied to activities at this place.",
+                        "count": n,
+                        "enabled": n > 0,
+                    }
+                )
+
+            elif label == "E28_Conceptual_Object":
+                display_name = key
+                # Pipeline links topics/concepts as journal—P67→concept; older path is concept←P67←activity←P67←journal.
+                crow = s.run(
+                    """
+                    MATCH (c:E28_Conceptual_Object {name: $name})
+                    CALL {
+                      WITH c
+                      MATCH (e:E73_Information_Object)-[:P67_refers_to]->(c)
+                      WHERE coalesce(e.entry_kind,'') = 'journal_entry'
+                      RETURN e.id as id
+                      UNION
+                      WITH c
+                      MATCH (c)<-[:P67_refers_to]-(ev:E7_Activity)
+                      MATCH (ev)<-[:P67_refers_to]-(e:E73_Information_Object)
+                      WHERE coalesce(e.entry_kind,'') = 'journal_entry'
+                      RETURN e.id as id
+                    }
+                    RETURN count(DISTINCT id) as c
+                    """,
+                    name=key,
+                ).single()
+                n = int(crow.get("c") or 0) if crow else 0
+                options.append(
+                    {
+                        "key": "hub",
+                        "title": "Linked moments",
+                        "description": "Journal notes that mention this topic, or activities tied to it.",
+                        "count": n,
+                        "enabled": n > 0,
+                    }
+                )
+
+            elif label == "E52_Time_Span":
+                display_name = key
+                dc = self._e52_day_counts(key)
+                n_any = sum(dc.values())
+                options.append(
+                    {
+                        "key": "all",
+                        "title": "Full day",
+                        "description": "Situations (filterable), journal notes, people, and feelings linked to this date.",
+                        "count": n_any,
+                        "enabled": True,
+                    }
+                )
+                options.append(
+                    {
+                        "key": "situations",
+                        "title": "Situations",
+                        "description": "Activities with this day as time span (direct). Open one for cast and notes.",
+                        "count": dc["situations"],
+                        "enabled": dc["situations"] > 0,
+                    }
+                )
+                options.append(
+                    {
+                        "key": "journal",
+                        "title": "Journal notes",
+                        "description": "Entries written this day or tied to activities on this day (direct + via situation).",
+                        "count": dc["journal"],
+                        "enabled": dc["journal"] > 0,
+                    }
+                )
+                options.append(
+                    {
+                        "key": "people",
+                        "title": "People",
+                        "description": "Everyone on the cast of activities dated this day (via situations).",
+                        "count": dc["people"],
+                        "enabled": dc["people"] > 0,
+                    }
+                )
+                options.append(
+                    {
+                        "key": "feelings",
+                        "title": "Feelings & tags",
+                        "description": "Emotion assignments on notes that belong to this day (proxy via journal / situation).",
+                        "count": dc["feelings"],
+                        "enabled": dc["feelings"] > 0,
+                    }
+                )
+
+            elif label == "E74_Group":
+                display_name = key
+                options.append(
+                    {
+                        "key": "hub",
+                        "title": "Group (limited)",
+                        "description": "Overview is not specialized for groups yet.",
+                        "count": 0,
+                        "enabled": False,
+                    }
+                )
+
+            else:
+                options.append(
+                    {
+                        "key": "unknown",
+                        "title": "Explore",
+                        "description": "This type is not fully supported in the guided flow.",
+                        "count": 0,
+                        "enabled": False,
+                    }
+                )
+
+        return {"ref": ref, "display_name": display_name, "options": options}
+
+    @staticmethod
+    def _e52_day_match() -> str:
+        return """
+        MATCH (d:E52_Time_Span)
+        WHERE toString(coalesce(d.key, d.date)) = $dk OR toString(d.date) = $dk
+        """
+
+    def _e52_day_counts(self, dk: str) -> Dict[str, int]:
+        m = self._e52_day_match()
+        with self._driver.session() as s:
+            if not s.run(m + " RETURN 1 AS ok LIMIT 1", dk=dk).single():
+                return {"situations": 0, "journal": 0, "people": 0, "feelings": 0}
+            sit = s.run(
+                m + """
+                MATCH (d)<-[:P4_has_time_span]-(ev:E7_Activity)
+                RETURN count(DISTINCT ev) AS c
+                """,
+                dk=dk,
+            ).single()
+            ent = s.run(
+                m + """
+                WITH d, toString(coalesce(d.key, d.date)) AS dayStr
+                MATCH (j:E73_Information_Object)
+                WHERE coalesce(j.entry_kind,'') = 'journal_entry'
+                  AND (
+                    toString(date(j.input_time)) = dayStr
+                    OR EXISTS { (j)-[:P67_refers_to]->(:E7_Activity)-[:P4_has_time_span]->(d) }
+                  )
+                RETURN count(DISTINCT j) AS c
+                """,
+                dk=dk,
+            ).single()
+            peo = s.run(
+                m + """
+                MATCH (d)<-[:P4_has_time_span]-(ev:E7_Activity)
+                MATCH (ev)-[:P14_carried_out_by]->(p:E21_Person)
+                RETURN count(DISTINCT p) AS c
+                """,
+                dk=dk,
+            ).single()
+            tag = s.run(
+                m + """
+                WITH d, toString(coalesce(d.key, d.date)) AS dayStr
+                MATCH (j:E73_Information_Object)
+                WHERE coalesce(j.entry_kind,'') = 'journal_entry'
+                  AND (
+                    toString(date(j.input_time)) = dayStr
+                    OR EXISTS { (j)-[:P67_refers_to]->(:E7_Activity)-[:P4_has_time_span]->(d) }
+                  )
+                MATCH (j)-[:P67_refers_to]->(a:E13_Attribute_Assignment)
+                MATCH (a)-[:P141_assigned]->(tg:E55_Type)
+                WHERE coalesce(tg.name,'') <> 'User'
+                RETURN count(DISTINCT tg) AS c
+                """,
+                dk=dk,
+            ).single()
+            return {
+                "situations": int((sit or {}).get("c") or 0),
+                "journal": int((ent or {}).get("c") or 0),
+                "people": int((peo or {}).get("c") or 0),
+                "feelings": int((tag or {}).get("c") or 0),
+            }
+
+    def _overview_day(self, ref: str, day_key: str, limit: int, focus: str) -> Dict[str, Any]:
+        dk = day_key
+        fo = (focus or "all").strip().lower()
+        if fo not in ("all", "situations", "journal", "people", "feelings"):
+            fo = "all"
+        m = self._e52_day_match()
+        out: Dict[str, Any] = {
+            "kind": "Day",
+            "ref": ref,
+            "day": dk,
+            "focus": fo,
+            "situations": [],
+            "entries": [],
+            "persons": [],
+            "users": [],
+            "feeling_tags": [],
+        }
+        with self._driver.session() as s:
+            if not s.run(m + " RETURN d LIMIT 1", dk=dk).single():
+                return out
+
+            if fo in ("all", "situations"):
+                rows = s.run(
+                    m + """
+                    MATCH (d)<-[:P4_has_time_span]-(ev:E7_Activity)
+                    OPTIONAL MATCH (ev)-[:P7_took_place_at]->(pl:E53_Place)
+                    OPTIONAL MATCH (ev)-[:P2_has_type]->(t:E55_Type)
+                    RETURN DISTINCT ev.key AS event_key,
+                           coalesce(ev.name, ev.event_type, t.name, 'Situation') AS title,
+                           coalesce(t.name, ev.event_type, '') AS event_type,
+                           collect(DISTINCT pl.name) AS places
+                    ORDER BY title
+                    LIMIT 80
+                    """,
+                    dk=dk,
+                )
+                out["situations"] = [
+                    {
+                        "ref": f"Event:{dict(r).get('event_key') or ''}",
+                        "event_key": str(dict(r).get("event_key") or ""),
+                        "title": str(dict(r).get("title") or "Situation"),
+                        "event_type": str(dict(r).get("event_type") or ""),
+                        "places": [x for x in (dict(r).get("places") or []) if x],
+                    }
+                    for r in rows
+                    if dict(r).get("event_key")
+                ]
+
+            if fo in ("all", "journal"):
+                rows = s.run(
+                    m + """
+                    MATCH (d)<-[:P4_has_time_span]-(ev:E7_Activity)<-[:P67_refers_to]-(e:E73_Information_Object)
+                    WHERE coalesce(e.entry_kind,'') = 'journal_entry'
+                    OPTIONAL MATCH (ev)-[:P4_has_time_span]->(dd:E52_Time_Span)
+                    OPTIONAL MATCH (ev)-[:P7_took_place_at]->(pl:E53_Place)
+                    OPTIONAL MATCH (ev)-[:P2_has_type]->(t:E55_Type)
+                    WITH e, ev, collect(DISTINCT dd.date) AS days,
+                         collect(DISTINCT coalesce(t.name, ev.event_type, '')) AS event_types,
+                         collect(DISTINCT pl.name) AS places
+                    RETURN e.id AS entry_id,
+                           toString(e.input_time) AS input_time,
+                           days[0] AS day,
+                           event_types[0] AS event_type,
+                           places[0..3] AS places,
+                           substring(e.text, 0, 260) AS text_preview,
+                           coalesce(ev.key, '') AS event_key,
+                           coalesce(ev.name, '') AS activity_name
+                    ORDER BY e.input_time DESC
+                    LIMIT $lim
+                    """,
+                    dk=dk,
+                    lim=int(limit),
+                )
+                out["entries"] = [dict(r) for r in rows]
+
+            if fo in ("all", "people"):
+                p_row = s.run(
+                    m + """
+                    MATCH (d)<-[:P4_has_time_span]-(ev:E7_Activity)
+                    OPTIONAL MATCH (ev)-[:P14_carried_out_by]->(p:E21_Person)
+                    RETURN coalesce(
+                      [x IN collect(DISTINCT {id: p.id, name: p.name, role: p.role, mentions: coalesce(p.mention_count,0)})
+                       WHERE x.id IS NOT NULL],
+                      []
+                    ) AS persons
+                    """,
+                    dk=dk,
+                ).single()
+                persons = (p_row or {}).get("persons") or []
+                out["persons"] = [dict(x) for x in persons if isinstance(x, dict) and x.get("id")]
+                out["users"] = []
+
+            if fo in ("all", "feelings"):
+                rows = s.run(
+                    m + """
+                    WITH d, toString(coalesce(d.key, d.date)) AS dayStr
+                    MATCH (j:E73_Information_Object)
+                    WHERE coalesce(j.entry_kind,'') = 'journal_entry'
+                      AND (
+                        toString(date(j.input_time)) = dayStr
+                        OR EXISTS { (j)-[:P67_refers_to]->(:E7_Activity)-[:P4_has_time_span]->(d) }
+                      )
+                    MATCH (j)-[:P67_refers_to]->(a:E13_Attribute_Assignment)
+                    MATCH (a)-[:P141_assigned]->(tg:E55_Type)
+                    WHERE coalesce(tg.name,'') <> 'User'
+                    RETURN tg.name AS name, count(DISTINCT a) AS cnt
+                    ORDER BY cnt DESC
+                    LIMIT 40
+                    """,
+                    dk=dk,
+                )
+                out["feeling_tags"] = [
+                    {
+                        "name": str(dict(r).get("name") or ""),
+                        "count": int(dict(r).get("cnt") or 0),
+                        "ref": f"E55_Type:{str(dict(r).get('name') or '')}",
+                    }
+                    for r in rows
+                    if (dict(r).get("name") or "").strip()
+                ]
+
+
+        if fo == "situations":
+            out["entries"] = []
+            out["persons"] = []
+            out["users"] = []
+            out["feeling_tags"] = []
+        elif fo == "journal":
+            out["situations"] = []
+            out["persons"] = []
+            out["users"] = []
+            out["feeling_tags"] = []
+        elif fo == "people":
+            out["situations"] = []
+            out["entries"] = []
+            out["feeling_tags"] = []
+        elif fo == "feelings":
+            out["situations"] = []
+            out["entries"] = []
+            out["persons"] = []
+            out["users"] = []
+
+        return out
+
+    @staticmethod
+    def _journal_explore_links_from_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Deduplicate journal P67 rows; prefer direct links over people/places reached only via an activity."""
+        by_ref: Dict[str, Dict[str, Any]] = {}
+        for r in rows:
+            er = str(r.get("explore_ref") or "").strip()
+            if not er:
+                continue
+            src = str(r.get("src") or "")
+            prev = by_ref.get(er)
+            if prev is None:
+                by_ref[er] = r
+                continue
+            prev_src = str(prev.get("src") or "")
+            if prev_src != "direct" and src == "direct":
+                by_ref[er] = r
+        order = {"person": 0, "situation": 1, "place": 2, "idea": 3, "group": 4, "tag": 5, "day": 6, "other": 7}
+        out = list(by_ref.values())
+        out.sort(
+            key=lambda x: (
+                order.get(str(x.get("bucket") or ""), 99),
+                str(x.get("display_name") or ""),
+            )
+        )
+        return [
+            {
+                "ref": str(x.get("explore_ref") or ""),
+                "name": (str(x.get("display_name") or "").strip() or str(x.get("explore_ref"))),
+                "bucket": str(x.get("bucket") or "other"),
+                "ref_type": str(x.get("ref_type") or ""),
+                "source": str(x.get("src") or ""),
+            }
+            for x in out
+        ]
+
+    def entity_overview(self, ref: str, limit: int = 120, anchor_person: str = "", focus: str = "") -> Dict[str, Any]:
         """
         Unified overview endpoint for UI navigation.
         Supported:
           - Person:<uuid> => returns kind="Person" and items timeline
           - Event:<key> => returns kind="Event" and participants + entries
+          - E55_Type:<name> => returns kind="Feeling" (two lenses: focus=feelings for E13→P141, or focus=activity_type for E7→P2_has_type→tag with journal P67→ev)
+        anchor_person: optional E21_Person:… ref — for Feeling, only assignments where that person is the assignee
+        (P140) or appears on the linked situation (P14); for activity_type lens, only situations where that person is on P14.
+        focus: optional lens — days (E52_Time_Span): all | situations | journal | people | feelings; E55_Type: feelings | activity_type.
         """
         if not ref or ":" not in ref:
             raise ValueError("ref must be like 'Person:<id>' or 'Event:<key>'")
 
+        ref = self._normalize_explore_ref(ref)
         label, key = self._parse_ref(ref)
+        anchor_pid = self._person_id_from_anchor(anchor_person) or ""
+        anchor_display = ""
+        if anchor_pid:
+            with self._driver.session() as s:
+                pr = s.run(
+                    "MATCH (p:E21_Person {id: $id}) RETURN coalesce(p.name, '') as name",
+                    id=anchor_pid,
+                ).single()
+                anchor_display = (pr.get("name") or "").strip() if pr else ""
 
         if label == "E21_Person":
             # timeline enriched with Day/Place/EventType
@@ -290,7 +976,16 @@ class Neo4jRepo:
                 name = row.get("name") if row else "Person"
                 role = row.get("role") if row else None
                 mentions = row.get("mentions") if row else 0
-            return {"kind": "Person", "ref": ref, "name": name, "role": role, "mentions": mentions, "items": items}
+            feeling_tags = self._person_feeling_tags(person_id=key, limit=40)
+            return {
+                "kind": "Person",
+                "ref": ref,
+                "name": name,
+                "role": role,
+                "mentions": mentions,
+                "items": items,
+                "feeling_tags": feeling_tags,
+            }
 
         if label == "Event":
             q_participants = """
@@ -301,11 +996,17 @@ class Neo4jRepo:
             OPTIONAL MATCH (ev)-[:P14_carried_out_by]->(p:E21_Person)
             WITH toString(d.date) as day,
                  coalesce(t.name, ev.event_type, "") as event_type,
+                 coalesce(ev.name, "") as activity_name,
+                 toString(ev.event_time_iso) as event_time_iso,
+                 ev.event_time_text as event_time_text,
                  collect(DISTINCT pl.name) as places,
                  [x IN collect(DISTINCT {id: p.id, name: p.name, role: p.role, mentions: coalesce(p.mention_count,0)}) WHERE x.id IS NOT NULL] as persons,
                  [] as users
             RETURN day as day,
                    event_type as event_type,
+                   activity_name as activity_name,
+                   event_time_iso as event_time_iso,
+                   event_time_text as event_time_text,
                    places as places,
                    persons as persons,
                    users as users
@@ -325,15 +1026,29 @@ class Neo4jRepo:
 
             with self._driver.session() as s:
                 p_row = s.run(q_participants, key=key).single()
-                participants = dict(p_row) if p_row else {"day": None, "event_type": None, "places": [], "persons": [], "users": []}
+                participants = dict(p_row) if p_row else {}
+                if not participants:
+                    participants = {
+                        "day": None,
+                        "event_type": None,
+                        "activity_name": None,
+                        "event_time_iso": None,
+                        "event_time_text": None,
+                        "places": [],
+                        "persons": [],
+                        "users": [],
+                    }
                 entries = [dict(r) for r in s.run(q_entries, key=key, limit=int(limit))]
 
             # Flatten a bit for the UI
             return {
                 "kind": "Event",
                 "ref": ref,
+                "activity_name": participants.get("activity_name") or "",
                 "event_type": participants.get("event_type") or "",
                 "day": participants.get("day") or "",
+                "event_time_iso": participants.get("event_time_iso") or "",
+                "event_time_text": participants.get("event_time_text") or "",
                 "places": participants.get("places") or [],
                 "persons": participants.get("persons") or [],
                 "users": participants.get("users") or [],
@@ -342,25 +1057,29 @@ class Neo4jRepo:
 
         if label == "E73_Information_Object":
             q_ctx = """
-            MATCH (ctx:E73_Information_Object {key: $key})
+            MATCH (ctx:E73_Information_Object)
+            WHERE ctx.id = $key OR ctx.key = $key
             OPTIONAL MATCH (ctx)-[:P67_refers_to {ref_type: 'context_of'}]->(ev:E7_Activity)
             OPTIONAL MATCH (ev)-[:P4_has_time_span]->(d:E52_Time_Span)
             OPTIONAL MATCH (ev)-[:P2_has_type]->(t:E55_Type)
             WITH ctx,
                  coalesce(t.name, ev.event_type, '') as event_type,
                  d.date as day,
-                 substring(ctx.content, 0, 120) as context_preview
+                 substring(coalesce(ctx.text, ctx.content, ''), 0, 120) as context_preview
             RETURN event_type as event_type,
                    day as day,
                    ctx.name as name,
-                   ctx.content as text_preview_long,
+                   coalesce(ctx.text, ctx.content, '') as text_preview_long,
                    context_preview as context_preview,
-                   ctx.key as ckey
+                   coalesce(ctx.key, ctx.id, '') as ckey,
+                   coalesce(ctx.entry_kind, '') as entry_kind
             LIMIT 1
             """
 
             q_entries = """
-            MATCH (ctx:E73_Information_Object {key: $key})-[:P67_refers_to {ref_type: 'context_of'}]->(ev:E7_Activity)<-[:P67_refers_to]-(e:E73_Information_Object)
+            MATCH (ctx:E73_Information_Object)
+            WHERE ctx.id = $key OR ctx.key = $key
+            MATCH (ctx)-[:P67_refers_to {ref_type: 'context_of'}]->(ev:E7_Activity)<-[:P67_refers_to]-(e:E73_Information_Object)
             WHERE coalesce(e.entry_kind,'') = 'journal_entry'
             OPTIONAL MATCH (ev)-[:P4_has_time_span]->(d:E52_Time_Span)
             RETURN e.id as entry_id,
@@ -371,34 +1090,94 @@ class Neo4jRepo:
             LIMIT $limit
             """
 
-            q_entities = """
-            MATCH (ctx:E73_Information_Object {key: $key})
-            OPTIONAL MATCH (ctx)-[rt:P67_refers_to {ref_type: 'topic'}]->(t)
-            OPTIONAL MATCH (ctx)-[rc:P67_refers_to {ref_type: 'context'}]->(c)
-            OPTIONAL MATCH (ctx)-[rm:P67_refers_to {ref_type: 'mention'}]->(m)
-            WITH ctx,
-                 collect(DISTINCT {type: labels(t)[0], name: t.name}) as topics,
-                 collect(DISTINCT {type: labels(c)[0], name: c.name}) as concepts,
-                 collect(DISTINCT {type: labels(m)[0], name: m.name}) as mentions
-            RETURN topics, concepts, mentions
+            # All explorable P67 targets (any ref_type) plus cast/places on linked activities.
+            q_links = """
+            MATCH (ctx:E73_Information_Object)
+            WHERE ctx.id = $key OR ctx.key = $key
+            CALL {
+              WITH ctx
+              MATCH (ctx)-[r:P67_refers_to]->(n)
+              WHERE n <> ctx AND n:E21_Person AND n.id IS NOT NULL
+              RETURN coalesce(r.ref_type, '') AS ref_type, 'person' AS bucket, ('E21_Person:' + n.id) AS explore_ref,
+                     coalesce(n.name, n.id) AS display_name, 'direct' AS src
+              UNION
+              WITH ctx
+              MATCH (ctx)-[r:P67_refers_to]->(n)
+              WHERE n:E7_Activity AND n.key IS NOT NULL
+              RETURN coalesce(r.ref_type, '') AS ref_type, 'situation' AS bucket, ('Event:' + n.key) AS explore_ref,
+                     coalesce(n.name, n.event_type, n.key) AS display_name, 'direct' AS src
+              UNION
+              WITH ctx
+              MATCH (ctx)-[r:P67_refers_to]->(n)
+              WHERE n:E53_Place AND n.name IS NOT NULL
+              RETURN coalesce(r.ref_type, '') AS ref_type, 'place' AS bucket, ('E53_Place:' + n.name) AS explore_ref,
+                     n.name AS display_name, 'direct' AS src
+              UNION
+              WITH ctx
+              MATCH (ctx)-[r:P67_refers_to]->(n)
+              WHERE n:E28_Conceptual_Object AND n.name IS NOT NULL
+              RETURN coalesce(r.ref_type, '') AS ref_type, 'idea' AS bucket, ('E28_Conceptual_Object:' + n.name) AS explore_ref,
+                     n.name AS display_name, 'direct' AS src
+              UNION
+              WITH ctx
+              MATCH (ctx)-[r:P67_refers_to]->(n)
+              WHERE n:E74_Group AND n.name IS NOT NULL
+              RETURN coalesce(r.ref_type, '') AS ref_type, 'group' AS bucket, ('E74_Group:' + n.name) AS explore_ref,
+                     n.name AS display_name, 'direct' AS src
+              UNION
+              WITH ctx
+              MATCH (ctx)-[r:P67_refers_to]->(n)
+              WHERE n:E55_Type AND n.name IS NOT NULL
+              RETURN coalesce(r.ref_type, '') AS ref_type, 'tag' AS bucket, ('E55_Type:' + n.name) AS explore_ref,
+                     n.name AS display_name, 'direct' AS src
+              UNION
+              WITH ctx
+              MATCH (ctx)-[r:P67_refers_to]->(n)
+              WHERE n:E52_Time_Span
+              RETURN coalesce(r.ref_type, '') AS ref_type, 'day' AS bucket,
+                     ('E52_Time_Span:' + toString(coalesce(n.key, n.date))) AS explore_ref,
+                     toString(coalesce(n.date, n.key)) AS display_name, 'direct' AS src
+              UNION
+              WITH ctx
+              MATCH (ctx)-[:P67_refers_to]->(ev:E7_Activity)
+              MATCH (ev)-[:P14_carried_out_by]->(p:E21_Person)
+              WHERE p.id IS NOT NULL
+              RETURN 'via_activity' AS ref_type, 'person' AS bucket, ('E21_Person:' + p.id) AS explore_ref,
+                     coalesce(p.name, p.id) AS display_name, 'situation' AS src
+              UNION
+              WITH ctx
+              MATCH (ctx)-[:P67_refers_to]->(ev:E7_Activity)
+              MATCH (ev)-[:P7_took_place_at]->(pl:E53_Place)
+              WHERE pl.name IS NOT NULL
+              RETURN 'via_activity' AS ref_type, 'place' AS bucket, ('E53_Place:' + pl.name) AS explore_ref,
+                     pl.name AS display_name, 'situation' AS src
+            }
+            RETURN ref_type, bucket, explore_ref, display_name, src
             """
 
             with self._driver.session() as s:
                 row = s.run(q_ctx, key=key).single()
-                ents = s.run(q_entities, key=key).single()
+                link_rows = [dict(r) for r in s.run(q_links, key=key)]
                 entries = [dict(r) for r in s.run(q_entries, key=key, limit=int(limit))]
                 ctx_row = dict(row) if row else {}
-                topics = (ents or {}).get("topics") or [] if ents else []
-                concepts = (ents or {}).get("concepts") or [] if ents else []
-                mentions = (ents or {}).get("mentions") or [] if ents else []
+                linked = self._journal_explore_links_from_rows(link_rows)
+
+            body = ctx_row.get("text_preview_long") or ctx_row.get("context_preview") or ""
+            ek = str(ctx_row.get("entry_kind") or "").strip()
+            # Legacy shape: narrow ref_type buckets (still used if linked is empty elsewhere).
+            topics = [{"type": "E28_Conceptual_Object", "name": x["name"]} for x in linked if x["bucket"] == "idea" and x["ref_type"] == "topic"]
+            concepts = [{"type": "E28_Conceptual_Object", "name": x["name"]} for x in linked if x["bucket"] == "idea" and x["ref_type"] == "context"]
+            mentions = [{"type": "E21_Person", "name": x["name"]} for x in linked if x["bucket"] == "person" and x["ref_type"] == "mention"]
 
             return {
                 "kind": "E73_Information_Object",
                 "ref": ref,
-                "name": ctx_row.get("name") or "Context",
+                "name": ctx_row.get("name") or ("Journal" if ek == "journal_entry" else "Context"),
                 "event_type": ctx_row.get("event_type") or "",
                 "day": ctx_row.get("day") or "",
-                "text": ctx_row.get("text_preview_long") or ctx_row.get("context_preview") or "",
+                "text": body,
+                "entry_kind": ek,
+                "linked": linked,
                 "topics": topics,
                 "concepts": concepts,
                 "mentions": mentions,
@@ -406,35 +1185,55 @@ class Neo4jRepo:
             }
 
         if label == "E28_Conceptual_Object":
-            # Concept occurrences through CIDOC reference links.
+            # Concept: journal—P67→concept (topics from extraction) or concept←P67←activity←P67←journal.
             q_participants = """
-            MATCH (c:E28_Conceptual_Object {name: $name})<-[:P67_refers_to]-(ev:E7_Activity)
-            OPTIONAL MATCH (ev)-[:P14_carried_out_by]->(p:E21_Person)
-            OPTIONAL MATCH (ev)-[:P14_carried_out_by]->(u:E21_Person)
-            RETURN coalesce(
-                     [x IN collect(DISTINCT {id: p.id, name: p.name, role: p.role, mentions: coalesce(p.mention_count,0)}) WHERE x.id IS NOT NULL],
-                     []
-                   ) as persons,
-                   coalesce([y IN collect(DISTINCT {name: u.name}) WHERE y.name IS NOT NULL], []) as users
+            MATCH (c:E28_Conceptual_Object {name: $name})
+            CALL {
+              WITH c
+              MATCH (journal:E73_Information_Object)-[:P67_refers_to]->(c)
+              WHERE coalesce(journal.entry_kind,'') = 'journal_entry'
+              MATCH (journal)-[:P67_refers_to]->(p:E21_Person)
+              RETURN p
+              UNION
+              WITH c
+              MATCH (c)<-[:P67_refers_to]-(ev:E7_Activity)
+              MATCH (ev)-[:P14_carried_out_by]->(p:E21_Person)
+              RETURN p
+            }
+            WITH collect(DISTINCT {id: p.id, name: p.name, role: p.role, mentions: coalesce(p.mention_count,0)}) as raw
+            RETURN [x IN raw WHERE x.id IS NOT NULL] as persons,
+                   [] as users
             """
             q_entries = """
-            MATCH (c:E28_Conceptual_Object {name: $name})<-[:P67_refers_to]-(ev:E7_Activity)
-            MATCH (ev)<-[:P67_refers_to]-(e:E73_Information_Object)
-            WHERE coalesce(e.entry_kind,'') = 'journal_entry'
+            MATCH (c:E28_Conceptual_Object {name: $name})
+            CALL {
+              WITH c
+              MATCH (journal:E73_Information_Object)-[:P67_refers_to]->(c)
+              WHERE coalesce(journal.entry_kind,'') = 'journal_entry'
+              RETURN journal
+              UNION
+              WITH c
+              MATCH (c)<-[:P67_refers_to]-(ev:E7_Activity)
+              MATCH (journal:E73_Information_Object)-[:P67_refers_to]->(ev)
+              WHERE coalesce(journal.entry_kind,'') = 'journal_entry'
+              RETURN journal
+            }
+            WITH DISTINCT journal
+            OPTIONAL MATCH (journal)-[:P67_refers_to]->(ev:E7_Activity)
             OPTIONAL MATCH (ev)-[:P4_has_time_span]->(d:E52_Time_Span)
             OPTIONAL MATCH (ev)-[:P7_took_place_at]->(pl:E53_Place)
             OPTIONAL MATCH (ev)-[:P2_has_type]->(t:E55_Type)
-            WITH e,
+            WITH journal,
                  collect(DISTINCT d.date) as days,
                  collect(DISTINCT coalesce(t.name, ev.event_type, '')) as event_types,
                  collect(DISTINCT pl.name) as places
-            RETURN e.id as entry_id,
-                   toString(e.input_time) as input_time,
+            RETURN journal.id as entry_id,
+                   toString(journal.input_time) as input_time,
                    days[0] as day,
                    event_types[0] as event_type,
                    places[0..3] as places,
-                   substring(e.text, 0, 260) as text_preview
-            ORDER BY e.input_time DESC
+                   substring(journal.text, 0, 260) as text_preview
+            ORDER BY journal.input_time DESC
             LIMIT $limit
             """
 
@@ -456,57 +1255,7 @@ class Neo4jRepo:
             }
 
         if label == "E52_Time_Span":
-            # Day overview: show entries whose event occurred on this day,
-            # plus all participants connected to those events.
-            q_participants = """
-            MATCH (d:E52_Time_Span {key: $name})<-[:P4_has_time_span]-(ev:E7_Activity)
-            OPTIONAL MATCH (ev)-[:P14_carried_out_by]->(p:E21_Person)
-            OPTIONAL MATCH (ev)-[:P14_carried_out_by]->(u:E21_Person)
-            RETURN coalesce(
-                     [x IN collect(DISTINCT {id: p.id, name: p.name, role: p.role, mentions: coalesce(p.mention_count,0)}) WHERE x.id IS NOT NULL],
-                     []
-                   ) as persons,
-                   coalesce(
-                     [y IN collect(DISTINCT {name: u.name}) WHERE y.name IS NOT NULL],
-                     []
-                   ) as users
-            """
-
-            q_entries = """
-            MATCH (d:E52_Time_Span {key: $name})<-[:P4_has_time_span]-(ev:E7_Activity)<-[:P67_refers_to]-(e:E73_Information_Object)
-            WHERE coalesce(e.entry_kind,'') = 'journal_entry'
-            OPTIONAL MATCH (ev)-[:P4_has_time_span]->(d:E52_Time_Span)
-            OPTIONAL MATCH (ev)-[:P7_took_place_at]->(pl:E53_Place)
-            OPTIONAL MATCH (ev)-[:P2_has_type]->(t:E55_Type)
-            WITH e,
-                 collect(DISTINCT d.date) as days,
-                 collect(DISTINCT coalesce(t.name, ev.event_type, '')) as event_types,
-                 collect(DISTINCT pl.name) as places
-            RETURN e.id as entry_id,
-                   toString(e.input_time) as input_time,
-                   days[0] as day,
-                   event_types[0] as event_type,
-                   places[0..3] as places,
-                   substring(e.text, 0, 260) as text_preview
-            ORDER BY e.input_time DESC
-            LIMIT $limit
-            """
-
-            with self._driver.session() as s:
-                p_row = s.run(q_participants, name=key).single()
-                participants = dict(p_row) if p_row else {"persons": [], "users": []}
-                entries = [dict(r) for r in s.run(q_entries, name=key, limit=int(limit))]
-
-            return {
-                "kind": "Event",
-                "ref": ref,
-                "event_type": "day",
-                "day": key,
-                "places": [],
-                "persons": participants.get("persons") or [],
-                "users": participants.get("users") or [],
-                "entries": entries,
-            }
+            return self._overview_day(ref=ref, day_key=key, limit=limit, focus=focus)
 
         if label == "E53_Place":
             # Treat "place occurrences" as an Event-like overview so the UI can reuse
@@ -560,50 +1309,121 @@ class Neo4jRepo:
             }
 
         if label == "E55_Type":
-            q_entries = """
-            MATCH (ev:E7_Activity)-[:P2_has_type]->(t:E55_Type {name: $name})
-            MATCH (ev)<-[:P67_refers_to]-(e:E73_Information_Object)
-            WHERE coalesce(e.entry_kind,'') = 'journal_entry'
-            OPTIONAL MATCH (ev)-[:P4_has_time_span]->(d:E52_Time_Span)
-            WITH e, collect(DISTINCT ev) as evs, collect(DISTINCT d.date) as days, collect(DISTINCT t.name) as tnames
-            ORDER BY e.input_time DESC
-            LIMIT $limit
-            CALL {
-              WITH evs
-              UNWIND evs as ev
-              OPTIONAL MATCH (ev)-[:P7_took_place_at]->(pl:E53_Place)
-              RETURN collect(DISTINCT pl.name)[0..3] as places
-            }
-            RETURN e.id as entry_id,
-                   toString(e.input_time) as input_time,
-                   days[0] as day,
-                   coalesce(tnames[0], '') as event_type,
-                   places,
-                   substring(e.text, 0, 260) as text_preview
-            """
-            q_participants = """
-            MATCH (ev:E7_Activity)-[:P2_has_type]->(t:E55_Type {name: $name})
-            OPTIONAL MATCH (ev)-[:P14_carried_out_by]->(p:E21_Person)
-            OPTIONAL MATCH (ev)-[:P14_carried_out_by]->(u:E21_Person)
-            RETURN coalesce([x IN collect(DISTINCT {id: p.id, name: p.name, role: p.role, mentions: coalesce(p.mention_count,0)}) WHERE x.id IS NOT NULL], []) as persons,
-                   coalesce([y IN collect(DISTINCT {name: u.name}) WHERE y.name IS NOT NULL], []) as users
-            """
-            with self._driver.session() as s:
-                p_row = s.run(q_participants, name=key).single()
-                participants = dict(p_row) if p_row else {"persons": [], "users": []}
-                rows = [dict(r) for r in s.run(q_entries, name=key, limit=int(limit))]
+            # feelings: P141_assigned only (avoid P2 on E13 mixing category vs value).
+            # activity_type: situations (E7) classified with this tag via P2_has_type, with a journal entry P67→ev.
+            fo = (focus or "feelings").strip().lower()
+            if fo not in ("feelings", "activity_type"):
+                fo = "feelings"
 
-            first = rows[0] if rows else {}
-            return {
-                "kind": "Event",
+            q_feeling = """
+            MATCH (tag:E55_Type)
+            WHERE tag.name = $tag_name OR toLower(tag.name) = toLower($tag_name)
+            WITH tag ORDER BY CASE WHEN tag.name = $tag_name THEN 0 ELSE 1 END, tag.name
+            LIMIT 1
+            MATCH (j:E73_Information_Object)-[:P67_refers_to]->(a:E13_Attribute_Assignment)
+            WHERE coalesce(j.entry_kind,'') = 'journal_entry'
+              AND (a)-[:P141_assigned]->(tag)
+              AND (
+                $pid = ''
+                OR (a)-[:P140_assigned_attribute_to]->(:E21_Person {id: $pid})
+                OR EXISTS {
+                  MATCH (a)-[:P15_was_influenced_by]->(:E7_Activity)-[:P14_carried_out_by]->(:E21_Person {id: $pid})
+                }
+              )
+            WITH DISTINCT j, a, tag
+            OPTIONAL MATCH (a)-[:P15_was_influenced_by]->(ev:E7_Activity)
+            OPTIONAL MATCH (ev)-[:P4_has_time_span]->(d:E52_Time_Span)
+            OPTIONAL MATCH (ev)-[:P2_has_type]->(et:E55_Type)
+            OPTIONAL MATCH (ev)-[:P14_carried_out_by]->(p:E21_Person)
+            WITH j, a, tag, ev, d, et,
+                 collect(DISTINCT {id: p.id, name: p.name, role: p.role}) as raw_persons
+            ORDER BY j.input_time DESC
+            LIMIT $limit
+            RETURN tag.name as tag_resolved_name,
+                   coalesce(a.key, '') as assignment_key,
+                   coalesce(a.name, tag.name) as assignment_label,
+                   toString(j.input_time) as input_time,
+                   toString(date(j.input_time)) as day,
+                   coalesce(j.id, '') as entry_id,
+                   substring(coalesce(j.text, ''), 0, 140) as entry_preview,
+                   coalesce(ev.key, '') as event_key,
+                   coalesce(ev.name, '') as activity_name,
+                   coalesce(et.name, ev.event_type, '') as activity_kind,
+                   toString(d.date) as activity_day,
+                   [x IN raw_persons WHERE x.id IS NOT NULL] as persons
+            """
+            q_activity_type = """
+            MATCH (tag:E55_Type)
+            WHERE tag.name = $tag_name OR toLower(tag.name) = toLower($tag_name)
+            WITH tag ORDER BY CASE WHEN tag.name = $tag_name THEN 0 ELSE 1 END, tag.name
+            LIMIT 1
+            MATCH (ev:E7_Activity)-[:P2_has_type]->(tag)
+            MATCH (j:E73_Information_Object)-[:P67_refers_to]->(ev)
+            WHERE coalesce(j.entry_kind,'') = 'journal_entry'
+              AND (
+                $pid = ''
+                OR (ev)-[:P14_carried_out_by]->(:E21_Person {id: $pid})
+              )
+            WITH DISTINCT j, ev, tag
+            OPTIONAL MATCH (ev)-[:P4_has_time_span]->(d:E52_Time_Span)
+            OPTIONAL MATCH (ev)-[:P2_has_type]->(et:E55_Type)
+            OPTIONAL MATCH (ev)-[:P14_carried_out_by]->(p:E21_Person)
+            WITH j, ev, tag, d, et,
+                 collect(DISTINCT {id: p.id, name: p.name, role: p.role}) as raw_persons
+            ORDER BY j.input_time DESC
+            LIMIT $limit
+            RETURN tag.name as tag_resolved_name,
+                   coalesce(ev.key, '') + '|' + coalesce(j.id, '') as assignment_key,
+                   coalesce(ev.name, ev.event_type, tag.name) as assignment_label,
+                   toString(j.input_time) as input_time,
+                   toString(date(j.input_time)) as day,
+                   coalesce(j.id, '') as entry_id,
+                   substring(coalesce(j.text, ''), 0, 140) as entry_preview,
+                   coalesce(ev.key, '') as event_key,
+                   coalesce(ev.name, '') as activity_name,
+                   coalesce(et.name, ev.event_type, tag.name) as activity_kind,
+                   toString(d.date) as activity_day,
+                   [x IN raw_persons WHERE x.id IS NOT NULL] as persons
+            """
+            q_use = q_activity_type if fo == "activity_type" else q_feeling
+            with self._driver.session() as s:
+                rows = [dict(r) for r in s.run(q_use, tag_name=key, pid=anchor_pid, limit=int(limit))]
+
+            occurrences: List[Dict[str, Any]] = []
+            resolved_tag = str(rows[0].get("tag_resolved_name") or key) if rows else key
+            for r in rows:
+                persons = r.get("persons") or []
+                if isinstance(persons, list):
+                    persons_out = [dict(p) for p in persons if isinstance(p, dict) and p.get("id")]
+                else:
+                    persons_out = []
+                occurrences.append(
+                    {
+                        "assignment_key": str(r.get("assignment_key") or ""),
+                        "assignment_label": str(r.get("assignment_label") or key),
+                        "input_time": str(r.get("input_time") or ""),
+                        "day": str(r.get("day") or ""),
+                        "entry_id": str(r.get("entry_id") or ""),
+                        "entry_preview": str(r.get("entry_preview") or ""),
+                        "event_key": str(r.get("event_key") or ""),
+                        "activity_name": str(r.get("activity_name") or ""),
+                        "activity_kind": str(r.get("activity_kind") or ""),
+                        "activity_day": str(r.get("activity_day") or ""),
+                        "persons": persons_out,
+                    }
+                )
+
+            out: Dict[str, Any] = {
+                "kind": "Feeling",
                 "ref": ref,
-                "event_type": first.get("event_type") or key,
-                "day": first.get("day") or "",
-                "places": first.get("places") or [],
-                "persons": participants.get("persons") or [],
-                "users": participants.get("users") or [],
-                "entries": rows,
+                "name": resolved_tag,
+                "occurrences": occurrences,
             }
+            if anchor_pid:
+                out["anchor_person_id"] = anchor_pid
+                out["anchor_person_name"] = anchor_display or anchor_pid
+                out["anchor_person_ref"] = f"E21_Person:{anchor_pid}"
+            return out
 
         # Fallback: return minimal info rather than 500.
         with self._driver.session() as s:
@@ -928,6 +1748,174 @@ class Neo4jRepo:
                 "expectations_open": expectation_rows,
             },
             "weekly_recommendations": recs,
+        }
+
+    def insights_person_detail(self, person_name: str, days: int = 30, limit: int = 40) -> Dict[str, Any]:
+        person_name = (person_name or "").strip()
+        if not person_name:
+            return {
+                "person": "",
+                "window_days": 0,
+                "counts": {"positive": 0, "negative": 0, "neutral": 0, "signals_total": 0},
+                "net_score": 0.0,
+                "label": "Uncertain",
+                "confidence": 0.0,
+                "formula": "net_score = (positive - negative) / max(1, signals_total)",
+                "signals_per_day": [],
+                "evidence": [],
+            }
+
+        days = max(7, min(int(days), 365))
+        limit = max(10, min(int(limit), 200))
+        since_expr = f"datetime() - duration('P{days}D')"
+
+        aggregate_rows: List[Dict[str, Any]] = []
+        day_rows: List[Dict[str, Any]] = []
+        evidence_rows: List[Dict[str, Any]] = []
+        with self._driver.session() as s:
+            aggregate_rows = [
+                dict(r)
+                for r in s.run(
+                    f"""
+                    MATCH (j:E73_Information_Object)-[:P67_refers_to]->(a:E13_Attribute_Assignment)-[:P15_was_influenced_by]->(ev:E7_Activity)-[:P14_carried_out_by]->(p:E21_Person)
+                    WHERE coalesce(j.entry_kind,'') = 'journal_entry'
+                      AND j.input_time >= {since_expr}
+                      AND toLower(coalesce(p.name,'')) = toLower($person)
+                    OPTIONAL MATCH (a)-[:P141_assigned]->(t1:E55_Type)
+                    OPTIONAL MATCH (a)-[:P2_has_type]->(t2:E55_Type)
+                    RETURN coalesce(toLower(t1.name), toLower(t2.name), toLower(a.name), '') as tag,
+                           count(*) as c
+                    """,
+                    person=person_name,
+                )
+            ]
+
+            day_rows = [
+                dict(r)
+                for r in s.run(
+                    f"""
+                    MATCH (j:E73_Information_Object)-[:P67_refers_to]->(a:E13_Attribute_Assignment)-[:P15_was_influenced_by]->(ev:E7_Activity)-[:P14_carried_out_by]->(p:E21_Person)
+                    WHERE coalesce(j.entry_kind,'') = 'journal_entry'
+                      AND j.input_time >= {since_expr}
+                      AND toLower(coalesce(p.name,'')) = toLower($person)
+                    OPTIONAL MATCH (a)-[:P141_assigned]->(t1:E55_Type)
+                    OPTIONAL MATCH (a)-[:P2_has_type]->(t2:E55_Type)
+                    WITH toString(date(j.input_time)) as day,
+                         coalesce(toLower(t1.name), toLower(t2.name), toLower(a.name), '') as tag
+                    RETURN day, tag, count(*) as c
+                    ORDER BY day ASC
+                    """,
+                    person=person_name,
+                )
+            ]
+
+            evidence_rows = [
+                dict(r)
+                for r in s.run(
+                    f"""
+                    MATCH (j:E73_Information_Object)-[:P67_refers_to]->(a:E13_Attribute_Assignment)-[:P15_was_influenced_by]->(ev:E7_Activity)-[:P14_carried_out_by]->(p:E21_Person)
+                    WHERE coalesce(j.entry_kind,'') = 'journal_entry'
+                      AND j.input_time >= {since_expr}
+                      AND toLower(coalesce(p.name,'')) = toLower($person)
+                    OPTIONAL MATCH (a)-[:P141_assigned]->(t1:E55_Type)
+                    OPTIONAL MATCH (a)-[:P2_has_type]->(t2:E55_Type)
+                    RETURN coalesce(j.id, '') as entry_id,
+                           toString(j.input_time) as input_time,
+                           toString(date(j.input_time)) as day,
+                           coalesce(toLower(t1.name), toLower(t2.name), toLower(a.name), '') as tag,
+                           coalesce(a.name, '') as assignment_name,
+                           coalesce(ev.name, '') as event_name,
+                           coalesce(ev.key, '') as event_key,
+                           substring(coalesce(j.text,''), 0, 220) as text_preview
+                    ORDER BY j.input_time DESC
+                    LIMIT $limit
+                    """,
+                    person=person_name,
+                    limit=limit,
+                )
+            ]
+
+        positive = 0
+        negative = 0
+        neutral = 0
+        for r in aggregate_rows:
+            tag = str(r.get("tag") or "")
+            c = int(r.get("c") or 0)
+            pol = self._emotion_polarity(tag)
+            if pol == "positive":
+                positive += c
+            elif pol == "negative":
+                negative += c
+            else:
+                neutral += c
+
+        signals_total = positive + negative + neutral
+        denom = max(1, signals_total)
+        net = (positive - negative) / float(denom)
+        if signals_total < 2:
+            label = "Uncertain"
+        elif net >= 0.25:
+            label = "Supportive"
+        elif net <= -0.25:
+            label = "Draining"
+        else:
+            label = "Mixed"
+
+        by_day: Dict[str, Dict[str, int]] = {}
+        for r in day_rows:
+            d = str(r.get("day") or "")
+            if not d:
+                continue
+            tag = str(r.get("tag") or "")
+            c = int(r.get("c") or 0)
+            pol = self._emotion_polarity(tag)
+            if d not in by_day:
+                by_day[d] = {"positive": 0, "negative": 0, "neutral": 0}
+            by_day[d][pol] += c
+
+        end_d = date.today()
+        start_d = end_d - timedelta(days=days - 1)
+        signals_per_day: List[Dict[str, Any]] = []
+        cur = start_d
+        while cur <= end_d:
+            ds = cur.isoformat()
+            vals = by_day.get(ds, {"positive": 0, "negative": 0, "neutral": 0})
+            signals_per_day.append({"day": ds, **vals})
+            cur += timedelta(days=1)
+
+        evidence: List[Dict[str, Any]] = []
+        for r in evidence_rows:
+            tag = str(r.get("tag") or "")
+            evidence.append(
+                {
+                    "entry_id": str(r.get("entry_id") or ""),
+                    "input_time": str(r.get("input_time") or ""),
+                    "day": str(r.get("day") or ""),
+                    "tag": tag,
+                    "polarity": self._emotion_polarity(tag),
+                    "assignment_name": str(r.get("assignment_name") or ""),
+                    "event_name": str(r.get("event_name") or ""),
+                    "event_key": str(r.get("event_key") or ""),
+                    "text_preview": str(r.get("text_preview") or ""),
+                }
+            )
+
+        confidence = min(1.0, signals_total / 6.0)
+        return {
+            "person": person_name,
+            "window_days": days,
+            "counts": {
+                "positive": positive,
+                "negative": negative,
+                "neutral": neutral,
+                "signals_total": signals_total,
+            },
+            "net_score": round(net, 3),
+            "label": label,
+            "confidence": round(confidence, 3),
+            "formula": "net_score = (positive - negative) / max(1, signals_total)",
+            "signals_per_day": signals_per_day,
+            "evidence": evidence,
         }
 
     def inbox(self, status: str = "open", limit: int = 50) -> List[Dict[str, Any]]:
