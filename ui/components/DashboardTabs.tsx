@@ -333,7 +333,7 @@ export function DashboardTabs() {
   const [impactDetailError, setImpactDetailError] = useState<string>("");
   const [impactPanelEntered, setImpactPanelEntered] = useState(false);
   const [impactPanelExiting, setImpactPanelExiting] = useState(false);
-  const impactDrawerCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const impactDrawerCloseTimer = useRef<number | null>(null);
   const [impactLedgerKey, setImpactLedgerKey] = useState<string | null>(null);
   const [impactLedgerData, setImpactLedgerData] = useState<unknown>(null);
   const [impactLedgerLoading, setImpactLedgerLoading] = useState(false);
@@ -594,7 +594,7 @@ export function DashboardTabs() {
           <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-5">
             <div className="text-sm font-semibold">Graph explorer</div>
             <div className="mt-0.5 text-[11px] text-zinc-500">
-              Radial mind map: center = your root idea; pan, zoom, and open cards like a Prezi-style explorer.
+              Same Linked Explorer as Entity Timeline — category → item → view — with bubble choices instead of lists.
             </div>
             <GraphMindMap initialRoots={graphRoots} />
           </div>
