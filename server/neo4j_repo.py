@@ -2140,6 +2140,8 @@ class Neo4jRepo:
             "E28_Conceptual_Object": "name",
             "E52_Time_Span": "key",
             "E55_Type": "name",
+            "E74_Group": "name",
+            "E13_Attribute_Assignment": "key",
         }
         if label not in mapping:
             raise ValueError("unsupported label for neighborhood")

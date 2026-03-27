@@ -592,7 +592,10 @@ export function DashboardTabs() {
       case "Graph":
         return (
           <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-5">
-            <div className="text-sm font-semibold">Graph view</div>
+            <div className="text-sm font-semibold">Graph explorer</div>
+            <div className="mt-0.5 text-[11px] text-zinc-500">
+              Radial mind map: center = your root idea; pan, zoom, and open cards like a Prezi-style explorer.
+            </div>
             <GraphMindMap initialRoots={graphRoots} />
           </div>
         );
