@@ -270,7 +270,7 @@ function StepToggle({
   );
 }
 
-function LazyJournalBody({ entryId, visible }: { entryId: string; visible: boolean }) {
+export function LazyJournalBody({ entryId, visible }: { entryId: string; visible: boolean }) {
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");

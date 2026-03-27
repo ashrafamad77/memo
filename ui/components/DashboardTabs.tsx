@@ -594,7 +594,8 @@ export function DashboardTabs() {
           <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-5">
             <div className="text-sm font-semibold">Graph explorer</div>
             <div className="mt-0.5 text-[11px] text-zinc-500">
-              Same Linked Explorer as Entity Timeline — category → item → view — with bubble choices instead of lists.
+              Same Linked Explorer as Entity Timeline — drawn as nodes and edges; hover the ⓘ on a node for full text and
+              previews.
             </div>
             <GraphMindMap initialRoots={graphRoots} />
           </div>
