@@ -848,6 +848,19 @@ class Neo4jRepo:
         people_impact.sort(key=lambda x: (x["net_score"], x["sample_size"]), reverse=True)
         people_impact = people_impact[:people_limit]
 
+        # Emerging support: low-signal people with positive early trend.
+        emerging_support = [
+            {
+                "person": p["person"],
+                "net_score": p["net_score"],
+                "signals": p["sample_size"],
+            }
+            for p in people_impact
+            if p["label"] == "Uncertain" and p["net_score"] > 0
+        ]
+        emerging_support.sort(key=lambda x: (x["net_score"], x["signals"]), reverse=True)
+        emerging_support = emerging_support[:5]
+
         # Pulse
         emotion_total = max(1, total_pos + total_neg + total_neu)
         neg_ratio = total_neg / float(emotion_total)
@@ -909,6 +922,7 @@ class Neo4jRepo:
             },
             "emotions_per_day": emotions_per_day,
             "people_impact": people_impact,
+            "emerging_support": emerging_support,
             "open_obligations": {
                 "custody_open": custody_rows,
                 "expectations_open": expectation_rows,

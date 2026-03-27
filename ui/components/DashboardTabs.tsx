@@ -30,6 +30,7 @@ type Insights = {
     net_score: number;
     label: "Supportive" | "Draining" | "Mixed" | "Uncertain";
   }[];
+  emerging_support: { person: string; net_score: number; signals: number }[];
   open_obligations: {
     custody_open: { transfer_key: string; transfer_name: string; object_name: string; input_time?: string }[];
     expectations_open: { assignment_key: string; assignment_name: string; input_time?: string }[];
@@ -258,7 +259,7 @@ export function DashboardTabs() {
       case "Insights":
         return (
           <div className="space-y-4">
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
               <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-4">
                 <div className="text-xs text-zinc-500">
                   Life Pulse
@@ -307,7 +308,7 @@ export function DashboardTabs() {
                   <KpiHelp
                     title="Support Ratio"
                     description={
-                      "support_ratio = supportive_people / (supportive_people + draining_people).\nPeople labels come from net emotional impact:\nnet = (positive - negative) / sample_size.\nThresholds: >=0.25 Supportive, <=-0.25 Draining, otherwise Mixed; low samples -> Uncertain."
+                      "Support ratio = aggregate KPI built from counts of people labeled Supportive vs Draining."
                     }
                   />
                 </div>
@@ -317,6 +318,24 @@ export function DashboardTabs() {
                 </div>
                 <div className="mt-1 text-[11px] text-zinc-500">
                   Entries {insights?.life_pulse?.entries_in_window ?? 0}
+                </div>
+              </div>
+              <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-4">
+                <div className="text-xs text-zinc-500">
+                  Emerging Support
+                  <KpiHelp
+                    title="Emerging Support"
+                    description={
+                      "Early positive signal tracker.\nShows people still labeled Uncertain (low evidence) but already trending positive.\nThis does not affect Support Ratio until enough signals exist."
+                    }
+                  />
+                </div>
+                <div className="mt-1 text-2xl font-bold">{insights?.emerging_support?.length ?? 0}</div>
+                <div className="mt-1 truncate text-[11px] text-zinc-500">
+                  {(insights?.emerging_support || [])
+                    .slice(0, 2)
+                    .map((p) => p.person)
+                    .join(", ") || "No emerging signal"}
                 </div>
               </div>
             </div>
@@ -353,7 +372,15 @@ export function DashboardTabs() {
               </div>
 
               <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-5">
-                <div className="text-sm font-semibold">People impact</div>
+                <div className="text-sm font-semibold">
+                  People impact
+                  <KpiHelp
+                    title="People impact"
+                    description={
+                      "People impact = per-person classification (Supportive/Draining/Mixed/Uncertain) from that person's own signals.\nLabels: Supportive = mostly positive effect. Draining = mostly negative effect. Mixed = balanced or context-dependent effect. Uncertain = not enough signals yet."
+                    }
+                  />
+                </div>
                 <div className="mt-3 space-y-2">
                   {(insights?.people_impact || []).map((p) => (
                     <div
@@ -363,7 +390,7 @@ export function DashboardTabs() {
                       <div>
                         <div className="text-sm font-semibold">{p.person}</div>
                         <div className="text-xs text-zinc-500">
-                          {p.label} · sample {p.sample_size}
+                          {p.label} · signals {p.sample_size}
                         </div>
                       </div>
                       <div className="text-sm font-mono">{p.net_score.toFixed(2)}</div>
