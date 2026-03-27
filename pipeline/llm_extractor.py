@@ -113,7 +113,7 @@ Règles entités :
 - Si l'heure manque pour un micro-événement, garde idx correct via les mots de séquence (ensuite, puis, soudainement, etc.) et laisse event_time_iso vide si nécessaire.
 - physical_place: LA localisation PHYSIQUE (où le narrateur est réellement).
 - context_places: les lieux qui servent de CONTEXTE / sujet distant / explication (pas la localisation physique du micro-événement).
-- people: les personnes participantes à ce micro-événement.
+- people: toutes les personnes impliquées dans ce micro-événement, y compris le sujet d'une action (ex. « Amy a acheté… » → inclure « Amy »), pas seulement l'auteur ou des témoins. Réutilise les mêmes noms que dans entities (Person) quand ils s'appliquent à cet événement.
 - topics: les sujets/objets pertinents POUR LE CONTEXTE (ex: organisation, sujet de conférence/lecture, objet de l'email, etc.).
 - context_concepts: les infos de réflexion/explication/contraintes (ex: "je dois être plus rapide", "ça m'oblige", "différence de temps", "no lectures today", "en général", etc.).
 - context_text: une PHRASE/EXTRAIT TEXTUEL qui représente le contexte (explication + réflexion), rattaché à ce micro-événement (ne pas répéter toute l'entrée).

@@ -938,6 +938,25 @@ class Neo4jRepo:
             for x in out
         ]
 
+    @staticmethod
+    def _merge_person_rows_by_id(*lists: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Merge {id, name, role, mentions} rows; first wins for duplicates."""
+        by_id: Dict[str, Dict[str, Any]] = {}
+        for lst in lists:
+            for r in lst:
+                pid = str(r.get("id") or "").strip()
+                if not pid:
+                    continue
+                name = str(r.get("name") or "").strip() or pid
+                if pid not in by_id:
+                    by_id[pid] = {
+                        "id": pid,
+                        "name": name,
+                        "role": r.get("role"),
+                        "mentions": int(r.get("mentions") or 0),
+                    }
+        return sorted(by_id.values(), key=lambda x: str(x.get("name") or "").lower())
+
     def entity_overview(self, ref: str, limit: int = 120, anchor_person: str = "", focus: str = "") -> Dict[str, Any]:
         """
         Unified overview endpoint for UI navigation.
@@ -993,14 +1012,16 @@ class Neo4jRepo:
             OPTIONAL MATCH (ev)-[:P4_has_time_span]->(d:E52_Time_Span)
             OPTIONAL MATCH (ev)-[:P7_took_place_at]->(pl:E53_Place)
             OPTIONAL MATCH (ev)-[:P2_has_type]->(t:E55_Type)
-            OPTIONAL MATCH (ev)-[:P14_carried_out_by]->(p:E21_Person)
+            OPTIONAL MATCH (ev)-[:P14_carried_out_by]->(performer)
+            WHERE performer IS NULL OR performer:E21_Person OR performer:E39_Actor
             WITH toString(d.date) as day,
                  coalesce(t.name, ev.event_type, "") as event_type,
                  coalesce(ev.name, "") as activity_name,
                  toString(ev.event_time_iso) as event_time_iso,
                  ev.event_time_text as event_time_text,
                  collect(DISTINCT pl.name) as places,
-                 [x IN collect(DISTINCT {id: p.id, name: p.name, role: p.role, mentions: coalesce(p.mention_count,0)}) WHERE x.id IS NOT NULL] as persons,
+                 [x IN collect(DISTINCT {id: performer.id, name: performer.name, role: performer.role, mentions: coalesce(performer.mention_count,0)})
+                  WHERE x.id IS NOT NULL] as persons,
                  [] as users
             RETURN day as day,
                    event_type as event_type,
@@ -1010,6 +1031,16 @@ class Neo4jRepo:
                    places as places,
                    persons as persons,
                    users as users
+            """
+
+            q_evt_journal_people = """
+            MATCH (ev:E7_Activity {key: $key})<-[:P67_refers_to]-(e:E73_Information_Object)
+            WHERE coalesce(e.entry_kind,'') = 'journal_entry'
+            MATCH (e)-[:P67_refers_to]->(p:E21_Person)
+            RETURN DISTINCT p.id as id,
+                   coalesce(p.name, p.id) as name,
+                   p.role as role,
+                   coalesce(p.mention_count, 0) as mentions
             """
 
             q_entries = """
@@ -1038,19 +1069,24 @@ class Neo4jRepo:
                         "persons": [],
                         "users": [],
                     }
+                jp_rows = [dict(r) for r in s.run(q_evt_journal_people, key=key)]
                 entries = [dict(r) for r in s.run(q_entries, key=key, limit=int(limit))]
+
+            persons = self._merge_person_rows_by_id(participants.get("persons") or [], jp_rows)
+            first_e = entries[0] if entries else {}
 
             # Flatten a bit for the UI
             return {
                 "kind": "Event",
                 "ref": ref,
                 "activity_name": participants.get("activity_name") or "",
+                "summary_preview": str(first_e.get("text_preview") or "").strip(),
                 "event_type": participants.get("event_type") or "",
                 "day": participants.get("day") or "",
                 "event_time_iso": participants.get("event_time_iso") or "",
                 "event_time_text": participants.get("event_time_text") or "",
                 "places": participants.get("places") or [],
-                "persons": participants.get("persons") or [],
+                "persons": persons,
                 "users": participants.get("users") or [],
                 "entries": entries,
             }
@@ -1276,27 +1312,73 @@ class Neo4jRepo:
             ORDER BY e.input_time DESC
             LIMIT $limit
             """
-            q_participants = """
+            # Cast may be E21_Person and/or E39_Actor (pipeline merges both). Also pick up people
+            # the journal links (P67) even when the activity has no P14 row yet.
+            q_cast = """
             MATCH (pl:E53_Place {name: $name})<-[:P7_took_place_at]-(ev:E7_Activity)
-            OPTIONAL MATCH (ev)-[:P14_carried_out_by]->(p:E21_Person)
-            OPTIONAL MATCH (ev)-[:P14_carried_out_by]->(u:E21_Person)
-            RETURN coalesce([x IN collect(DISTINCT {id: p.id, name: p.name, role: p.role, mentions: coalesce(p.mention_count,0)}) WHERE x.id IS NOT NULL], []) as persons,
-                   coalesce([y IN collect(DISTINCT {name: u.name}) WHERE y.name IS NOT NULL], []) as users
+            MATCH (ev)-[:P14_carried_out_by]->(n)
+            WHERE n:E21_Person OR n:E39_Actor
+            RETURN DISTINCT n.id as id,
+                   coalesce(n.name, n.id) as name,
+                   n.role as role,
+                   coalesce(n.mention_count, 0) as mentions
             """
+            q_journal_people = """
+            MATCH (pl:E53_Place {name: $name})<-[:P7_took_place_at]-(ev:E7_Activity)
+            MATCH (ev)<-[:P67_refers_to]-(e:E73_Information_Object)
+            WHERE coalesce(e.entry_kind,'') = 'journal_entry'
+            MATCH (e)-[:P67_refers_to]->(p:E21_Person)
+            RETURN DISTINCT p.id as id,
+                   coalesce(p.name, p.id) as name,
+                   p.role as role,
+                   coalesce(p.mention_count, 0) as mentions
+            """
+            q_place_headline = """
+            MATCH (pl:E53_Place {name: $name})<-[:P7_took_place_at]-(ev:E7_Activity)
+            RETURN coalesce(ev.name, '') as ev_name,
+                   coalesce(ev.event_type, '') as ev_type,
+                   coalesce(ev.key, '') as ev_key
+            ORDER BY coalesce(ev.last_seen, datetime('1970-01-01T00:00:00Z')) DESC
+            LIMIT 1
+            """
+
             with self._driver.session() as s:
-                p_row = s.run(q_participants, name=key).single()
-                participants = dict(p_row) if p_row else {"persons": [], "users": []}
                 entries = [dict(r) for r in s.run(q_entries, name=key, limit=int(limit))]
+                cast_rows = [dict(r) for r in s.run(q_cast, name=key)]
+                note_rows = [dict(r) for r in s.run(q_journal_people, name=key)]
+                persons = self._merge_person_rows_by_id(cast_rows, note_rows)
+                hrow = s.run(q_place_headline, name=key).single()
+                hdict = dict(hrow) if hrow else {}
 
             first = entries[0] if entries else {}
+            evn = str(hdict.get("ev_name") or "").strip()
+            evt = str(hdict.get("ev_type") or "").strip()
+            evk = str(hdict.get("ev_key") or "").strip()
+            junk = {"activity", "event", "misc"}
+            headline = ""
+            if evn and evn.lower() not in junk:
+                headline = evn
+            elif evt and evt.lower() not in junk:
+                headline = evt
+            elif evk:
+                headline = evk[:56] + ("…" if len(evk) > 56 else "")
+            if not headline:
+                ft = str(first.get("event_type") or "").strip()
+                if ft and ft.lower() not in junk:
+                    headline = ft
+            activity_name = f"{key}" if not headline else f"{key} · {headline}"
+            summary_preview = str(first.get("text_preview") or "").strip()
+
             return {
                 "kind": "Event",
                 "ref": ref,
+                "activity_name": activity_name,
+                "summary_preview": summary_preview,
                 "event_type": first.get("event_type") or "",
                 "day": first.get("day") or "",
                 "places": [key],
-                "persons": participants.get("persons") or [],
-                "users": participants.get("users") or [],
+                "persons": persons,
+                "users": [],
                 "entries": [
                     {
                         "entry_id": e.get("entry_id"),

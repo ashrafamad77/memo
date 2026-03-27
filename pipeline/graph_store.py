@@ -708,7 +708,22 @@ class GraphStore:
                             return out
                         return []
 
-                    people_lower = _norm_list(people)
+                    # Preserve display spelling for each micro-event people[] (not only lowercase).
+                    people_pairs: List[Tuple[str, str]] = []
+                    seen_pl = set()
+                    if isinstance(people, list):
+                        for x in people:
+                            disp = str(x).strip()
+                            if not disp or _is_placeholder_value(disp):
+                                continue
+                            low = disp.lower()
+                            if len(low) <= 2 and low not in {"ai", "ia"}:
+                                continue
+                            if low in seen_pl:
+                                continue
+                            seen_pl.add(low)
+                            people_pairs.append((low, disp))
+                    people_lower = [p[0] for p in people_pairs]
                     physical_places_lower = set(_norm_list(physical_places_raw))
                     context_places_lower = set(_norm_list(context_places_raw))
                     topics_lower = set(_norm_list(topics)[:8])
@@ -752,6 +767,7 @@ class GraphStore:
                             "day_bucket": day_bucket_ev,
                             "event_key": event_key_ev,
                             "people_lower": people_lower,
+                            "people_pairs": people_pairs,
                             "physical_places_lower": physical_places_lower,
                             "context_places_lower": context_places_lower,
                             "topics_lower": topics_lower,
@@ -867,6 +883,26 @@ class GraphStore:
                         interactive=False,
                     )
 
+                # metadata.events[].people often lists actors not repeated as top-level Person entities.
+                for evn in events_norm:
+                    for plow, pdis in evn.get("people_pairs") or []:
+                        if plow == uname:
+                            continue
+                        if any(k.strip().lower() == plow for k in person_map.keys()):
+                            continue
+                        meta_pe = ""
+                        if isinstance(person_roles_map, dict):
+                            meta_pe = (person_roles_map.get(plow) or "").strip()
+                        person_map[pdis] = self.resolve_person(
+                            mention=pdis,
+                            entry_text=text,
+                            places=places_ctx,
+                            topics=topics_ctx,
+                            role=meta_pe or self._infer_role(pdis, text),
+                            entry_id=entry_id,
+                            interactive=False,
+                        )
+
                 # Link all extracted entities to each micro-event (best-effort).
                 for ent in entities:
                     if user_name and ent.text.strip().lower() == user_name.lower():
@@ -941,6 +977,67 @@ class GraphStore:
                             # All other entity types: skip per-event linking.
                             # They are linked to the journal entry in the entry-level references block.
                             continue
+
+                # P14 + journal P67 for each micro-event's people[] (and mirror E39 on cast).
+                for evn in events_norm:
+                    ev_key = evn["event_key"]
+                    for plow, pdis in evn.get("people_pairs") or []:
+                        if plow == uname:
+                            continue
+                        resolved = next(
+                            (person_map[k] for k in person_map if k.strip().lower() == plow),
+                            None,
+                        )
+                        if not resolved:
+                            continue
+                        pid = resolved.get("id")
+                        if not pid:
+                            continue
+                        tx.run(
+                            """
+                            MATCH (p:E21_Person {id: $id})
+                            SET p.last_seen = datetime($ts), p.mention_count = coalesce(p.mention_count, 0) + 1
+                            """,
+                            id=pid,
+                            ts=input_ts_str,
+                        )
+                        tx.run(
+                            """
+                            MATCH (p:E21_Person {id: $id})
+                            MATCH (ev:E7_Activity {key: $event_key})
+                            MERGE (ev)-[:P14_carried_out_by]->(p)
+                            MERGE (p)-[:P14i_performed]->(ev)
+                            """,
+                            id=pid,
+                            event_key=ev_key,
+                        )
+                        tx.run(
+                            """
+                            MATCH (p:E21_Person {id: $id})
+                            MERGE (ca:E39_Actor {id: $id})
+                            SET ca.name = coalesce(p.name, ca.name, $fallback_name)
+                            WITH ca
+                            MATCH (cev:E7_Activity {key: $event_key})
+                            MERGE (cev)-[:P14_carried_out_by]->(ca)
+                            MERGE (ca)-[:P14i_performed]->(cev)
+                            """,
+                            id=pid,
+                            fallback_name=pdis,
+                            event_key=ev_key,
+                        )
+                for _, resolved in person_map.items():
+                    pid = resolved.get("id")
+                    if not pid:
+                        continue
+                    tx.run(
+                        """
+                        MATCH (j:E73_Information_Object {id: $entry_id})
+                        MATCH (p:E21_Person {id: $id})
+                        MERGE (j)-[:P67_refers_to {ref_type: 'mention'}]->(p)
+                        """,
+                        entry_id=entry_id,
+                        id=pid,
+                    )
 
                 # All places, topics, concepts from extraction are linked as P67_refers_to
                 # on the main journal entry (E73_Information_Object), not on separate context nodes.
@@ -1550,6 +1647,20 @@ class GraphStore:
                         MERGE (t:{node_type} {{name: $name}})
                         MERGE (j)-[:P67_refers_to {{ref_type: 'mention'}}]->(t)
                     """, entry_id=entry_id, name=ent.text)
+
+            for _, resolved in person_map.items():
+                pid = resolved.get("id")
+                if not pid:
+                    continue
+                tx.run(
+                    """
+                    MATCH (j:E73_Information_Object {id: $entry_id})
+                    MATCH (p:E21_Person {id: $id})
+                    MERGE (j)-[:P67_refers_to {ref_type: 'mention'}]->(p)
+                    """,
+                    entry_id=entry_id,
+                    id=pid,
+                )
 
             # Single-event causal factors: preserve CIDOC causal modeling even without metadata.events.
             cf_list = causal_factors_meta if isinstance(causal_factors_meta, list) else []

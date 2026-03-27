@@ -71,7 +71,8 @@ Retourne UNIQUEMENT un JSON valide avec cette structure:
 }
 
 Regles:
-- micro_events: chaque ACTIVITE concrete (temps et/ou lieu). Ordonne-les chronologiquement. id commence a e1.
+- micro_events: chaque ACTIVITE concrete (temps et/ou lieu) — quelque chose que le narrateur **fait** ou qui se passe comme **action** (transport, arrivee, achat, envoi, etc.). Ordonne-les chronologiquement. id commence a e1.
+- Ne cree **pas** de micro_event pour un **etat ou une sensation purement vecue** (ex. avoir faim, se sentir fatigue, ressentir du stress) : mets cela uniquement dans **mental_states**, avec **caused_by** pointant vers le micro_event **declencheur** (ex. arrivee au bureau). Une seule representation dans le JSON pour ce genre d'episode.
 - Un transfer (donner/preter/rendre un objet) est un micro_event avec type_hint "transfer" et les roles giver/receiver/transferred_object.
 - event_links: liens entre micro_events uniquement quand le texte le justifie.
 - mental_states: emotions, douleur, joie, stress, deception. Utilise caused_by pour pointer vers le micro_event ou expectation qui cause cet etat.

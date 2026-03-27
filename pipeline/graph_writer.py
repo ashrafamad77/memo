@@ -1,7 +1,8 @@
 """Generic CIDOC CRM Graph Writer.
 
 Executes a graph spec (nodes + edges) produced by the Modeling Agent.
-No hardcoded semantic logic — all intelligence is in the Modeling Agent.
+Minimal structural completeness only; E13 P141 may be inferred from text when the
+agent omits a concrete E55_Type (see _infer_e13_p141_type).
 """
 import logging
 from datetime import datetime
@@ -57,6 +58,36 @@ class GraphWriter:
 
     def __init__(self, driver):
         self.driver = driver
+
+    @staticmethod
+    def _infer_e13_p141_type(assignment_name: str, raw_text: str) -> Optional[str]:
+        """
+        When the modeling agent omits P141 / types on E13, derive a concrete E55 label
+        from the assignment wording and entry text (avoids meaningless 'AssignedState').
+        """
+        blob = f" {assignment_name} {raw_text} ".lower()
+        # (needles, label) — keep labels stable for UI / taxonomy
+        rules: List[Tuple[Tuple[str, ...], str]] = [
+            (("faim", "affam", "hungry", "hunger", "feeling hungry", "had hunger"), "Hunger"),
+            (("fatigue", "tired", "épuis", "epuis", "exhausted", "somnol", "sleepy"), "Fatigue"),
+            (("stress", "stressed", "anxious", "anxiety", "angoiss", "worried"), "Stress"),
+            (("joie", "heureux", "heureuse", "happy", "glad", "pleased", "content "), "Joy"),
+            (("triste", "sad", "melanc", "down ", "depressed"), "Sadness"),
+            (("peur", "fear", "afraid", "scared", "fright"), "Fear"),
+            (("colère", "colere", "angry", "rage", "furious"), "Anger"),
+            (("déception", "deception", "disappointed", "let down"), "Disappointment"),
+            (("expect", "attente", "waiting for", "hope ", "hoping"), "Expectation"),
+            (("douleur", "pain", "hurt", "suffering"), "EmotionalPain"),
+            (("ennui", "bored", "boredom"), "Boredom"),
+            (("surprise", "surpris", "shocked", "astonish"), "Surprise"),
+            (("calm", "calme", "relaxed", "detendu", "détendu"), "Calm"),
+            (("nostalg", "nostalgia"), "Nostalgia"),
+            (("gratitude", "grateful", "reconnaissant"), "Gratitude"),
+        ]
+        for needles, label in rules:
+            if any(n in blob for n in needles):
+                return label
+        return None
 
     def write(
         self,
@@ -322,6 +353,8 @@ class GraphWriter:
         for aid in assignment_ids:
             has_p140 = any(f == aid and p == "P140_assigned_attribute_to" for (f, _t, p, _ep) in normalized_edges)
             has_p141 = any(f == aid and p == "P141_assigned" for (f, _t, p, _ep) in normalized_edges)
+            e13_name = _get_node_name(aid)
+            inferred_p141 = GraphWriter._infer_e13_p141_type(e13_name, raw_text or "")
 
             if not has_p140:
                 target_id = user_actor_id or (actor_ids[0] if actor_ids else "")
@@ -337,9 +370,27 @@ class GraphWriter:
                     if isinstance(ntypes, list) and ntypes:
                         assigned_type_name = str(ntypes[0] or "").strip() or assigned_type_name
                     break
+                if inferred_p141 and (
+                    not assigned_type_name.strip() or assigned_type_name in ("AssignedState", "State")
+                ):
+                    assigned_type_name = inferred_p141
                 p141_tid = f"auto_p141_type_{aid}"
                 _add_node_once(p141_tid, "E55_Type", assigned_type_name)
                 normalized_edges.append((aid, p141_tid, "P141_assigned", {}))
+            elif inferred_p141:
+                p141_tids = [t for (f, t, p, _ep) in normalized_edges if f == aid and p == "P141_assigned"]
+                if p141_tids:
+                    tid = p141_tids[0]
+                    for n in nodes:
+                        if not isinstance(n, dict) or str(n.get("id", "")) != tid:
+                            continue
+                        if id_to_label.get(tid) != "E55_Type":
+                            break
+                        nm = str(n.get("name", "") or "").strip()
+                        if nm and nm not in ("AssignedState", "State"):
+                            break
+                        n["name"] = inferred_p141
+                        break
 
         # Precision rule: emotional/expectation assignments should point to a triggering activity.
         activity_ids = [nid for nid, lab in id_to_label.items() if _is_activity(lab) and lab != "E13_Attribute_Assignment"]

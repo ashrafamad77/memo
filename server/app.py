@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+from contextlib import asynccontextmanager
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException
@@ -10,6 +12,22 @@ from .neo4j_repo import Neo4jRepo
 from pipeline import MemoryPipeline
 from pipeline.extractor import ExtractedEntity
 from config import USER_NAME, CORS_ORIGINS
+
+_log = logging.getLogger("uvicorn.error")
+
+
+@asynccontextmanager
+async def _app_lifespan(app: FastAPI):
+    """Preload the shared embedding model once so the first /chat is not a long silent wait."""
+    try:
+        from pipeline.embedding_service import embedding_dim
+
+        _log.info("Loading embedding model (first time can take ~30s on CPU; see HF / sentence-transformers logs)...")
+        embedding_dim()
+        _log.info("Embedding model ready.")
+    except Exception as e:
+        _log.warning("Embedding preload skipped (will load on first use): %s", e)
+    yield
 
 
 class ChatIn(BaseModel):
@@ -204,7 +222,7 @@ def _apply_location_clarification(
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Memo UI API", version="0.1.0")
+    app = FastAPI(title="Memo UI API", version="0.1.0", lifespan=_app_lifespan)
     repo = Neo4jRepo()
     pipeline: MemoryPipeline | None = None
     chat_state: dict = {

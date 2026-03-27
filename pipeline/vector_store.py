@@ -3,9 +3,9 @@ from datetime import datetime
 import hashlib
 from typing import List, Optional
 
-from sentence_transformers import SentenceTransformer
+from .embedding_service import embed_text
 
-from config import WEAVIATE_CLASS_NAME, EMBEDDING_MODEL, WEAVIATE_URL
+from config import WEAVIATE_CLASS_NAME, WEAVIATE_URL
 
 
 class VectorStore:
@@ -15,11 +15,11 @@ class VectorStore:
         self,
         url: Optional[str] = None,
         collection_name: str = WEAVIATE_CLASS_NAME,
-        embedding_model: str = EMBEDDING_MODEL,
+        embedding_model: str = "",  # ignored; uses config.EMBEDDING_MODEL via embedding_service
     ):
         url = url or WEAVIATE_URL
         self.collection_name = collection_name
-        self.embedding_model = SentenceTransformer(embedding_model)
+        _ = embedding_model  # kept for backward-compatible call sites
 
         try:
             import weaviate
@@ -79,8 +79,8 @@ class VectorStore:
                 raise
 
     def _embed(self, text: str) -> List[float]:
-        """Generate embedding for text."""
-        return self.embedding_model.encode(text).tolist()
+        """Generate embedding for text (shared SentenceTransformer, single load)."""
+        return embed_text(text)
 
     def add_entry(
         self,

@@ -45,6 +45,8 @@ type OverviewEvent = {
   kind: "Event";
   ref: string;
   activity_name?: string;
+  /** First journal snippet when this Event-shaped payload is a place lens. */
+  summary_preview?: string;
   event_type?: string;
   day?: string;
   event_time_iso?: string;
@@ -162,6 +164,10 @@ type NormalizedMoment = {
 
 type HubSituation = {
   kind: "situation";
+  /** True when overview ref is E53_Place:… (aggregate of activities & notes here). */
+  placeLens: boolean;
+  /** Short excerpt (e.g. latest journal line linked to this place). */
+  summaryText: string;
   ref: string;
   title: string;
   subtitle: string;
@@ -295,10 +301,17 @@ function overviewToMoments(o: Overview): NormalizedMoment[] {
 
 function overviewToHub(o: Overview): HubData | null {
   if (o.kind === "Event") {
-    const title = (o.activity_name || "").trim() || "Situation";
+    const placeLens = o.ref.startsWith("E53_Place:");
+    const ev = o as OverviewEvent;
+    const title =
+      (ev.activity_name || "").trim() ||
+      (placeLens ? `Notes linked to ${(ev.places || [])[0] || "this place"}` : "Situation");
     const parts = [o.event_type, o.day, (o.places || []).join(", ")].filter(Boolean);
+    const summaryText = (ev.summary_preview || "").trim();
     return {
       kind: "situation",
+      placeLens,
+      summaryText,
       ref: o.ref,
       title,
       subtitle: parts.join(" · "),
@@ -337,7 +350,7 @@ function exploreKindLabel(o: Overview | null): string {
     case "Person":
       return "Person";
     case "Event":
-      return "Situation";
+      return o.ref.startsWith("E53_Place:") ? "Place · notes & people" : "Situation";
     case "E73_Information_Object":
       return o.entry_kind === "journal_entry" ? "Journal entry" : "Context excerpt";
     case "Day":
@@ -790,9 +803,19 @@ function HubExplorer({
     return (
       <div className="mt-4 space-y-3">
         <div className="rounded-2xl border border-zinc-200/90 bg-gradient-to-b from-zinc-50/90 to-white p-4 dark:border-zinc-800 dark:from-zinc-900/40 dark:to-zinc-950">
-          <div className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">Anchor · Situation</div>
+          <div className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
+            {hub.placeLens ? "Anchor · Place" : "Anchor · Situation"}
+          </div>
           <div className="mt-1 text-lg font-semibold text-zinc-900 dark:text-zinc-50">{hub.title}</div>
           {hub.subtitle ? <div className="mt-1 text-xs text-zinc-500">{hub.subtitle}</div> : null}
+          {hub.summaryText ? (
+            <div className="mt-2 text-sm leading-relaxed text-zinc-600 dark:text-zinc-300">{hub.summaryText}</div>
+          ) : hub.placeLens ? (
+            <div className="mt-2 text-xs text-zinc-500">
+              No journal text preview yet for this place lens — expand <span className="font-medium">Journal notes</span> below if
+              entries are linked.
+            </div>
+          ) : null}
         </div>
 
         <div className="flex flex-wrap gap-2">

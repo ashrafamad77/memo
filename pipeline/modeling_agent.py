@@ -6,13 +6,13 @@ then executes this spec generically.
 """
 import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 
 CIDOC_VOCAB = """
 CIDOC CRM classes disponibles:
 - E5_Event: evenement observable
-- E7_Activity: activite realisee par un acteur (sous-classe de E5)
+- E7_Activity: action ou processus actif (sous-classe de E5). Pas pour un etat vecu passif (faim, fatigue, douleur ressentie) — utiliser E13.
 - E10_Transfer_of_Custody: transfert de garde d'un objet (sous-classe de E7)
 - E13_Attribute_Assignment: attribution d'un attribut (emotion, attente, evaluation)
 - E21_Person: personne
@@ -32,7 +32,7 @@ CIDOC CRM proprietes disponibles (edges):
 - P7_took_place_at: activite -> E53_Place (lieu physique reel)
 - P14_carried_out_by: activite -> acteur
 - P14i_performed: acteur -> activite (inverse)
-- P15_was_influenced_by: activite -> entite qui l'influence
+- P15_was_influenced_by: activite ou E13 -> entite qui influence (ex. E13 -P15-> E7 declencheur)
 - P17_was_motivated_by: activite -> entite qui la motive
 - P28_custody_surrendered_by: E10 -> acteur qui donne
 - P29_custody_received_by: E10 -> acteur qui recoit
@@ -78,7 +78,8 @@ Retourne UNIQUEMENT un JSON valide avec cette structure:
 }}
 
 Regles de modelisation:
-1. Chaque micro_event du prep devient un noeud E7_Activity (ou E10_Transfer_of_Custody si c'est un transfert).
+1. Chaque micro_event du prep devient un noeud E7_Activity (ou E10_Transfer_of_Custody si c'est un transfert), **sauf** si le prep ne contient que la trace de cet episode dans **mental_states** (etat sans micro_event dedie) — alors il n'y a pas d'E7 pour cet episode.
+1b. **E7 vs E13 (distinction CIDOC):** E7 = action / changement dans le monde (deplacement, achat, arrivee, communication). **Jamais** d'E7 pour un **etat ou une sensation** (faim, fatigue, peur ressentie, joie comme humeur, douleur vecue). Ceux-ci sont **uniquement** E13_Attribute_Assignment. Si le prep a a la fois un micro_event redondant du type "ressentir la faim / feel hungry" **et** un mental_state equivalent, **ne cree pas** l'E7 : garde seulement l'E13 avec le triangle P140/P141/P15 decrit en 8c.
 2. L'utilisateur ({user_name}) est TOUJOURS un noeud E21_Person/E39_Actor avec type "User". Il est P14_carried_out_by pour ses activites.
 3. Les personnes mentionnees deviennent des noeuds E21_Person.
 4. Les lieux physiques deviennent E53_Place. Si le role est "physical_location", utilise P7_took_place_at. Si "remote_context", utilise P67_refers_to depuis le journal entry.
@@ -86,6 +87,8 @@ Regles de modelisation:
 6. Les objets physiques (livre, cadeau) deviennent E22_Human_Made_Object.
 7. Les habits deviennent E28_Conceptual_Object avec type "Habit".
 8. Les mental_states deviennent E13_Attribute_Assignment: P140_assigned_attribute_to pointe vers la personne affectee, P141_assigned pointe vers un E55_Type decrivant l'etat.
+8b. OBLIGATOIRE pour chaque E13: cree un noeud E55_Type dedie (id dedie, label E55_Type, name en CamelCase semantique: Hunger, Fatigue, Joy, Stress, Expectation, etc.) et un edge P141_assigned de l'E13 vers ce noeud. Tu peux aussi mettre ce meme nom dans le tableau "types" de l'E13 pour coherence. N'utilise JAMAIS de type generique du genre "AssignedState" ou "State" — le nom doit etre la notion vecue (ex. faim/affame -> Hunger).
+8c. **Triangle E13 complet:** pour chaque etat mental/sensation, l'E13 doit avoir **P140_assigned_attribute_to** vers la personne concernee (souvent l'auteur), **P141_assigned** vers l'E55_Type (ex. Hunger), et quand le prep indique une cause (**caused_by** / lien causal), **P15_was_influenced_by** de l'E13 vers le **micro_event E7** declencheur (ex. arrivee au bureau) — pas l'inverse. Ne te contente pas d'une seule relation P15 sans P140/P141.
 9. Les expectations deviennent E13_Attribute_Assignment avec type specifique (ex: "ReturnExpectation").
 10. Les reflections deviennent E7_Activity avec type "Reflection", liees par P17_was_motivated_by a l'evenement source, et P67_refers_to vers les sujets de reflexion.
 11. Les event_links "sequence" deviennent P120_occurs_before. "causes"/"impacts"/"influences" deviennent P15_was_influenced_by.
@@ -105,6 +108,104 @@ Regles de modelisation:
 24. Quand un evenement (ex: wake up) est influence par une condition du jour, cree: event -[P15_was_influenced_by]-> condition.
 25. Les places mentionnees dans les entities du prep doivent TOUTES devenir des noeuds E53_Place dans le graphe.
 """
+
+
+def _e13_inferred_labels(nodes: List[Dict[str, Any]]) -> Set[str]:
+    from .graph_writer import GraphWriter
+
+    out: Set[str] = set()
+    for n in nodes:
+        if not isinstance(n, dict) or n.get("label") != "E13_Attribute_Assignment":
+            continue
+        lab = GraphWriter._infer_e13_p141_type(str(n.get("name") or ""), "")
+        if lab:
+            out.add(lab)
+    return out
+
+
+def _state_sensation_e7_name(name: str) -> bool:
+    n = name.lower()
+    return any(
+        m in n
+        for m in (
+            "ressent",
+            "se sentir",
+            "felt ",
+            "feeling ",
+            " feel ",
+            "avoir faim",
+            "had hunger",
+            "was hungry",
+        )
+    )
+
+
+def _prune_redundant_state_e7(nodes: List[Dict[str, Any]], edges: List[Dict[str, Any]]) -> None:
+    """Remove E7 activities that duplicate an E13 state (e.g. 'ressentir la faim' + Hunger E13)."""
+    from .graph_writer import GraphWriter
+
+    e13_labels = _e13_inferred_labels(nodes)
+    if not e13_labels:
+        return
+
+    remove_ids: Set[str] = set()
+    for n in nodes:
+        if not isinstance(n, dict) or n.get("label") != "E7_Activity":
+            continue
+        name = str(n.get("name") or "")
+        if not _state_sensation_e7_name(name):
+            continue
+        inferred = GraphWriter._infer_e13_p141_type(name, "")
+        if inferred and inferred in e13_labels:
+            nid = str(n.get("id") or "")
+            if nid:
+                remove_ids.add(nid)
+
+    if not remove_ids:
+        return
+
+    p120_out: Dict[str, List[str]] = {}
+    p120_in: Dict[str, List[str]] = {}
+    for e in edges:
+        if not isinstance(e, dict) or e.get("property") != "P120_occurs_before":
+            continue
+        f, t = str(e.get("from", "")), str(e.get("to", ""))
+        if not f or not t:
+            continue
+        p120_out.setdefault(f, []).append(t)
+        p120_in.setdefault(t, []).append(f)
+
+    bridge: Set[Tuple[str, str]] = set()
+    for rid in remove_ids:
+        for pred in p120_in.get(rid, []):
+            if pred in remove_ids:
+                continue
+            for succ in p120_out.get(rid, []):
+                if succ in remove_ids:
+                    continue
+                bridge.add((pred, succ))
+
+    filtered: List[Dict[str, Any]] = []
+    for e in edges:
+        if not isinstance(e, dict):
+            continue
+        f, t = str(e.get("from", "")), str(e.get("to", ""))
+        if f in remove_ids or t in remove_ids:
+            continue
+        filtered.append(e)
+
+    existing_p120 = {
+        (str(e.get("from", "")), str(e.get("to", "")))
+        for e in filtered
+        if isinstance(e, dict) and e.get("property") == "P120_occurs_before"
+    }
+    for f, s in bridge:
+        if (f, s) not in existing_p120:
+            filtered.append({"from": f, "to": s, "property": "P120_occurs_before", "properties": {}})
+            existing_p120.add((f, s))
+
+    edges[:] = filtered
+    nodes[:] = [n for n in nodes if isinstance(n, dict) and str(n.get("id", "")) not in remove_ids]
 
 
 class ModelingAgent:
@@ -183,4 +284,5 @@ class ModelingAgent:
             nodes = []
         if not isinstance(edges, list):
             edges = []
+        _prune_redundant_state_e7(nodes, edges)
         return {"nodes": nodes, "edges": edges}
