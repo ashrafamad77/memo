@@ -303,7 +303,6 @@ def create_app() -> FastAPI:
 
             data = geocode_and_forecast(
                 city=city,
-                country_hint=(prof.get("home_country") or "").strip() or None,
                 timezone_hint=(prof.get("timezone") or "").strip() or None,
             )
             return {"ok": True, **data}

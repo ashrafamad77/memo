@@ -87,8 +87,38 @@ def _pick_geocode_result(results: list[dict[str, Any]], country_hint: str | None
     for r in results:
         if _result_matches_country_hint(r, h):
             return r
-    _log.info("weather geocode: no country match for %r, using first hit %r", country_hint, results[0].get("name"))
+    _log.debug(
+        "weather geocode: no country match for %r, using first hit %r",
+        country_hint,
+        results[0].get("name"),
+    )
     return results[0]
+
+
+def geocode_search_parts(current_city_field: str) -> tuple[str, str | None]:
+    """
+    Split the profile "where I live" field into (name for Open-Meteo search, country hint).
+
+    If the user writes e.g. ``Paris, France`` or ``Austin, TX, USA``, we search the left
+    side and use the last comma-separated segment to pick among duplicate city names.
+
+    Do **not** use profile *home_country* for this — that field is often origin /
+    nationality, not the country where ``current_city`` is located (mixing them causes
+    bogus mismatches, e.g. Paris vs Palestine).
+    """
+    raw = (current_city_field or "").strip()
+    if not raw or "," not in raw:
+        return raw, None
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    if len(parts) < 2:
+        return raw, None
+    hint = parts[-1]
+    body = ",".join(parts[:-1]).strip()
+    if not body:
+        return raw, None
+    if len(hint) < 2:
+        return body, None
+    return body, hint
 
 
 def geocode_city(city: str, country_hint: str | None) -> dict[str, Any]:
@@ -151,7 +181,9 @@ def geocode_and_forecast(
     country_hint: str | None = None,
     timezone_hint: str | None = None,
 ) -> dict[str, Any]:
-    loc = geocode_city(city, country_hint)
+    search_name, derived_hint = geocode_search_parts(city)
+    hint = (country_hint or "").strip() or derived_hint or None
+    loc = geocode_city(search_name, hint)
     # Never pass profile timezone to the forecast API — users type values Open-Meteo rejects (HTTP 400).
     # Use the timezone returned with the geocode hit (same DB as forecast); fall back to "auto" on error.
     geo_tz = (loc.get("timezone") or "").strip() or "auto"

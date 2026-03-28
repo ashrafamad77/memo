@@ -193,7 +193,6 @@ def build_proposals_v1(repo: Any, user_name: str, days_ahead: int = 10) -> Dict[
         try:
             wx = geocode_and_forecast(
                 city=city,
-                country_hint=(prof.get("home_country") or "").strip() or None,
                 timezone_hint=tz or None,
             )
         except Exception as e:
