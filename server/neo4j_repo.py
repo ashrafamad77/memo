@@ -782,12 +782,25 @@ class Neo4jRepo:
 
             elif label == "E53_Place":
                 display_name = key
+                # Places from "physical_location" link via Activity P7; "remote_context" links
+                # journal P67→Place only (no P7). Count both so Entity Timeline is not empty for those.
                 crow = s.run(
                     """
-                    MATCH (pl:E53_Place {name: $name})<-[:P7_took_place_at]-(ev:E7_Activity)
-                    MATCH (ev)<-[:P67_refers_to]-(e:E73_Information_Object)
-                    WHERE coalesce(e.entry_kind,'') = 'journal_entry'
-                    RETURN count(DISTINCT e) as c
+                    MATCH (pl:E53_Place)
+                    WHERE pl.name = $name OR toLower(toString(pl.name)) = toLower($name)
+                    WITH pl ORDER BY CASE WHEN pl.name = $name THEN 0 ELSE 1 END, pl.name LIMIT 1
+                    CALL {
+                      WITH pl
+                      MATCH (pl)<-[:P7_took_place_at]-(ev:E7_Activity)<-[:P67_refers_to]-(e:E73_Information_Object)
+                      WHERE coalesce(e.entry_kind,'') = 'journal_entry'
+                      RETURN e.id AS entry_id
+                      UNION
+                      WITH pl
+                      MATCH (e:E73_Information_Object)-[:P67_refers_to]->(pl)
+                      WHERE coalesce(e.entry_kind,'') = 'journal_entry'
+                      RETURN e.id AS entry_id
+                    }
+                    RETURN count(DISTINCT entry_id) AS c
                     """,
                     name=key,
                 ).single()
@@ -796,7 +809,11 @@ class Neo4jRepo:
                     {
                         "key": "hub",
                         "title": "What happened here",
-                        "description": "Journal notes tied to activities at this place.",
+                        "description": (
+                            "Journal notes at this place (via activities) or mentioning it in the text (remote context)."
+                            if n > 0
+                            else "No journal notes linked yet—neither as a situation location nor as a mentioned place."
+                        ),
                         "count": n,
                         "enabled": n > 0,
                     }
@@ -886,14 +903,40 @@ class Neo4jRepo:
                 )
 
             elif label == "E74_Group":
-                display_name = key
+                grow = s.run(
+                    """
+                    MATCH (g:E74_Group)
+                    WHERE g.name = $name OR toLower(toString(g.name)) = toLower($name)
+                    WITH g ORDER BY CASE WHEN g.name = $name THEN 0 ELSE 1 END, g.name
+                    LIMIT 1
+                    RETURN coalesce(g.name, $name) AS disp
+                    """,
+                    name=key,
+                ).single()
+                display_name = (grow.get("disp") or key).strip() if grow else key
+                crow = s.run(
+                    """
+                    MATCH (g:E74_Group)
+                    WHERE g.name = $name OR toLower(toString(g.name)) = toLower($name)
+                    WITH g ORDER BY CASE WHEN g.name = $name THEN 0 ELSE 1 END, g.name LIMIT 1
+                    MATCH (e:E73_Information_Object)-[:P67_refers_to]->(g)
+                    WHERE coalesce(e.entry_kind,'') = 'journal_entry'
+                    RETURN count(DISTINCT e) AS c
+                    """,
+                    name=key,
+                ).single()
+                n = int(crow.get("c") or 0) if crow else 0
                 options.append(
                     {
                         "key": "hub",
-                        "title": "Group (limited)",
-                        "description": "Overview is not specialized for groups yet.",
-                        "count": 0,
-                        "enabled": False,
+                        "title": "Notes mentioning this group",
+                        "description": (
+                            "Journal entries that link to this organization (from your notes)."
+                            if n > 0
+                            else "No journal notes link to this group yet."
+                        ),
+                        "count": n,
+                        "enabled": n > 0,
                     }
                 )
 
@@ -1177,6 +1220,8 @@ class Neo4jRepo:
         Supported:
           - Person:<uuid> => returns kind="Person" and items timeline
           - Event:<key> => returns kind="Event" and participants + entries
+          - E53_Place:<name> => kind="Event" (journal via activity P7 and/or direct P67 mention)
+          - E74_Group:<name> => kind="Event" (journal entries with P67→group)
           - E55_Type:<name> => returns kind="Feeling" (two lenses: focus=feelings for E13→P141, or focus=activity_type for E7→P2_has_type→tag with journal P67→ev)
         anchor_person: optional E21_Person:… ref — for Feeling, only assignments where that person is the assignee
         (P140) or appears on the linked situation (P14); for activity_type lens, only situations where that person is on P14.
@@ -1510,48 +1555,87 @@ class Neo4jRepo:
         if label == "E53_Place":
             # Treat "place occurrences" as an Event-like overview so the UI can reuse
             # the same rendering (participants + entries list).
+            # Include (1) journals via Activity P7 and (2) journals that P67→place (e.g. remote_context).
             q_entries = """
-            MATCH (pl:E53_Place {name: $name})<-[:P7_took_place_at]-(ev:E7_Activity)<-[:P67_refers_to]-(e:E73_Information_Object)
-            WHERE coalesce(e.entry_kind,'') = 'journal_entry'
-            OPTIONAL MATCH (ev)-[:P4_has_time_span]->(d:E52_Time_Span)
-            OPTIONAL MATCH (ev)-[:P2_has_type]->(t:E55_Type)
-            WITH e,
-                 collect(DISTINCT d.date) as days,
-                 collect(DISTINCT coalesce(t.name, ev.event_type, '')) as event_types
-            RETURN e.id as entry_id,
-                   toString(e.input_time) as input_time,
-                   days[0] as day,
-                   event_types[0] as event_type,
-                   substring(e.text, 0, 260) as text_preview
+            MATCH (pl:E53_Place)
+            WHERE pl.name = $name OR toLower(toString(pl.name)) = toLower($name)
+            WITH pl ORDER BY CASE WHEN pl.name = $name THEN 0 ELSE 1 END, pl.name LIMIT 1
+            CALL {
+              WITH pl
+              MATCH (pl)<-[:P7_took_place_at]-(ev:E7_Activity)<-[:P67_refers_to]-(e:E73_Information_Object)
+              WHERE coalesce(e.entry_kind,'') = 'journal_entry'
+              OPTIONAL MATCH (ev)-[:P4_has_time_span]->(d:E52_Time_Span)
+              OPTIONAL MATCH (ev)-[:P2_has_type]->(t:E55_Type)
+              WITH e,
+                   collect(DISTINCT d.date) AS days,
+                   collect(DISTINCT coalesce(t.name, ev.event_type, '')) AS event_types
+              RETURN e,
+                     days[0] AS day,
+                     event_types[0] AS event_type
+              UNION
+              WITH pl
+              MATCH (e:E73_Information_Object)-[:P67_refers_to]->(pl)
+              WHERE coalesce(e.entry_kind,'') = 'journal_entry'
+              RETURN e,
+                     coalesce(e.day, '') AS day,
+                     'mentioned in note' AS event_type
+            }
+            WITH DISTINCT e, day, event_type
             ORDER BY e.input_time DESC
             LIMIT $limit
+            RETURN e.id AS entry_id,
+                   toString(e.input_time) AS input_time,
+                   day,
+                   event_type,
+                   substring(e.text, 0, 260) AS text_preview
             """
             # Cast may be E21_Person and/or E39_Actor (pipeline merges both). Also pick up people
             # the journal links (P67) even when the activity has no P14 row yet.
             q_cast = """
-            MATCH (pl:E53_Place {name: $name})<-[:P7_took_place_at]-(ev:E7_Activity)
+            MATCH (pl:E53_Place)
+            WHERE pl.name = $name OR toLower(toString(pl.name)) = toLower($name)
+            WITH pl ORDER BY CASE WHEN pl.name = $name THEN 0 ELSE 1 END, pl.name LIMIT 1
+            MATCH (pl)<-[:P7_took_place_at]-(ev:E7_Activity)
             MATCH (ev)-[:P14_carried_out_by]->(n)
             WHERE n:E21_Person OR n:E39_Actor
-            RETURN DISTINCT n.id as id,
-                   coalesce(n.name, n.id) as name,
-                   n.role as role,
-                   coalesce(n.mention_count, 0) as mentions
+            RETURN DISTINCT n.id AS id,
+                   coalesce(n.name, n.id) AS name,
+                   n.role AS role,
+                   coalesce(n.mention_count, 0) AS mentions
             """
             q_journal_people = """
-            MATCH (pl:E53_Place {name: $name})<-[:P7_took_place_at]-(ev:E7_Activity)
+            MATCH (pl:E53_Place)
+            WHERE pl.name = $name OR toLower(toString(pl.name)) = toLower($name)
+            WITH pl ORDER BY CASE WHEN pl.name = $name THEN 0 ELSE 1 END, pl.name LIMIT 1
+            MATCH (pl)<-[:P7_took_place_at]-(ev:E7_Activity)
             MATCH (ev)<-[:P67_refers_to]-(e:E73_Information_Object)
             WHERE coalesce(e.entry_kind,'') = 'journal_entry'
             MATCH (e)-[:P67_refers_to]->(p:E21_Person)
-            RETURN DISTINCT p.id as id,
-                   coalesce(p.name, p.id) as name,
-                   p.role as role,
-                   coalesce(p.mention_count, 0) as mentions
+            RETURN DISTINCT p.id AS id,
+                   coalesce(p.name, p.id) AS name,
+                   p.role AS role,
+                   coalesce(p.mention_count, 0) AS mentions
+            """
+            q_direct_journal_people = """
+            MATCH (pl:E53_Place)
+            WHERE pl.name = $name OR toLower(toString(pl.name)) = toLower($name)
+            WITH pl ORDER BY CASE WHEN pl.name = $name THEN 0 ELSE 1 END, pl.name LIMIT 1
+            MATCH (e:E73_Information_Object)-[:P67_refers_to]->(pl)
+            WHERE coalesce(e.entry_kind,'') = 'journal_entry'
+            MATCH (e)-[:P67_refers_to]->(p:E21_Person)
+            RETURN DISTINCT p.id AS id,
+                   coalesce(p.name, p.id) AS name,
+                   p.role AS role,
+                   coalesce(p.mention_count, 0) AS mentions
             """
             q_place_headline = """
-            MATCH (pl:E53_Place {name: $name})<-[:P7_took_place_at]-(ev:E7_Activity)
-            RETURN coalesce(ev.name, '') as ev_name,
-                   coalesce(ev.event_type, '') as ev_type,
-                   coalesce(ev.key, '') as ev_key
+            MATCH (pl:E53_Place)
+            WHERE pl.name = $name OR toLower(toString(pl.name)) = toLower($name)
+            WITH pl ORDER BY CASE WHEN pl.name = $name THEN 0 ELSE 1 END, pl.name LIMIT 1
+            MATCH (pl)<-[:P7_took_place_at]-(ev:E7_Activity)
+            RETURN coalesce(ev.name, '') AS ev_name,
+                   coalesce(ev.event_type, '') AS ev_type,
+                   coalesce(ev.key, '') AS ev_key
             ORDER BY coalesce(ev.last_seen, datetime('1970-01-01T00:00:00Z')) DESC
             LIMIT 1
             """
@@ -1560,7 +1644,8 @@ class Neo4jRepo:
                 entries = [dict(r) for r in s.run(q_entries, name=key, limit=int(limit))]
                 cast_rows = [dict(r) for r in s.run(q_cast, name=key)]
                 note_rows = [dict(r) for r in s.run(q_journal_people, name=key)]
-                persons = self._merge_person_rows_by_id(cast_rows, note_rows)
+                direct_rows = [dict(r) for r in s.run(q_direct_journal_people, name=key)]
+                persons = self._merge_person_rows_by_id(cast_rows, note_rows, direct_rows)
                 hrow = s.run(q_place_headline, name=key).single()
                 hdict = dict(hrow) if hrow else {}
 
@@ -1720,6 +1805,69 @@ class Neo4jRepo:
                 out["anchor_person_name"] = anchor_display or anchor_pid
                 out["anchor_person_ref"] = f"E21_Person:{anchor_pid}"
             return out
+
+        if label == "E74_Group":
+            # Organizations are linked from journal entries via P67 (same as places/topics in prep).
+            q_gname = """
+            MATCH (g:E74_Group)
+            WHERE g.name = $name OR toLower(toString(g.name)) = toLower($name)
+            WITH g ORDER BY CASE WHEN g.name = $name THEN 0 ELSE 1 END, g.name LIMIT 1
+            RETURN coalesce(g.name, $name) AS gn
+            """
+            q_entries = """
+            MATCH (g:E74_Group)
+            WHERE g.name = $name OR toLower(toString(g.name)) = toLower($name)
+            WITH g ORDER BY CASE WHEN g.name = $name THEN 0 ELSE 1 END, g.name LIMIT 1
+            MATCH (e:E73_Information_Object)-[:P67_refers_to]->(g)
+            WHERE coalesce(e.entry_kind,'') = 'journal_entry'
+            RETURN e.id AS entry_id,
+                   toString(e.input_time) AS input_time,
+                   coalesce(e.day, '') AS day,
+                   'mentioned in note' AS event_type,
+                   substring(e.text, 0, 260) AS text_preview
+            ORDER BY e.input_time DESC
+            LIMIT $limit
+            """
+            q_journal_people = """
+            MATCH (g:E74_Group)
+            WHERE g.name = $name OR toLower(toString(g.name)) = toLower($name)
+            WITH g ORDER BY CASE WHEN g.name = $name THEN 0 ELSE 1 END, g.name LIMIT 1
+            MATCH (e:E73_Information_Object)-[:P67_refers_to]->(g)
+            WHERE coalesce(e.entry_kind,'') = 'journal_entry'
+            MATCH (e)-[:P67_refers_to]->(p:E21_Person)
+            RETURN DISTINCT p.id AS id,
+                   coalesce(p.name, p.id) AS name,
+                   p.role AS role,
+                   coalesce(p.mention_count, 0) AS mentions
+            """
+            with self._driver.session() as s:
+                gr = s.run(q_gname, name=key).single()
+                gname = str((gr.get("gn") or key)).strip() if gr else key
+                entries = [dict(r) for r in s.run(q_entries, name=key, limit=int(limit))]
+                persons = [dict(r) for r in s.run(q_journal_people, name=key)]
+            first = entries[0] if entries else {}
+            summary_preview = str(first.get("text_preview") or "").strip()
+            activity_name = f"{gname} · mentioned in your notes" if summary_preview else gname
+            return {
+                "kind": "Event",
+                "ref": ref,
+                "activity_name": activity_name,
+                "summary_preview": summary_preview,
+                "event_type": first.get("event_type") or "",
+                "day": first.get("day") or "",
+                "places": [],
+                "persons": persons,
+                "users": [],
+                "entries": [
+                    {
+                        "entry_id": e.get("entry_id"),
+                        "input_time": e.get("input_time"),
+                        "day": e.get("day"),
+                        "text_preview": e.get("text_preview"),
+                    }
+                    for e in entries
+                ],
+            }
 
         # Fallback: return minimal info rather than 500.
         with self._driver.session() as s:
