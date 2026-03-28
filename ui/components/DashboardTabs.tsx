@@ -6,6 +6,7 @@ import { apiGet } from "@/lib/api";
 import { InboxQueue } from "@/components/InboxQueue";
 import { GraphMindMap } from "@/components/GraphMindMap";
 import { EntityTimeline } from "@/components/EntityTimeline";
+import { KpiHelp } from "@/components/KpiHelp";
 
 const tabs = ["Inbox", "Timeline", "Entities", "Entity Timeline", "Graph", "Insights"] as const;
 type Tab = (typeof tabs)[number];
@@ -268,26 +269,6 @@ function ImpactEventLedgerPanel({
         <div className="text-[11px] text-zinc-500">No journal entry id on this signal.</div>
       )}
     </div>
-  );
-}
-
-function KpiHelp({
-  title,
-  description,
-}: {
-  title: string;
-  description: string;
-}) {
-  return (
-    <span className="group relative ml-1 inline-flex align-middle">
-      <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-zinc-300 dark:border-zinc-700 text-[10px] font-bold text-zinc-500 dark:text-zinc-400">
-        i
-      </span>
-      <span className="pointer-events-none absolute left-1/2 top-full z-20 mt-2 hidden w-72 -translate-x-1/2 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-2.5 text-[11px] leading-snug text-zinc-700 dark:text-zinc-200 shadow-xl group-hover:block">
-        <span className="block font-semibold text-zinc-900 dark:text-zinc-100">{title}</span>
-        <span className="mt-1 block whitespace-pre-wrap text-zinc-600 dark:text-zinc-300">{description}</span>
-      </span>
-    </span>
   );
 }
 
@@ -591,12 +572,7 @@ export function DashboardTabs() {
         }
       case "Graph":
         return (
-          <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-5">
-            <div className="text-sm font-semibold">Graph explorer</div>
-            <div className="mt-0.5 text-[11px] text-zinc-500">
-              Same Linked Explorer as Entity Timeline — drawn as nodes and edges; hover the ⓘ on a node for full text and
-              previews.
-            </div>
+          <div className="flex h-[max(28rem,calc(100dvh-9rem))] min-h-0 flex-col rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-5">
             <GraphMindMap initialRoots={graphRoots} />
           </div>
         );

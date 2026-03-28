@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { LazyJournalBody } from "@/components/LinkedExplorerPanels";
 import type {
@@ -27,12 +27,23 @@ const NODE_GRADIENT: Record<ExplorerNodeVisualGroup, { from: string; to: string 
   generic: { from: "from-zinc-500", to: "to-neutral-700" },
 };
 
-const RIM_CENTER = 6.2;
-const RIM_SAT = 4.8;
+const RIM_CENTER = 7.1;
+const RIM_SAT = 5.4;
 const DRAG_THRESHOLD_PX = 6;
 /** Neo4j-like: dragging one node nudges the hub and siblings slightly. */
 const PULL_CENTER = 0.12;
 const PULL_SIBLING = 0.04;
+
+const ZOOM_MIN = 0.45;
+const ZOOM_MAX = 2.75;
+const ZOOM_DEFAULT = 1;
+const ZOOM_WHEEL_SENS = 0.00115;
+
+/** Soft spring toward layout targets — slight overshoot / settle like Neo4j graph drag. */
+const SPRING_STRENGTH = 0.26;
+const SPRING_DAMP = 0.76;
+const SPRING_EPS_POS = 0.02;
+const SPRING_EPS_VEL = 0.016;
 
 function gradientForNode(node: ExplorerGraphNode): { from: string; to: string } {
   const g = node.visualGroup ?? "generic";
@@ -123,6 +134,44 @@ function computeEdges(
     .filter((e): e is NonNullable<typeof e> => e != null);
 }
 
+function springIntegrateDisplay(
+  layout: Record<string, { x: number; y: number }>,
+  prevDisplay: Record<string, { x: number; y: number }>,
+  dragId: string | null,
+  vel: Record<string, { vx: number; vy: number }>
+): { next: Record<string, { x: number; y: number }>; animating: boolean } {
+  const next: Record<string, { x: number; y: number }> = {};
+  let animating = false;
+
+  for (const id of Object.keys(layout)) {
+    const t = layout[id];
+    const cur = prevDisplay[id] ?? t;
+
+    if (id === dragId) {
+      next[id] = { x: t.x, y: t.y };
+      vel[id] = { vx: 0, vy: 0 };
+      if (Math.abs(cur.x - t.x) + Math.abs(cur.y - t.y) > 0.001) animating = true;
+      continue;
+    }
+
+    let { vx, vy } = vel[id] ?? { vx: 0, vy: 0 };
+    const ax = (t.x - cur.x) * SPRING_STRENGTH;
+    const ay = (t.y - cur.y) * SPRING_STRENGTH;
+    vx = (vx + ax) * SPRING_DAMP;
+    vy = (vy + ay) * SPRING_DAMP;
+    const nx = cur.x + vx;
+    const ny = cur.y + vy;
+    next[id] = { x: nx, y: ny };
+    vel[id] = { vx, vy };
+
+    if (Math.hypot(t.x - nx, t.y - ny) > SPRING_EPS_POS || Math.hypot(vx, vy) > SPRING_EPS_VEL) {
+      animating = true;
+    }
+  }
+
+  return { next, animating };
+}
+
 function NodeInfoPeek({
   title,
   body,
@@ -143,7 +192,7 @@ function NodeInfoPeek({
       onPointerEnter={() => setOpen(true)}
       onPointerLeave={() => setOpen(false)}
     >
-      <span className="inline-flex h-4 w-4 shrink-0 cursor-default items-center justify-center rounded-full border border-white/60 bg-black/30 text-[9px] font-bold text-white backdrop-blur-sm">
+      <span className="inline-flex h-[1.125rem] w-[1.125rem] shrink-0 cursor-default items-center justify-center rounded-full border border-white/60 bg-black/30 text-[10px] font-bold text-white backdrop-blur-sm">
         i
       </span>
       {open ? (
@@ -179,13 +228,17 @@ function GraphNodeVisual({
         "relative flex flex-col items-center justify-center rounded-full bg-gradient-to-br p-2 text-center font-semibold text-white shadow-lg",
         pal.from,
         pal.to,
-        isCenter ? "h-[4.5rem] w-[4.5rem] sm:h-[5.25rem] sm:w-[5.25rem] text-[11px] ring-2 ring-white/35" : "h-[3.25rem] w-[3.25rem] sm:h-14 sm:w-14 text-[10px] ring-1 ring-white/25",
+        isCenter
+          ? "h-[5.5rem] w-[5.5rem] sm:h-[6.25rem] sm:w-[6.25rem] text-xs sm:text-[13px] ring-2 ring-white/35"
+          : "h-16 w-16 sm:h-[4.75rem] sm:w-[4.75rem] text-[11px] sm:text-xs ring-1 ring-white/25",
         node.disabled ? "cursor-not-allowed opacity-40" : "",
       ].join(" ")}
     >
-      <span className="line-clamp-2 max-w-[5.5rem] leading-tight">{node.label}</span>
+      <span className="line-clamp-2 max-w-[6.75rem] leading-tight">{node.label}</span>
       {node.sub ? (
-        <span className="mt-0.5 line-clamp-1 max-w-[5rem] text-[8px] font-normal text-white/90">{node.sub}</span>
+        <span className="mt-0.5 line-clamp-1 max-w-[6rem] text-[10px] font-normal text-white/90 sm:text-[11px]">
+          {node.sub}
+        </span>
       ) : null}
       {hasInfo ? <NodeInfoPeek title={node.infoTitle} body={node.infoBody} entryId={node.entryId} /> : null}
     </div>
@@ -195,9 +248,12 @@ function GraphNodeVisual({
 export function LinkedGraphView({
   model,
   onActivateNode,
+  fillHeight,
 }: {
   model: ExplorerGraphModel;
   onActivateNode: (n: ExplorerGraphNode) => void;
+  /** Use full height of a flex parent for a taller canvas. */
+  fillHeight?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const defaultPositions = useMemo(() => computeDefaultPositions(model), [model]);
@@ -214,20 +270,98 @@ export function LinkedGraphView({
   }, [model.center?.id, model.satellites]);
 
   const [customPos, setCustomPos] = useState<Record<string, { x: number; y: number }> | null>(null);
+  const [zoom, setZoom] = useState(ZOOM_DEFAULT);
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
+
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const panRef = useRef(pan);
+  panRef.current = pan;
 
   useEffect(() => {
     setCustomPos(null);
+    setZoom(ZOOM_DEFAULT);
+    setPan({ x: 0, y: 0 });
   }, [topologyKey]);
 
-  const positions = customPos ?? defaultPositions;
+  const layoutPositions = customPos ?? defaultPositions;
+
+  const layoutTargetRef = useRef(layoutPositions);
+  layoutTargetRef.current = layoutPositions;
+
+  const displayWorkRef = useRef<Record<string, { x: number; y: number }>>(defaultPositions);
+  const velocityRef = useRef<Record<string, { vx: number; vy: number }>>({});
+  const draggingIdRef = useRef<string | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const springLoopRef = useRef<() => void>(() => {});
+
+  const [displayPositions, setDisplayPositions] = useState(defaultPositions);
+
+  useEffect(() => {
+    const d = { ...defaultPositions };
+    displayWorkRef.current = d;
+    setDisplayPositions(d);
+    velocityRef.current = {};
+    if (rafRef.current != null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+  }, [topologyKey, defaultPositions]);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      const factor = Math.exp(-e.deltaY * ZOOM_WHEEL_SENS);
+      setZoom((prevZ) => {
+        const newZ = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, prevZ * factor));
+        setPan((prevP) => ({
+          x: mx - (newZ / prevZ) * (mx - prevP.x),
+          y: my - (newZ / prevZ) * (my - prevP.y),
+        }));
+        return newZ;
+      });
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+    };
+  }, []);
+
+  springLoopRef.current = () => {
+    const layout = layoutTargetRef.current;
+    const dragId = draggingIdRef.current;
+    const prev = displayWorkRef.current;
+    const { next, animating } = springIntegrateDisplay(layout, prev, dragId, velocityRef.current);
+    displayWorkRef.current = next;
+    setDisplayPositions(next);
+    rafRef.current = null;
+    if (animating) {
+      rafRef.current = requestAnimationFrame(() => springLoopRef.current());
+    }
+  };
+
+  useLayoutEffect(() => {
+    if (rafRef.current == null) {
+      rafRef.current = requestAnimationFrame(() => springLoopRef.current());
+    }
+  }, [layoutPositions]);
 
   const centerId = model.center?.id ?? "";
   const satIds = useMemo(() => model.satellites.map((s) => s.id), [model.satellites]);
 
   const edges = useMemo(() => {
     if (!model.center || !model.satellites.length) return [];
-    return computeEdges(positions, model.center, model.satellites);
-  }, [model.center, model.satellites, positions]);
+    return computeEdges(displayPositions, model.center, model.satellites);
+  }, [model.center, model.satellites, displayPositions]);
 
   const dragRef = useRef<{
     id: string;
@@ -239,12 +373,11 @@ export function LinkedGraphView({
     startClientY: number;
   } | null>(null);
 
-  const nodeById = useMemo(() => {
-    const m = new Map<string, ExplorerGraphNode>();
-    if (model.center) m.set(model.center.id, model.center);
-    for (const s of model.satellites) m.set(s.id, s);
-    return m;
-  }, [model.center, model.satellites]);
+  const canvasPanRef = useRef<{
+    pointerId: number;
+    lastClientX: number;
+    lastClientY: number;
+  } | null>(null);
 
   const onNodePointerDown = useCallback(
     (e: React.PointerEvent, node: ExplorerGraphNode) => {
@@ -262,6 +395,10 @@ export function LinkedGraphView({
         startClientY: e.clientY,
         moved: false,
       };
+      draggingIdRef.current = node.id;
+      if (rafRef.current == null) {
+        rafRef.current = requestAnimationFrame(() => springLoopRef.current());
+      }
     },
     []
   );
@@ -273,8 +410,9 @@ export function LinkedGraphView({
       const rect = containerRef.current?.getBoundingClientRect();
       if (!rect?.width || !rect.height) return;
 
-      const dxPct = ((e.clientX - d.lastClientX) / rect.width) * 100;
-      const dyPct = ((e.clientY - d.lastClientY) / rect.height) * 100;
+      const z = Math.max(zoomRef.current, 0.01);
+      const dxPct = ((e.clientX - d.lastClientX) / rect.width / z) * 100;
+      const dyPct = ((e.clientY - d.lastClientY) / rect.height / z) * 100;
       d.lastClientX = e.clientX;
       d.lastClientY = e.clientY;
 
@@ -301,6 +439,10 @@ export function LinkedGraphView({
         /* already released */
       }
       dragRef.current = null;
+      draggingIdRef.current = null;
+      if (rafRef.current == null) {
+        rafRef.current = requestAnimationFrame(() => springLoopRef.current());
+      }
       if (!d.moved && !node.disabled) {
         onActivateNode(node);
       }
@@ -319,88 +461,205 @@ export function LinkedGraphView({
     [onActivateNode]
   );
 
+  const zoomTowardPoint = useCallback((mx: number, my: number, nextZFactor: number) => {
+    setZoom((prevZ) => {
+      const newZ =
+        nextZFactor >= 1
+          ? Math.min(ZOOM_MAX, prevZ * nextZFactor)
+          : Math.max(ZOOM_MIN, prevZ * nextZFactor);
+      setPan((prevP) => ({
+        x: mx - (newZ / prevZ) * (mx - prevP.x),
+        y: my - (newZ / prevZ) * (my - prevP.y),
+      }));
+      return newZ;
+    });
+  }, []);
+
+  const zoomOut = useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    zoomTowardPoint(r.width / 2, r.height / 2, 1 / 1.18);
+  }, [zoomTowardPoint]);
+
+  const zoomIn = useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    zoomTowardPoint(r.width / 2, r.height / 2, 1.18);
+  }, [zoomTowardPoint]);
+
+  const zoomReset = useCallback(() => {
+    setZoom(ZOOM_DEFAULT);
+    setPan({ x: 0, y: 0 });
+  }, []);
+
+  const onCanvasPointerDown = useCallback((e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    canvasPanRef.current = {
+      pointerId: e.pointerId,
+      lastClientX: e.clientX,
+      lastClientY: e.clientY,
+    };
+  }, []);
+
+  const onCanvasPointerMove = useCallback((e: React.PointerEvent) => {
+    const p = canvasPanRef.current;
+    if (!p || e.pointerId !== p.pointerId) return;
+    const dx = e.clientX - p.lastClientX;
+    const dy = e.clientY - p.lastClientY;
+    p.lastClientX = e.clientX;
+    p.lastClientY = e.clientY;
+    setPan((prev) => ({ x: prev.x + dx, y: prev.y + dy }));
+  }, []);
+
+  const onCanvasPointerUp = useCallback((e: React.PointerEvent) => {
+    const p = canvasPanRef.current;
+    if (!p || e.pointerId !== p.pointerId) return;
+    try {
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {
+      /* already released */
+    }
+    canvasPanRef.current = null;
+  }, []);
+
   return (
     <div
       ref={containerRef}
-      className="relative mx-auto w-full min-h-[min(62vh,520px)] touch-none select-none"
+      className={[
+        "relative mx-auto w-full touch-none select-none overflow-hidden",
+        fillHeight ? "h-full min-h-0 flex-1" : "min-h-[min(72vh,640px)]",
+      ].join(" ")}
     >
-      <svg
-        className="pointer-events-none absolute inset-0 h-full w-full"
-        viewBox="0 0 100 100"
-        preserveAspectRatio="none"
-        aria-hidden
+      <div
+        className="absolute inset-0 will-change-transform"
+        style={{
+          transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+          transformOrigin: "0 0",
+        }}
       >
-        {edges.map((edge, i) => (
-          <line
-            key={i}
-            x1={edge.x1}
-            y1={edge.y1}
-            x2={edge.x2}
-            y2={edge.y2}
-            stroke="currentColor"
-            strokeWidth={0.35}
-            className="text-zinc-400/55 dark:text-zinc-500/50"
-          />
-        ))}
-      </svg>
-
-      {model.center ? (
         <div
-          className={[
-            "absolute z-10 -translate-x-1/2 -translate-y-1/2",
-            model.center.disabled ? "" : "cursor-grab active:cursor-grabbing",
-          ].join(" ")}
-          style={{ left: `${positions[model.center.id]?.x ?? 50}%`, top: `${positions[model.center.id]?.y ?? 48}%` }}
-          onPointerDown={(e) => onNodePointerDown(e, model.center!)}
-          onPointerMove={onNodePointerMove}
-          onPointerUp={(e) => finishPointer(e, model.center!)}
-          onPointerCancel={(e) => finishPointer(e, model.center!)}
+          className="absolute inset-0 z-[1] cursor-grab touch-none active:cursor-grabbing"
+          aria-hidden
+          onPointerDown={onCanvasPointerDown}
+          onPointerMove={onCanvasPointerMove}
+          onPointerUp={onCanvasPointerUp}
+          onPointerCancel={onCanvasPointerUp}
+        />
+        <svg
+          className="pointer-events-none absolute inset-0 z-[2] h-full w-full"
+          viewBox="0 0 100 100"
+          preserveAspectRatio="none"
+          aria-hidden
         >
-          <div
-            role="button"
-            tabIndex={model.center.disabled ? -1 : 0}
-            onKeyDown={(e) => onNodeKeyDown(e, model.center!)}
-            className="outline-none focus-visible:ring-2 focus-visible:ring-amber-400/80 focus-visible:ring-offset-2 focus-visible:ring-offset-transparent rounded-full"
-          >
-            <GraphNodeVisual node={model.center} isCenter />
-          </div>
-        </div>
-      ) : null}
+          {edges.map((edge, i) => (
+            <line
+              key={i}
+              x1={edge.x1}
+              y1={edge.y1}
+              x2={edge.x2}
+              y2={edge.y2}
+              stroke="currentColor"
+              strokeWidth={0.35}
+              className="text-zinc-400/55 dark:text-zinc-500/50"
+            />
+          ))}
+        </svg>
 
-      {model.satellites.map((node) => {
-        const p = positions[node.id];
-        if (!p) return null;
-        return (
+        {model.center ? (
           <div
-            key={node.id}
             className={[
               "absolute z-10 -translate-x-1/2 -translate-y-1/2",
-              node.disabled ? "" : "cursor-grab active:cursor-grabbing",
+              model.center.disabled ? "" : "cursor-grab active:cursor-grabbing",
             ].join(" ")}
-            style={{ left: `${p.x}%`, top: `${p.y}%` }}
-            onPointerDown={(e) => onNodePointerDown(e, node)}
+            style={{
+              left: `${displayPositions[model.center.id]?.x ?? 50}%`,
+              top: `${displayPositions[model.center.id]?.y ?? 48}%`,
+            }}
+            onPointerDown={(e) => onNodePointerDown(e, model.center!)}
             onPointerMove={onNodePointerMove}
-            onPointerUp={(e) => finishPointer(e, node)}
-            onPointerCancel={(e) => finishPointer(e, node)}
+            onPointerUp={(e) => finishPointer(e, model.center!)}
+            onPointerCancel={(e) => finishPointer(e, model.center!)}
           >
             <div
               role="button"
-              tabIndex={node.disabled ? -1 : 0}
-              onKeyDown={(e) => onNodeKeyDown(e, node)}
+              tabIndex={model.center.disabled ? -1 : 0}
+              onKeyDown={(e) => onNodeKeyDown(e, model.center!)}
               className="outline-none focus-visible:ring-2 focus-visible:ring-amber-400/80 focus-visible:ring-offset-2 focus-visible:ring-offset-transparent rounded-full"
             >
-              <GraphNodeVisual node={node} isCenter={false} />
+              <GraphNodeVisual node={model.center} isCenter />
             </div>
           </div>
-        );
-      })}
+        ) : null}
 
-      <p className="pointer-events-none absolute bottom-2 left-0 right-0 px-3 text-center text-[10px] leading-snug text-zinc-500 dark:text-zinc-400">
-        {model.hint}
-        <span className="mt-0.5 block text-zinc-500/90 dark:text-zinc-500/80">
-          Drag nodes to rearrange (edges follow); click without dragging to navigate.
-        </span>
-      </p>
+        {model.satellites.map((node) => {
+          const p = displayPositions[node.id];
+          if (!p) return null;
+          return (
+            <div
+              key={node.id}
+              className={[
+                "absolute z-10 -translate-x-1/2 -translate-y-1/2",
+                node.disabled ? "" : "cursor-grab active:cursor-grabbing",
+              ].join(" ")}
+              style={{ left: `${p.x}%`, top: `${p.y}%` }}
+              onPointerDown={(e) => onNodePointerDown(e, node)}
+              onPointerMove={onNodePointerMove}
+              onPointerUp={(e) => finishPointer(e, node)}
+              onPointerCancel={(e) => finishPointer(e, node)}
+            >
+              <div
+                role="button"
+                tabIndex={node.disabled ? -1 : 0}
+                onKeyDown={(e) => onNodeKeyDown(e, node)}
+                className="outline-none focus-visible:ring-2 focus-visible:ring-amber-400/80 focus-visible:ring-offset-2 focus-visible:ring-offset-transparent rounded-full"
+              >
+                <GraphNodeVisual node={node} isCenter={false} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div
+        className="pointer-events-auto absolute right-2 top-2 z-30 flex items-center gap-0.5 rounded-lg border border-zinc-200/90 bg-white/95 px-1 py-0.5 shadow-sm backdrop-blur-sm dark:border-zinc-600/90 dark:bg-zinc-900/95"
+        onWheel={(e) => e.stopPropagation()}
+      >
+        <button
+          type="button"
+          aria-label="Zoom out"
+          className="flex h-7 w-7 items-center justify-center rounded-md text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:text-zinc-200 dark:hover:bg-zinc-800"
+          onClick={zoomOut}
+        >
+          −
+        </button>
+        <button
+          type="button"
+          aria-label={`Zoom ${Math.round(zoom * 100)} percent, reset to 100 percent`}
+          title="Reset zoom to 100%"
+          className="min-w-[2.75rem] px-1 text-center text-[10px] font-medium tabular-nums text-zinc-600 dark:text-zinc-300"
+          onClick={zoomReset}
+        >
+          {Math.round(zoom * 100)}%
+        </button>
+        <button
+          type="button"
+          aria-label="Zoom in"
+          className="flex h-7 w-7 items-center justify-center rounded-md text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:text-zinc-200 dark:hover:bg-zinc-800"
+          onClick={zoomIn}
+        >
+          +
+        </button>
+      </div>
+
+      {model.hint ? (
+        <p className="pointer-events-none absolute bottom-2 left-0 right-0 px-3 text-center text-[10px] leading-snug text-zinc-500 dark:text-zinc-400">
+          {model.hint}
+        </p>
+      ) : null}
     </div>
   );
 }

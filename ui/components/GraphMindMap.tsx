@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { KpiHelp } from "@/components/KpiHelp";
 import { LinkedGraphView } from "@/components/LinkedGraphView";
 import { StepRail } from "@/components/LinkedExplorerPanels";
 import { useLinkedExplorer } from "@/hooks/useLinkedExplorer";
@@ -11,9 +12,10 @@ import {
   buildLinkedExplorerGraph,
 } from "@/lib/linkedExplorer/buildLinkedExplorerGraph";
 
-/**
- * Linked Explorer as a node–edge graph: same APIs as Entity Timeline; long text only under the ⓘ peek (Insights-style).
- */
+const GRAPH_EXPLORER_HELP =
+  "Same Linked Explorer as Entity Timeline — nodes and edges. Hover the ⓘ on a node for full text and previews (like Insights KPI help).\n\nEdges meet nodes. For people, the first ring is lanes (Situations, Feelings, Notes, …) before individual instances.\n\nScroll to zoom toward the cursor. Drag empty space to pan. Drag nodes to rearrange; click without dragging to open a node.";
+
+/** Linked Explorer as a node–edge graph. */
 export function GraphMindMap({ initialRoots: _initialRoots }: { initialRoots: { ref: string; name: string; type: string }[] }) {
   const ex = useLinkedExplorer();
   const [personGraphBucket, setPersonGraphBucket] = useState<PersonGraphBucket | null>(null);
@@ -106,28 +108,25 @@ export function GraphMindMap({ initialRoots: _initialRoots }: { initialRoots: { 
   );
 
   return (
-    <div className="mt-3 space-y-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <div className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">Graph explorer</div>
-          <p className="mt-0.5 max-w-xl text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">
-            Edges meet nodes; for people, the first ring is <span className="font-medium text-zinc-600 dark:text-zinc-300">lanes</span>{" "}
-            (Situations, Feelings, …) before instances. Hover <span className="font-mono">i</span> for detail (like Insights KPI
-            help).
-          </p>
+    <div className="flex h-full min-h-0 flex-col gap-2">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+          <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Graph explorer</h2>
+          <KpiHelp description={GRAPH_EXPLORER_HELP} />
         </div>
         <button
           type="button"
           onClick={ex.restartWizard}
-          className="rounded-xl border border-zinc-200 bg-white/80 px-3 py-2 text-[11px] font-bold text-zinc-700 shadow-sm dark:border-zinc-700 dark:bg-zinc-900/80 dark:text-zinc-200"
+          className="shrink-0 rounded-xl border border-zinc-200 bg-white/80 px-3 py-2 text-[11px] font-bold text-zinc-700 shadow-sm dark:border-zinc-700 dark:bg-zinc-900/80 dark:text-zinc-200"
         >
           Start over
         </button>
       </div>
 
-      <div className="overflow-hidden rounded-2xl border border-zinc-200/80 bg-gradient-to-b from-zinc-50 to-sky-50/40 shadow-xl dark:border-zinc-800 dark:from-zinc-950 dark:to-slate-950/80">
-        <div className="border-b border-zinc-200/80 bg-white/60 px-3 py-2 dark:border-zinc-800 dark:bg-black/25">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-zinc-200/80 bg-gradient-to-b from-zinc-50 to-sky-50/40 shadow-xl dark:border-zinc-800 dark:from-zinc-950 dark:to-slate-950/80">
+        <div className="bg-white/60 px-3 py-1.5 dark:bg-black/25">
           <StepRail
+            compact
             step={ex.wizardStep}
             categoryLabel={ex.categoryLabel}
             entityLabel={ex.selectedDisplayName}
@@ -175,8 +174,8 @@ export function GraphMindMap({ initialRoots: _initialRoots }: { initialRoots: { 
           </div>
         ) : null}
 
-        <div className="p-2 sm:p-4">
-          <LinkedGraphView model={graphModel} onActivateNode={onActivateNode} />
+        <div className="flex min-h-0 flex-1 flex-col px-2 pb-2 pt-0.5 sm:px-3 sm:pb-3">
+          <LinkedGraphView fillHeight model={graphModel} onActivateNode={onActivateNode} />
         </div>
       </div>
     </div>

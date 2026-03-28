@@ -592,10 +592,13 @@ export function StepRail({
   step,
   categoryLabel,
   entityLabel,
+  compact = false,
 }: {
   step: WizardStep;
   categoryLabel: string;
   entityLabel: string;
+  /** Tighter layout, no bottom rule — e.g. Graph tab above the canvas. */
+  compact?: boolean;
 }) {
   const phases = [
     { key: "category", label: "Type", done: step !== "category" },
@@ -603,7 +606,12 @@ export function StepRail({
     { key: "explore", label: "View", done: step === "content" },
   ];
   return (
-    <div className="mb-4 flex flex-wrap items-center gap-2 border-b border-zinc-200 pb-3 text-[11px] dark:border-zinc-800">
+    <div
+      className={[
+        "flex flex-wrap items-center gap-2 text-[11px]",
+        compact ? "" : "mb-4 border-b border-zinc-200 pb-3 dark:border-zinc-800",
+      ].join(" ")}
+    >
       {phases.map((p, i) => (
         <div key={p.key} className="flex items-center gap-2">
           {i > 0 ? <span className="text-zinc-400">→</span> : null}
