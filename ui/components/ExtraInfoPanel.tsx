@@ -28,7 +28,8 @@ type WeatherOk = {
     wind_kmh: number | null;
     weather_code: number | null;
     label: string;
-    is_day?: boolean | null;
+    /** Open-Meteo may send 0 | 1 */
+    is_day?: boolean | number | null;
   };
   hourly_sample: {
     time: string;
@@ -55,6 +56,80 @@ type WeatherErr = {
 };
 
 type WeatherResponse = WeatherOk | WeatherErr;
+
+/** WMO codes from Open-Meteo — emoji for quick visual read (day vs night where it matters). */
+function weatherEmoji(code: number | null, isDay: boolean = true): string {
+  if (code === null) return "🌡️";
+  switch (code) {
+    case 0:
+      return isDay ? "☀️" : "🌙";
+    case 1:
+      return isDay ? "🌤️" : "🌙";
+    case 2:
+      return isDay ? "⛅" : "☁️";
+    case 3:
+      return "☁️";
+    case 45:
+    case 48:
+      return "🌫️";
+    case 51:
+    case 53:
+    case 55:
+      return "🌦️";
+    case 56:
+    case 57:
+      return "🌨️";
+    case 61:
+      return "🌧️";
+    case 63:
+      return "🌧️";
+    case 65:
+      return "🌧️";
+    case 66:
+    case 67:
+      return "🧊";
+    case 71:
+    case 73:
+    case 75:
+      return "❄️";
+    case 77:
+      return "❄️";
+    case 80:
+      return "🌦️";
+    case 81:
+      return "🌧️";
+    case 82:
+      return "⛈️";
+    case 85:
+    case 86:
+      return "🌨️";
+    case 95:
+    case 96:
+    case 99:
+      return "⛈️";
+    default:
+      return "🌡️";
+  }
+}
+
+function isDaytimeFromIso(iso: string): boolean {
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return true;
+    const h = d.getHours();
+    return h >= 7 && h < 19;
+  } catch {
+    return true;
+  }
+}
+
+function currentIsDay(c: WeatherOk["current"]): boolean {
+  const id = c.is_day;
+  if (id === true || id === 1) return true;
+  if (id === false || id === 0) return false;
+  if (c.time) return isDaytimeFromIso(c.time);
+  return true;
+}
 
 function formatLocalTime(iso: string | undefined) {
   if (!iso) return "—";
@@ -173,8 +248,8 @@ export function ExtraInfoPanel() {
       {!loading && !error && weather && weather.ok ? (
         <div className="space-y-4">
           <div className="rounded-2xl border border-sky-200/80 bg-gradient-to-br from-sky-50 to-white p-5 shadow-sm dark:border-sky-900/50 dark:from-sky-950/40 dark:to-zinc-950">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="min-w-0 flex-1">
                 <div className="text-xs font-medium uppercase tracking-wide text-sky-700/80 dark:text-sky-300/80">
                   Weather · now
                 </div>
@@ -186,17 +261,27 @@ export function ExtraInfoPanel() {
                   ) : null}
                 </div>
               </div>
-              <div className="text-right">
-                <div className="text-4xl font-bold tabular-nums text-sky-800 dark:text-sky-200">
-                  {weather.current.temperature_c != null ? `${weather.current.temperature_c}°` : "—"}
+              <div className="flex items-center gap-3 sm:gap-5">
+                <span
+                  className="select-none text-6xl leading-none drop-shadow-sm sm:text-7xl"
+                  title={weather.current.label}
+                  role="img"
+                  aria-label={weather.current.label}
+                >
+                  {weatherEmoji(weather.current.weather_code, currentIsDay(weather.current))}
+                </span>
+                <div className="text-right">
+                  <div className="text-4xl font-bold tabular-nums text-sky-800 dark:text-sky-200">
+                    {weather.current.temperature_c != null ? `${weather.current.temperature_c}°` : "—"}
+                  </div>
+                  <div className="text-sm text-zinc-600 dark:text-zinc-300">{weather.current.label}</div>
+                  <div className="mt-0.5 text-[11px] text-zinc-500">
+                    Feels {weather.current.apparent_c != null ? `${weather.current.apparent_c}°` : "—"} · Wind{" "}
+                    {weather.current.wind_kmh != null ? `${weather.current.wind_kmh} km/h` : "—"} · Humidity{" "}
+                    {weather.current.humidity_pct != null ? `${weather.current.humidity_pct}%` : "—"}
+                  </div>
+                  <div className="mt-1 text-[10px] text-zinc-400">{formatLocalTime(weather.current.time)}</div>
                 </div>
-                <div className="text-sm text-zinc-600 dark:text-zinc-300">{weather.current.label}</div>
-                <div className="mt-0.5 text-[11px] text-zinc-500">
-                  Feels {weather.current.apparent_c != null ? `${weather.current.apparent_c}°` : "—"} · Wind{" "}
-                  {weather.current.wind_kmh != null ? `${weather.current.wind_kmh} km/h` : "—"} · Humidity{" "}
-                  {weather.current.humidity_pct != null ? `${weather.current.humidity_pct}%` : "—"}
-                </div>
-                <div className="mt-1 text-[10px] text-zinc-400">{formatLocalTime(weather.current.time)}</div>
               </div>
             </div>
           </div>
@@ -208,9 +293,12 @@ export function ExtraInfoPanel() {
                 {weather.hourly_sample.map((h, i) => (
                   <div
                     key={`${h.time}-${i}`}
-                    className="min-w-[4.5rem] shrink-0 rounded-xl border border-zinc-200 bg-white px-2 py-2 text-center dark:border-zinc-700 dark:bg-zinc-900/60"
+                    className="min-w-[4.75rem] shrink-0 rounded-xl border border-zinc-200 bg-white px-2 py-2 text-center dark:border-zinc-700 dark:bg-zinc-900/60"
                   >
                     <div className="text-[10px] font-medium text-zinc-500">{formatHourLabel(h.time)}</div>
+                    <div className="mt-0.5 text-2xl leading-none" title={h.label} aria-hidden>
+                      {weatherEmoji(h.weather_code, isDaytimeFromIso(h.time))}
+                    </div>
                     <div className="mt-1 text-sm font-bold tabular-nums text-zinc-900 dark:text-zinc-100">
                       {h.temp_c != null ? `${h.temp_c}°` : "—"}
                     </div>
@@ -233,9 +321,14 @@ export function ExtraInfoPanel() {
                     key={d.date}
                     className="flex items-center justify-between gap-3 rounded-xl border border-zinc-200/90 bg-white px-3 py-2 dark:border-zinc-700 dark:bg-zinc-900/50"
                   >
-                    <div className="min-w-0">
-                      <div className="text-sm font-medium text-zinc-900 dark:text-zinc-100">{formatDayDate(d.date)}</div>
-                      <div className="truncate text-[11px] text-zinc-500">{d.label}</div>
+                    <div className="flex min-w-0 items-center gap-2.5">
+                      <span className="shrink-0 text-3xl leading-none" title={d.label} aria-hidden>
+                        {weatherEmoji(d.weather_code, true)}
+                      </span>
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium text-zinc-900 dark:text-zinc-100">{formatDayDate(d.date)}</div>
+                        <div className="truncate text-[11px] text-zinc-500">{d.label}</div>
+                      </div>
                     </div>
                     <div className="shrink-0 text-right text-sm tabular-nums">
                       <span className="font-semibold text-zinc-900 dark:text-zinc-100">
