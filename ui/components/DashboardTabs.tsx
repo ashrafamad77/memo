@@ -4,11 +4,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { apiGet } from "@/lib/api";
 import { InboxQueue } from "@/components/InboxQueue";
-import { GraphMindMap } from "@/components/GraphMindMap";
 import { EntityTimeline } from "@/components/EntityTimeline";
+import { ExtraInfoPanel } from "@/components/ExtraInfoPanel";
+import { GraphMindMap } from "@/components/GraphMindMap";
 import { KpiHelp } from "@/components/KpiHelp";
 
-const tabs = ["Inbox", "Timeline", "Entities", "Entity Timeline", "Graph", "Insights"] as const;
+const tabs = ["Inbox", "Timeline", "Extra info", "Entity Timeline", "Graph", "Insights"] as const;
 type Tab = (typeof tabs)[number];
 
 type Insights = {
@@ -302,11 +303,7 @@ export function DashboardTabs() {
   const [graphRoots, setGraphRoots] = useState<
     { type: string; name: string; ref: string; mentions?: number; last_seen?: string }[]
   >([]);
-  const [entities, setEntities] = useState<
-    { type: string; name: string; ref: string; mentions?: number; last_seen?: string }[]
-  >([]);
   const [status, setStatus] = useState<string>("");
-  const [entitiesOpenType, setEntitiesOpenType] = useState<string>("");
   const [insights, setInsights] = useState<Insights | null>(null);
   const [selectedImpactPerson, setSelectedImpactPerson] = useState<string | null>(null);
   const [impactDetail, setImpactDetail] = useState<PersonImpactDetail | null>(null);
@@ -400,10 +397,6 @@ export function DashboardTabs() {
         if (tab === "Timeline") {
           const out = await apiGet<{ items: any[] }>("/timeline?limit=30");
           if (!ignore) setTimeline(out.items || []);
-        }
-        if (tab === "Entities") {
-          const out = await apiGet<{ items: any[] }>("/entities?limit=80");
-          if (!ignore) setEntities(out.items || []);
         }
         if (tab === "Graph") {
           const out = await apiGet<{ items: any[] }>("/entities?limit=120");
@@ -499,77 +492,12 @@ export function DashboardTabs() {
             </div>
           </div>
         );
-      case "Entities":
-        {
-          const grouped = (entities || []).reduce<Record<string, typeof entities>>((acc, e) => {
-            const k = e.type || "Other";
-            if (!acc[k]) acc[k] = [];
-            acc[k].push(e);
-            return acc;
-          }, {});
-          const typeOrder = Object.keys(grouped).sort((a, b) => {
-            const priority = [
-              "Person",
-              "User",
-              "Event",
-              "EventType",
-              "Place",
-              "Concept",
-              "Organization",
-              "Day",
-              "Emotion",
-            ];
-            const ia = priority.indexOf(a);
-            const ib = priority.indexOf(b);
-            if (ia >= 0 && ib >= 0) return ia - ib;
-            if (ia >= 0) return -1;
-            if (ib >= 0) return 1;
-            return a.localeCompare(b);
-          });
-
+      case "Extra info":
         return (
           <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-5">
-            <div className="text-sm font-semibold">Entities</div>
-            <div className="mt-3 space-y-2">
-              {typeOrder.map((type) => {
-                const items = grouped[type] || [];
-                const isOpen = entitiesOpenType === type;
-                return (
-                  <div key={type} className="overflow-hidden rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/40">
-                    <button
-                      onClick={() => setEntitiesOpenType((prev) => (prev === type ? "" : type))}
-                      className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left hover:bg-zinc-100 dark:hover:bg-zinc-800/40"
-                    >
-                      <div className="text-sm font-semibold">{type}</div>
-                      <div className="text-[11px] text-zinc-500 dark:text-zinc-400">
-                        {items.length} item{items.length > 1 ? "s" : ""} {isOpen ? "▲" : "▼"}
-                      </div>
-                    </button>
-                    {isOpen ? (
-                      <div className="grid gap-2 border-t border-zinc-200 dark:border-zinc-800 p-3 sm:grid-cols-2 lg:grid-cols-3">
-                        {items.map((e) => (
-                          <div
-                            key={e.ref}
-                            className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950/70 p-2.5"
-                          >
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="text-sm font-semibold">{e.name}</div>
-                              <div className="text-[11px] text-zinc-500">{e.mentions ?? 0}</div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : null}
-                  </div>
-                );
-              })}
-              {!typeOrder.length ? (
-                <div className="text-sm text-zinc-500">No entities yet.</div>
-              ) : null}
-            </div>
+            <ExtraInfoPanel />
           </div>
         );
-        }
       case "Graph":
         return (
           <div className="flex h-[max(28rem,calc(100dvh-9rem))] min-h-0 flex-col rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-5">
@@ -776,7 +704,7 @@ export function DashboardTabs() {
       default:
         return null;
     }
-  }, [tab, graphRoots, entities, timeline, entitiesOpenType, insights]);
+  }, [tab, graphRoots, timeline, insights]);
 
   return (
     <div className="flex h-full flex-col">

@@ -265,6 +265,54 @@ def create_app() -> FastAPI:
     def entities(query: str = "", limit: int = 120, category: str = ""):
         return {"items": repo.entities(query=query, limit=limit, category=category)}
 
+    @app.get("/profile")
+    def get_profile():
+        """Onboarding / user context (Neo4j User node). Used by Extra info tab."""
+        user_name = (USER_NAME or "").strip() or "User"
+        row = repo.get_user_profile(user_name=user_name) or {}
+
+        def _s(key: str, default: str = "") -> str:
+            v = row.get(key)
+            if v is None:
+                return default
+            return str(v).strip()
+
+        return {
+            "name": _s("name") or user_name,
+            "current_city": _s("current_city"),
+            "home_country": _s("home_country"),
+            "nationality": _s("nationality"),
+            "timezone": _s("timezone"),
+            "work_context": _s("work_context"),
+        }
+
+    @app.get("/weather")
+    def get_weather():
+        """Current + short forecast for profile `current_city` via Open-Meteo (no API key)."""
+        user_name = (USER_NAME or "").strip() or "User"
+        prof = repo.get_user_profile(user_name=user_name) or {}
+        city = (prof.get("current_city") or "").strip()
+        if not city:
+            return {
+                "ok": False,
+                "code": "no_city",
+                "message": "Your profile has no current city yet. Complete onboarding in the chat when asked where you are based most of the time.",
+            }
+        try:
+            from .weather_open_meteo import geocode_and_forecast
+
+            data = geocode_and_forecast(
+                city=city,
+                country_hint=(prof.get("home_country") or "").strip() or None,
+                timezone_hint=(prof.get("timezone") or "").strip() or None,
+            )
+            return {"ok": True, **data}
+        except RuntimeError as e:
+            return {"ok": False, "code": "weather_error", "message": str(e)}
+        except Exception as e:
+            _log.exception("weather upstream failure")
+            raise HTTPException(status_code=502, detail="Weather service error") from e
+
     @app.get("/entity/nav-options")
     def entity_nav_options(ref: str, anchor_person: str = ""):
         if not (ref or "").strip():
