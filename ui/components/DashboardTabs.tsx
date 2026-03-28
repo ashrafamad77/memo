@@ -6,10 +6,11 @@ import { apiGet } from "@/lib/api";
 import { InboxQueue } from "@/components/InboxQueue";
 import { EntityTimeline } from "@/components/EntityTimeline";
 import { ExtraInfoPanel } from "@/components/ExtraInfoPanel";
+import { SuggestionsPanel } from "@/components/SuggestionsPanel";
 import { GraphMindMap } from "@/components/GraphMindMap";
 import { KpiHelp } from "@/components/KpiHelp";
 
-const tabs = ["Inbox", "Timeline", "Extra info", "Entity Timeline", "Graph", "Insights"] as const;
+const tabs = ["Inbox", "Timeline", "Extra info", "Suggestions", "Entity Timeline", "Graph", "Insights"] as const;
 type Tab = (typeof tabs)[number];
 
 type Insights = {
@@ -496,6 +497,12 @@ export function DashboardTabs() {
         return (
           <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-5">
             <ExtraInfoPanel />
+          </div>
+        );
+      case "Suggestions":
+        return (
+          <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-5">
+            <SuggestionsPanel />
           </div>
         );
       case "Graph":

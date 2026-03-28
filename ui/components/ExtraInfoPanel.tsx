@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { apiGet } from "@/lib/api";
 
@@ -56,24 +56,6 @@ type WeatherErr = {
 };
 
 type WeatherResponse = WeatherOk | WeatherErr;
-
-type ProposalPersonRef = { name: string; tier: string };
-
-type ProposalV1 = {
-  id: string;
-  kind: string;
-  title: string;
-  body: string;
-  anchor_date: string;
-  priority?: number;
-  people: ProposalPersonRef[];
-};
-
-type ProposalsResponse = {
-  generated_at: string;
-  proposals: ProposalV1[];
-  meta: Record<string, unknown>;
-};
 
 /** WMO codes from Open-Meteo — emoji for quick visual read (day vs night where it matters). */
 function weatherEmoji(code: number | null, isDay: boolean = true): string {
@@ -187,17 +169,8 @@ function formatDayDate(iso: string) {
 export function ExtraInfoPanel() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [weather, setWeather] = useState<WeatherResponse | null>(null);
-  const [proposalData, setProposalData] = useState<ProposalsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-
-  const proposalByDate = useMemo(() => {
-    const m = new Map<string, ProposalV1>();
-    for (const p of proposalData?.proposals ?? []) {
-      if (p.anchor_date) m.set(p.anchor_date, p);
-    }
-    return m;
-  }, [proposalData]);
 
   useEffect(() => {
     let ignore = false;
@@ -211,12 +184,6 @@ export function ExtraInfoPanel() {
         const w = await apiGet<WeatherResponse>("/weather");
         if (ignore) return;
         setWeather(w);
-        try {
-          const pr = await apiGet<ProposalsResponse>("/proposals?days_ahead=10");
-          if (!ignore) setProposalData(pr);
-        } catch {
-          if (!ignore) setProposalData(null);
-        }
       } catch (e: unknown) {
         if (!ignore) setError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -234,8 +201,7 @@ export function ExtraInfoPanel() {
       <div>
         <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Extra info</h2>
         <p className="mt-1 max-w-2xl text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">
-          Profile and local weather, plus light suggestions when the forecast lines up with people marked supportive or
-          emerging-support in your recent insights.
+          Profile and local weather. AI suggestions live in the Suggestions tab.
         </p>
       </div>
 
@@ -345,50 +311,11 @@ export function ExtraInfoPanel() {
             </div>
           ) : null}
 
-          {proposalData && proposalData.proposals.length > 0 ? (
-            <div>
-              <div className="mb-2 text-xs font-semibold text-zinc-600 dark:text-zinc-300">Suggestions</div>
-              <div className="space-y-2">
-                {proposalData.proposals.map((prop) => (
-                  <div
-                    key={prop.id}
-                    className="rounded-xl border border-violet-200/80 bg-violet-50/60 px-3 py-2.5 dark:border-violet-900/50 dark:bg-violet-950/25"
-                  >
-                    <div className="flex items-start gap-2">
-                      <span className="shrink-0 text-base leading-none" title={prop.title} role="img" aria-hidden>
-                        ✨
-                      </span>
-                      <div className="min-w-0">
-                        <div className="text-xs font-semibold text-violet-900 dark:text-violet-200">{prop.title}</div>
-                        <div className="mt-0.5 text-[13px] leading-snug text-zinc-700 dark:text-zinc-300">{prop.body}</div>
-                        <div className="mt-1.5 flex flex-wrap gap-1">
-                          {prop.people.map((person) => (
-                            <span
-                              key={`${prop.id}-${person.name}`}
-                              className="rounded-md bg-white/80 px-1.5 py-0.5 text-[10px] font-medium text-zinc-700 ring-1 ring-violet-200/60 dark:bg-zinc-900/60 dark:text-zinc-200 dark:ring-violet-800/50"
-                            >
-                              {person.name}
-                              <span className="ml-1 font-normal text-zinc-500 dark:text-zinc-400">
-                                {person.tier === "supportive" ? "supportive" : "emerging"}
-                              </span>
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
           {weather.daily.length ? (
             <div>
               <div className="mb-2 text-xs font-semibold text-zinc-600 dark:text-zinc-300">7-day outlook</div>
               <div className="space-y-1.5">
-                {weather.daily.map((d) => {
-                  const dayProposal = proposalByDate.get(d.date);
-                  return (
+                {weather.daily.map((d) => (
                   <div
                     key={d.date}
                     className="flex items-center justify-between gap-3 rounded-xl border border-zinc-200/90 bg-white px-3 py-2 dark:border-zinc-700 dark:bg-zinc-900/50"
@@ -398,19 +325,7 @@ export function ExtraInfoPanel() {
                         {weatherEmoji(d.weather_code, true)}
                       </span>
                       <div className="min-w-0">
-                        <div className="flex items-center gap-1.5">
-                          <div className="text-sm font-medium text-zinc-900 dark:text-zinc-100">{formatDayDate(d.date)}</div>
-                          {dayProposal ? (
-                            <span
-                              className="shrink-0 text-sm leading-none"
-                              title={dayProposal.title}
-                              role="img"
-                              aria-label={`Suggestion: ${dayProposal.title}`}
-                            >
-                              ✨
-                            </span>
-                          ) : null}
-                        </div>
+                        <div className="text-sm font-medium text-zinc-900 dark:text-zinc-100">{formatDayDate(d.date)}</div>
                         <div className="truncate text-[11px] text-zinc-500">{d.label}</div>
                       </div>
                     </div>
@@ -425,8 +340,7 @@ export function ExtraInfoPanel() {
                       ) : null}
                     </div>
                   </div>
-                  );
-                })}
+                ))}
               </div>
             </div>
           ) : null}
