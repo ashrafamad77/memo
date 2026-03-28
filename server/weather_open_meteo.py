@@ -174,7 +174,11 @@ def geocode_and_forecast(
                 "temp_c": round(float(t2[i]), 1) if i < len(t2) and t2[i] is not None else None,
                 "weather_code": int(wc[i]) if i < len(wc) and wc[i] is not None else None,
                 "label": weather_code_label(int(wc[i]) if i < len(wc) and wc[i] is not None else None),
-                "precip_prob": int(pr[i]) if i < len(pr) and pr[i] is not None else None,
+                "precip_prob": (
+                    max(0, min(100, int(round(float(pr[i])))))
+                    if i < len(pr) and pr[i] is not None
+                    else None
+                ),
             }
         )
 
@@ -193,7 +197,11 @@ def geocode_and_forecast(
                 "min_c": round(float(d_min[i]), 1) if i < len(d_min) and d_min[i] is not None else None,
                 "weather_code": int(d_code[i]) if i < len(d_code) and d_code[i] is not None else None,
                 "label": weather_code_label(int(d_code[i]) if i < len(d_code) and d_code[i] is not None else None),
-                "precip_prob_max": int(d_pr[i]) if i < len(d_pr) and d_pr[i] is not None else None,
+                "precip_prob_max": (
+                    max(0, min(100, int(round(float(d_pr[i])))))
+                    if i < len(d_pr) and d_pr[i] is not None
+                    else None
+                ),
             }
         )
 

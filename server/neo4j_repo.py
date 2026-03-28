@@ -112,6 +112,181 @@ class Neo4jRepo:
             ).single()
             return dict(row) if row else {}
 
+    def proposal_persons_at_place_like(
+        self, user_name: str, city_substring: str, days: int = 365, limit: int = 80
+    ) -> List[str]:
+        """
+        Names of people (non-User) who P14-carried-out activities at E53_Place whose name
+        contains city_substring — used to narrow “see someone” proposals to likely-local context.
+        """
+        _ = user_name  # reserved for future: co-with-user constraints
+        cs = (city_substring or "").strip()
+        if len(cs) < 2:
+            return []
+        days = max(7, min(int(days), 730))
+        limit = max(5, min(int(limit), 200))
+        since_expr = f"datetime() - duration('P{days}D')"
+        q = f"""
+        MATCH (j:E73_Information_Object)-[:P67_refers_to]->(a:E13_Attribute_Assignment)-[:P15_was_influenced_by]->(ev:E7_Activity)
+        WHERE coalesce(j.entry_kind,'') = 'journal_entry'
+          AND j.input_time >= {since_expr}
+        MATCH (ev)-[:P7_took_place_at]->(pl:E53_Place)
+        WHERE toLower(coalesce(pl.name,'')) CONTAINS toLower($city)
+        MATCH (ev)-[:P14_carried_out_by]->(p:E21_Person)
+        WHERE NOT (p)-[:P2_has_type]->(:E55_Type {{name:'User'}})
+        RETURN DISTINCT p.name as person
+        LIMIT $limit
+        """
+        with self._driver.session() as s:
+            rows = [dict(r) for r in s.run(q, city=cs, limit=limit)]
+        return [str(r["person"]).strip() for r in rows if r.get("person")]
+
+    def semantic_proposal_fragments(
+        self,
+        *,
+        city_substring: str = "",
+        place_hints: Optional[List[str]] = None,
+        days: int = 400,
+        max_activities: int = 55,
+        max_feelings: int = 45,
+        entry_cap: int = 100,
+    ) -> Dict[str, Any]:
+        """
+        Context-triggered history for the semantic proposer: E7 activities and E13 feelings
+        with E55_Type meaning (P2 on E7, P141/P2 on E13). Rows match profile city substring,
+        common place hints (bureau, office, …), or have no place / no linked activity on the
+        feeling path — so chains like office → hunger → shop remain retrievable.
+        """
+        days = max(30, min(int(days), 730))
+        max_activities = max(5, min(int(max_activities), 120))
+        max_feelings = max(5, min(int(max_feelings), 120))
+        entry_cap = max(20, min(int(entry_cap), 200))
+        cs = (city_substring or "").strip()
+        hints = [str(h).strip() for h in (place_hints or []) if str(h).strip()]
+        no_city_filter = len(cs) < 2 and len(hints) == 0
+        since_expr = f"datetime() - duration('P{days}D')"
+
+        q_activities = f"""
+        MATCH (j:E73_Information_Object)
+        WHERE coalesce(j.entry_kind,'') = 'journal_entry'
+          AND j.input_time >= {since_expr}
+        WITH j ORDER BY j.input_time DESC LIMIT $entry_cap
+        MATCH (j)-[:P67_refers_to]->(ev:E7_Activity)
+        OPTIONAL MATCH (ev)-[:P7_took_place_at]->(pl:E53_Place)
+        OPTIONAL MATCH (ev)-[:P2_has_type]->(t:E55_Type)
+        OPTIONAL MATCH (ev)-[:P4_has_time_span]->(span:E52_Time_Span)
+        OPTIONAL MATCH (ev)-[:P14_carried_out_by]->(p:E21_Person)
+        WITH j, ev, pl, span, t, p,
+             ($no_city_filter OR pl IS NULL OR
+              toLower(coalesce(pl.name,'')) CONTAINS toLower($city) OR
+              (size($hints) > 0 AND ANY(h IN $hints WHERE toLower(coalesce(pl.name,'')) CONTAINS toLower(h)))) AS place_ok
+        WHERE place_ok
+        WITH j, ev, pl, span, collect(DISTINCT t.name) AS act_type_names,
+             collect(DISTINCT p) AS actors_raw
+        RETURN
+          j.id AS entry_id,
+          toString(j.input_time) AS entry_time,
+          ev.key AS activity_key,
+          coalesce(ev.id, '') AS activity_node_id,
+          coalesce(ev.name, '') AS activity_name,
+          [x IN act_type_names WHERE x IS NOT NULL AND toString(x) <> ''] AS activity_meaning_types,
+          pl.name AS place_name,
+          coalesce(pl.id, '') AS place_node_id,
+          span.date AS calendar_day,
+          actors_raw AS actors_raw
+        ORDER BY entry_time DESC
+        LIMIT $lim_act
+        """
+
+        q_feelings = f"""
+        MATCH (j:E73_Information_Object)
+        WHERE coalesce(j.entry_kind,'') = 'journal_entry'
+          AND j.input_time >= {since_expr}
+        WITH j ORDER BY j.input_time DESC LIMIT $entry_cap
+        MATCH (j)-[:P67_refers_to]->(a:E13_Attribute_Assignment)
+        OPTIONAL MATCH (a)-[:P141_assigned]->(tg1:E55_Type)
+        OPTIONAL MATCH (a)-[:P2_has_type]->(tg2:E55_Type)
+        OPTIONAL MATCH (a)-[:P15_was_influenced_by]->(ev:E7_Activity)
+        OPTIONAL MATCH (ev)-[:P7_took_place_at]->(pl:E53_Place)
+        WITH j, a, ev, pl, tg1, tg2,
+             ($no_city_filter OR pl IS NULL OR ev IS NULL OR
+              toLower(coalesce(pl.name,'')) CONTAINS toLower($city) OR
+              (size($hints) > 0 AND ANY(h IN $hints WHERE toLower(coalesce(pl.name,'')) CONTAINS toLower(h)))) AS place_ok
+        WHERE place_ok
+          AND coalesce(tg1.name, tg2.name, '') <> ''
+          AND coalesce(tg1.name, tg2.name, '') <> 'User'
+        RETURN
+          j.id AS entry_id,
+          toString(j.input_time) AS entry_time,
+          coalesce(a.key, a.name, '') AS assignment_ref,
+          coalesce(tg1.name, '') AS type_via_p141,
+          coalesce(tg2.name, '') AS type_via_p2,
+          coalesce(tg1.name, tg2.name, '') AS feeling_meaning,
+          ev.key AS influenced_by_activity_key,
+          coalesce(ev.name, '') AS influenced_by_activity_name,
+          pl.name AS place_name,
+          coalesce(pl.id, '') AS place_node_id
+        ORDER BY entry_time DESC
+        LIMIT $lim_feel
+        """
+
+        params = {
+            "city": cs,
+            "hints": hints,
+            "no_city_filter": no_city_filter,
+            "entry_cap": entry_cap,
+            "lim_act": max_activities,
+            "lim_feel": max_feelings,
+        }
+        def _person_nodes(raw: Any) -> List[Dict[str, str]]:
+            if not raw:
+                return []
+            seen: set = set()
+            acc: List[Dict[str, str]] = []
+            for x in raw:
+                if x is None:
+                    continue
+                try:
+                    props = dict(x)
+                except (TypeError, ValueError):
+                    continue
+                nm = str(props.get("name") or "").strip()
+                if not nm:
+                    continue
+                pid = str(props.get("id") or "").strip()
+                sk = (pid, nm.casefold())
+                if sk in seen:
+                    continue
+                seen.add(sk)
+                acc.append({"id": pid, "name": nm})
+            return acc
+
+        activities: List[Dict[str, Any]] = []
+        feelings: List[Dict[str, Any]] = []
+        with self._driver.session() as s:
+            for r in s.run(q_activities, **params):
+                d = dict(r)
+                d["actors"] = _person_nodes(d.pop("actors_raw", []))
+                cd = d.get("calendar_day")
+                if cd is not None:
+                    d["calendar_day"] = str(cd)
+                activities.append(d)
+            for r in s.run(q_feelings, **params):
+                feelings.append(dict(r))
+
+        return {
+            "activities": activities,
+            "feelings": feelings,
+            "meta": {
+                "days": days,
+                "city_filter": cs,
+                "place_hints": hints,
+                "no_city_filter": no_city_filter,
+                "activity_count": len(activities),
+                "feeling_count": len(feelings),
+            },
+        }
+
     def timeline(self, limit: int = 50) -> List[Dict[str, Any]]:
         q = """
         MATCH (e:E73_Information_Object)-[:P67_refers_to]->(ev:E7_Activity)
@@ -1618,6 +1793,7 @@ class Neo4jRepo:
                     MATCH (j:E73_Information_Object)-[:P67_refers_to]->(a:E13_Attribute_Assignment)-[:P15_was_influenced_by]->(ev:E7_Activity)-[:P14_carried_out_by]->(p:E21_Person)
                     WHERE coalesce(j.entry_kind,'') = 'journal_entry'
                       AND j.input_time >= {since_expr}
+                      AND NOT (p)-[:P2_has_type]->(:E55_Type {{name:'User'}})
                     OPTIONAL MATCH (a)-[:P141_assigned]->(t1:E55_Type)
                     OPTIONAL MATCH (a)-[:P2_has_type]->(t2:E55_Type)
                     RETURN p.name as person,

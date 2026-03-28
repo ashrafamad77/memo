@@ -353,6 +353,14 @@ def create_app() -> FastAPI:
     def inbox(status: str = "open", limit: int = 50):
         return {"items": repo.inbox(status=status, limit=limit)}
 
+    @app.get("/proposals")
+    def proposals(days_ahead: int = 10):
+        """Context-aware suggestions (v1: nice-weather × supportive / emerging people)."""
+        user_name = (USER_NAME or "").strip() or "User"
+        from .proposals_v1 import build_proposals_v1
+
+        return build_proposals_v1(repo, user_name=user_name, days_ahead=days_ahead)
+
     @app.get("/insights")
     def insights(days: int = 30):
         user_name = (USER_NAME or "").strip() or "User"
