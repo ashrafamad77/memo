@@ -270,6 +270,15 @@ def create_app() -> FastAPI:
         """Recent graph activity types for the Basic / daily briefing tab (no LLM)."""
         return repo.briefing_activity_focus(hours=hours)
 
+    @app.get("/briefing/world-context")
+    def briefing_world_context(limit: int = 5):
+        """Headlines: separate city and home-country feeds (Google News RSS), up to `limit` each."""
+        from .news_context import fetch_profile_news_split
+
+        user_name = (USER_NAME or "").strip() or "User"
+        prof = repo.get_user_profile(user_name=user_name) or {}
+        return fetch_profile_news_split(prof, per_section=limit)
+
     @app.get("/profile")
     def get_profile():
         """Onboarding / user context (Neo4j User node). Used by Basic tab and APIs."""

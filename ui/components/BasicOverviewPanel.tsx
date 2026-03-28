@@ -72,6 +72,31 @@ type ActivityFocus = {
   sample_labels: string[];
 };
 
+type WorldContextItem = {
+  title: string;
+  link: string;
+  published?: string | null;
+  source?: string | null;
+  image_url?: string | null;
+};
+
+type WorldNewsSection = {
+  label: string;
+  query_used: string;
+  items: WorldContextItem[];
+  skipped: boolean;
+  message?: string | null;
+};
+
+type WorldContextResponse = {
+  ok: boolean;
+  gl?: string;
+  city: WorldNewsSection;
+  home_country: WorldNewsSection;
+  message?: string | null;
+  attribution?: string;
+};
+
 function weatherEmoji(code: number | null, isDay: boolean): string {
   if (code === null) return "🌡️";
   switch (code) {
@@ -401,6 +426,43 @@ function ActivityFocusChip({ label }: { label: string }) {
   );
 }
 
+function formatNewsDate(s: string | null | undefined): string {
+  if (!s) return "";
+  try {
+    const d = new Date(s);
+    if (Number.isNaN(d.getTime())) return s;
+    return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  } catch {
+    return s;
+  }
+}
+
+function NewsThumbnail({ url }: { url?: string | null }) {
+  const [failed, setFailed] = useState(false);
+  if (!url || failed) {
+    return (
+      <div
+        className="flex h-[4.25rem] w-[6.75rem] shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-sky-100/90 to-zinc-200/80 text-lg dark:from-sky-900/45 dark:to-zinc-800/80"
+        aria-hidden
+      >
+        📰
+      </div>
+    );
+  }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element -- remote news URLs; no Image domain allowlist
+    <img
+      src={url}
+      alt=""
+      className="h-[4.25rem] w-[6.75rem] shrink-0 rounded-xl object-cover"
+      loading="lazy"
+      decoding="async"
+      referrerPolicy="no-referrer"
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
 function focusWindowLabel(hours: number): string {
   return hours === 24 ? "24 hours" : `${hours} hours`;
 }
@@ -419,6 +481,7 @@ export function BasicOverviewPanel({ onGoToSuggestions }: { onGoToSuggestions: (
   const [profile, setProfile] = useState<Profile | null>(null);
   const [weather, setWeather] = useState<WeatherResponse | null>(null);
   const [focus, setFocus] = useState<ActivityFocus | null>(null);
+  const [worldContext, setWorldContext] = useState<WorldContextResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [now, setNow] = useState(() => new Date());
@@ -446,7 +509,7 @@ export function BasicOverviewPanel({ onGoToSuggestions }: { onGoToSuggestions: (
       setLoading(true);
       setError("");
       try {
-        const [p, w, f] = await Promise.all([
+        const [p, w, f, news] = await Promise.all([
           apiGet<Profile>("/profile"),
           apiGet<WeatherResponse>("/weather"),
           apiGet<ActivityFocus>("/briefing/activity-focus?hours=24").catch(() => ({
@@ -454,11 +517,32 @@ export function BasicOverviewPanel({ onGoToSuggestions }: { onGoToSuggestions: (
             activity_count: 0,
             sample_labels: [] as string[],
           })),
+          apiGet<WorldContextResponse>("/briefing/world-context?limit=5").catch(() => ({
+            ok: false,
+            gl: "US",
+            city: {
+              label: "",
+              query_used: "",
+              items: [] as WorldContextItem[],
+              skipped: true,
+              message: null,
+            },
+            home_country: {
+              label: "",
+              query_used: "",
+              items: [] as WorldContextItem[],
+              skipped: true,
+              message: null,
+            },
+            message: "Could not load headlines.",
+            attribution: "",
+          })),
         ]);
         if (ignore) return;
         setProfile(p);
         setWeather(w);
         setFocus(f);
+        setWorldContext(news);
       } catch (e: unknown) {
         if (!ignore) setError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -634,11 +718,99 @@ export function BasicOverviewPanel({ onGoToSuggestions }: { onGoToSuggestions: (
             </p>
           </section>
 
-          <section className="rounded-2xl border border-dashed border-zinc-300 bg-zinc-50/50 p-5 dark:border-zinc-600 dark:bg-zinc-900/30">
-            <h2 className="text-xs font-bold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+          <section className="rounded-2xl border border-sky-200/60 bg-gradient-to-b from-sky-50/50 to-white p-5 dark:border-sky-900/40 dark:from-sky-950/25 dark:to-zinc-950/90">
+            <h2 className="text-xs font-bold uppercase tracking-wider text-sky-800/90 dark:text-sky-300/90">
               World context
             </h2>
-            <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">No news sources connected yet.</p>
+            <p className="mt-1 text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">
+              Two short lists: where you are now (city) and where you are from (home country). Up to five stories each,
+              with a thumbnail when the feed provides one.
+            </p>
+            {worldContext?.gl ? (
+              <p className="mt-2 text-[10px] text-zinc-500 dark:text-zinc-400">
+                Google News region hint: <span className="font-mono text-zinc-600 dark:text-zinc-300">{worldContext.gl}</span>
+              </p>
+            ) : null}
+            {worldContext && !worldContext.ok ? (
+              <p className="mt-3 text-sm text-amber-800 dark:text-amber-200">{worldContext.message}</p>
+            ) : null}
+
+            {worldContext?.ok ? (
+              <div className="mt-4 grid gap-5 lg:grid-cols-2 lg:gap-6">
+                {(
+                  [
+                    { key: "city", title: "Where you are", sub: "Current city", sec: worldContext.city },
+                    {
+                      key: "home",
+                      title: "Home country",
+                      sub: "Roots & region",
+                      sec: worldContext.home_country,
+                    },
+                  ] as const
+                ).map(({ key, title, sub, sec }) => (
+                  <div key={key} className="min-w-0">
+                    <h3 className="text-[11px] font-bold uppercase tracking-wide text-sky-900/85 dark:text-sky-200/90">
+                      {title}
+                    </h3>
+                    <p className="text-[10px] text-zinc-500 dark:text-zinc-400">{sub}</p>
+                    {sec.skipped ? (
+                      <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+                        {key === "city" ? "Add your current city in profile for local headlines." : null}
+                        {key === "home"
+                          ? "Add home country (or nationality) in profile for headlines from home."
+                          : null}
+                      </p>
+                    ) : sec.query_used ? (
+                      <p className="mt-2 rounded-lg bg-sky-100/50 px-2 py-1.5 font-mono text-[9px] leading-snug text-sky-900/85 dark:bg-sky-950/40 dark:text-sky-200/85">
+                        {sec.query_used}
+                      </p>
+                    ) : null}
+                    {!sec.skipped && sec.message && sec.items.length === 0 ? (
+                      <p className="mt-2 text-xs text-amber-800/90 dark:text-amber-200/90">{sec.message}</p>
+                    ) : null}
+                    {!sec.skipped && sec.items.length > 0 ? (
+                      <ul className="mt-2.5 space-y-2">
+                        {sec.items.map((item, idx) => (
+                          <li key={`${key}-${item.link}-${idx}`}>
+                            {item.link ? (
+                              <a
+                                href={item.link}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="group flex gap-3 rounded-xl border border-zinc-200/80 bg-white/90 p-2.5 transition hover:border-sky-300/80 hover:bg-sky-50/50 dark:border-zinc-700 dark:bg-zinc-900/60 dark:hover:border-sky-700 dark:hover:bg-sky-950/40"
+                              >
+                                <NewsThumbnail url={item.image_url} />
+                                <div className="min-w-0 flex-1">
+                                  <span className="line-clamp-3 text-sm font-medium leading-snug text-zinc-900 group-hover:text-sky-800 dark:text-zinc-100 dark:group-hover:text-sky-200">
+                                    {item.title}
+                                  </span>
+                                  <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-zinc-500 dark:text-zinc-400">
+                                    {item.source ? <span>{item.source}</span> : null}
+                                    {item.published ? (
+                                      <span className="font-mono">{formatNewsDate(item.published)}</span>
+                                    ) : null}
+                                  </div>
+                                </div>
+                              </a>
+                            ) : (
+                              <div className="flex gap-3 rounded-xl border border-zinc-200/80 bg-white/90 p-2.5 dark:border-zinc-700 dark:bg-zinc-900/60">
+                                <NewsThumbnail url={item.image_url} />
+                                <span className="line-clamp-3 min-w-0 text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                                  {item.title}
+                                </span>
+                              </div>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {worldContext?.attribution ? (
+              <p className="mt-3 text-[10px] leading-snug text-zinc-400 dark:text-zinc-500">{worldContext.attribution}</p>
+            ) : null}
           </section>
 
           <div>

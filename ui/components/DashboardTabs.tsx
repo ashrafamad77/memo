@@ -297,7 +297,7 @@ function TabButton({
 }
 
 export function DashboardTabs() {
-  const [tab, setTab] = useState<Tab>("Inbox");
+  const [tab, setTab] = useState<Tab>("Basic");
   const goToSuggestions = useCallback(() => setTab("Suggestions"), []);
   const [timeline, setTimeline] = useState<
     { id: string; text: string; input_time?: string; day?: string }[]
