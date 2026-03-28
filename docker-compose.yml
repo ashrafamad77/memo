@@ -1,8 +1,16 @@
-# Neo4j (graph) + Weaviate (vector store)
+# Neo4j (graph) + Weaviate (vector store) + transformers inference (text2vec)
 # Usage: docker-compose up -d
+# Bare-metal app: EMBEDDING_INFERENCE_URL=http://127.0.0.1:8082 (host port 8082 → sidecar 8080)
 # Puis: python main.py add "..."
 
 services:
+  t2v-transformers:
+    image: cr.weaviate.io/semitechnologies/transformers-inference:sentence-transformers-paraphrase-multilingual-MiniLM-L12-v2
+    ports:
+      - "8082:8080"
+    environment:
+      ENABLE_CUDA: "0"
+
   neo4j:
     image: neo4j:5
     ports:
@@ -15,6 +23,8 @@ services:
 
   weaviate:
     image: cr.weaviate.io/semitechnologies/weaviate:1.36.2
+    depends_on:
+      - t2v-transformers
     ports:
       - "8081:8080"
       - "50051:50051"
@@ -23,6 +33,9 @@ services:
       AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"
       PERSISTENCE_DATA_PATH: "/var/lib/weaviate"
       CLUSTER_HOSTNAME: "node1"
+      ENABLE_MODULES: "text2vec-transformers"
+      TRANSFORMERS_INFERENCE_API: "http://t2v-transformers:8080"
+      DEFAULT_VECTORIZER_MODULE: "text2vec-transformers"
     volumes:
       - weaviate_data:/var/lib/weaviate
 

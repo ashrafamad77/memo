@@ -15,7 +15,7 @@ class VectorStore:
         self,
         url: Optional[str] = None,
         collection_name: str = WEAVIATE_CLASS_NAME,
-        embedding_model: str = "",  # ignored; uses config.EMBEDDING_MODEL via embedding_service
+        embedding_model: str = "",  # ignored; embeddings via embedding_service (HTTP sidecar)
     ):
         url = url or WEAVIATE_URL
         self.collection_name = collection_name
@@ -79,7 +79,7 @@ class VectorStore:
                 raise
 
     def _embed(self, text: str) -> List[float]:
-        """Generate embedding for text (shared SentenceTransformer, single load)."""
+        """Generate embedding for text (HTTP call to transformers-inference sidecar)."""
         return embed_text(text)
 
     def add_entry(

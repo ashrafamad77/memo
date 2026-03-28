@@ -4,8 +4,8 @@
 # NLP & Entity Extraction (optionnel - fallback regex si non installé)
 # spacy>=3.7.0  # Décommenter si C++ Build Tools installés
 
-# Embeddings (local, no API)
-sentence-transformers>=2.2.0
+# Embeddings: HTTP client to Weaviate transformers-inference sidecar (see docker-compose)
+httpx>=0.27.0
 
 # Graph Database
 neo4j>=5.14.0

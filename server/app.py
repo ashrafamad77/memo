@@ -18,15 +18,18 @@ _log = logging.getLogger("uvicorn.error")
 
 @asynccontextmanager
 async def _app_lifespan(app: FastAPI):
-    """Preload the shared embedding model once so the first /chat is not a long silent wait."""
+    """Log embedding sidecar config (vectors load in Docker, not in this process)."""
     try:
+        from config import EMBEDDING_INFERENCE_URL
         from pipeline.embedding_service import embedding_dim
 
-        _log.info("Loading embedding model (first time can take ~30s on CPU; see HF / sentence-transformers logs)...")
-        embedding_dim()
-        _log.info("Embedding model ready.")
+        _log.info(
+            "Embeddings via HTTP %s (dim=%s); ensure t2v-transformers is running (e.g. docker compose up).",
+            EMBEDDING_INFERENCE_URL,
+            embedding_dim(),
+        )
     except Exception as e:
-        _log.warning("Embedding preload skipped (will load on first use): %s", e)
+        _log.warning("Embedding config log failed: %s", e)
     yield
 
 

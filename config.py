@@ -18,8 +18,13 @@ NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
 WEAVIATE_URL = os.getenv("WEAVIATE_URL", "http://localhost:8081")
 WEAVIATE_CLASS_NAME = os.getenv("WEAVIATE_CLASS_NAME", "journal_entries")
 
-# Embedding model (multilingual, works for FR/EN)
+# Embedding model id (reference; matches Docker image t2v-transformers / Weaviate config)
 EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+# Bare-metal Python → sidecar published on host (docker-compose maps 8082:8080)
+EMBEDDING_INFERENCE_URL = os.getenv("EMBEDDING_INFERENCE_URL", "http://127.0.0.1:8082")
+# Weaviate transformers-inference uses POST /vectors + {"text": "..."} per official docs
+EMBEDDING_INFERENCE_PATH = os.getenv("EMBEDDING_INFERENCE_PATH", "/vectors")
+EMBEDDING_VECTOR_DIM = int(os.getenv("EMBEDDING_VECTOR_DIM", "384"))
 
 # User (owner of the journal – first-person "je" maps to this)
 USER_NAME = os.getenv("USER_NAME", "")  # e.g. Ashraf
