@@ -287,6 +287,45 @@ class Neo4jRepo:
             },
         }
 
+    def briefing_activity_focus(self, hours: int = 24) -> Dict[str, Any]:
+        """
+        Fast daily-briefing signal: distinct E7_Activity nodes linked from journal entries
+        whose input_time falls within the last `hours` hours, with human-readable labels
+        from activity name, event_type, or P2_has_type → E55_Type.
+        """
+        hours = max(1, min(int(hours), 168))
+        dur = f"PT{hours}H"
+        q = f"""
+        MATCH (j:E73_Information_Object)
+        WHERE coalesce(j.entry_kind,'') = 'journal_entry'
+          AND j.input_time >= datetime() - duration('{dur}')
+        MATCH (j)-[:P67_refers_to]->(ev:E7_Activity)
+        OPTIONAL MATCH (ev)-[:P2_has_type]->(t:E55_Type)
+        WITH ev, trim(coalesce(ev.name, ev.event_type, t.name, '')) AS raw_lbl
+        WITH ev, CASE WHEN raw_lbl = '' THEN 'Activity' ELSE raw_lbl END AS activity_label
+        RETURN count(DISTINCT ev) AS activity_count,
+               collect(DISTINCT activity_label) AS raw_labels
+        """
+        with self._driver.session() as s:
+            row = s.run(q).single()
+        r = dict(row) if row else {}
+        raw_labels = r.get("raw_labels") or []
+        seen = set()
+        sample_labels: List[str] = []
+        for x in raw_labels:
+            lab = str(x).strip()
+            if not lab or lab in seen:
+                continue
+            seen.add(lab)
+            sample_labels.append(lab)
+            if len(sample_labels) >= 14:
+                break
+        return {
+            "window_hours": hours,
+            "activity_count": int(r.get("activity_count") or 0),
+            "sample_labels": sample_labels,
+        }
+
     def timeline(self, limit: int = 50) -> List[Dict[str, Any]]:
         q = """
         MATCH (e:E73_Information_Object)-[:P67_refers_to]->(ev:E7_Activity)

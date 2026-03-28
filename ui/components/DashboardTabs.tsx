@@ -5,12 +5,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiGet } from "@/lib/api";
 import { InboxQueue } from "@/components/InboxQueue";
 import { EntityTimeline } from "@/components/EntityTimeline";
-import { ExtraInfoPanel } from "@/components/ExtraInfoPanel";
+import { BasicOverviewPanel } from "@/components/BasicOverviewPanel";
 import { SuggestionsPanel } from "@/components/SuggestionsPanel";
 import { GraphMindMap } from "@/components/GraphMindMap";
 import { KpiHelp } from "@/components/KpiHelp";
 
-const tabs = ["Inbox", "Timeline", "Extra info", "Suggestions", "Entity Timeline", "Graph", "Insights"] as const;
+const tabs = ["Basic", "Inbox", "Timeline", "Suggestions", "Entity Timeline", "Graph", "Insights"] as const;
 type Tab = (typeof tabs)[number];
 
 type Insights = {
@@ -298,6 +298,7 @@ function TabButton({
 
 export function DashboardTabs() {
   const [tab, setTab] = useState<Tab>("Inbox");
+  const goToSuggestions = useCallback(() => setTab("Suggestions"), []);
   const [timeline, setTimeline] = useState<
     { id: string; text: string; input_time?: string; day?: string }[]
   >([]);
@@ -493,10 +494,10 @@ export function DashboardTabs() {
             </div>
           </div>
         );
-      case "Extra info":
+      case "Basic":
         return (
           <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-5">
-            <ExtraInfoPanel />
+            <BasicOverviewPanel onGoToSuggestions={goToSuggestions} />
           </div>
         );
       case "Suggestions":
@@ -711,7 +712,7 @@ export function DashboardTabs() {
       default:
         return null;
     }
-  }, [tab, graphRoots, timeline, insights]);
+  }, [tab, graphRoots, timeline, insights, goToSuggestions]);
 
   return (
     <div className="flex h-full flex-col">

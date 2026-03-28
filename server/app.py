@@ -265,9 +265,14 @@ def create_app() -> FastAPI:
     def entities(query: str = "", limit: int = 120, category: str = ""):
         return {"items": repo.entities(query=query, limit=limit, category=category)}
 
+    @app.get("/briefing/activity-focus")
+    def briefing_activity_focus(hours: int = 24):
+        """Recent graph activity types for the Basic / daily briefing tab (no LLM)."""
+        return repo.briefing_activity_focus(hours=hours)
+
     @app.get("/profile")
     def get_profile():
-        """Onboarding / user context (Neo4j User node). Used by Extra info tab."""
+        """Onboarding / user context (Neo4j User node). Used by Basic tab and APIs."""
         user_name = (USER_NAME or "").strip() or "User"
         row = repo.get_user_profile(user_name=user_name) or {}
 
