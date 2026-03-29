@@ -35,6 +35,33 @@
         "8000",
         "--reload"
       ]
+    },
+    {
+      "name": "API: uvicorn (no reload — stable breakpoints)",
+      "type": "python",
+      "request": "launch",
+      "module": "uvicorn",
+      "console": "integratedTerminal",
+      "envFile": "${workspaceFolder}/.env",
+      "args": [
+        "server.app:create_app",
+        "--factory",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8000"
+      ]
+    },
+    {
+      "name": "Python: AI suggestions (proposals_v1 direct)",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/run_proposals_debug.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "args": ["--days-ahead", "10"],
+      "justMyCode": false
     }
   ]
 }
