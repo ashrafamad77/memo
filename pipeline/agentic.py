@@ -1,6 +1,6 @@
 """Agentic orchestration (LangGraph) for the memory pipeline.
 
-Flow: Prep → WSD (LLM JSON) → Model → TypeResolve → WriteGraph → WriteVector
+Flow: Prep → WSD (LLM JSON) → Model → LLM type grounding + TypeResolve → WriteGraph → WriteVector
 """
 from __future__ import annotations
 
@@ -19,6 +19,8 @@ from .vector_store import VectorStore
 from .llm_extractor import LLMExtractor
 from .pipeline import MemoryPipeline
 from .wsd_preprocess import WsdPreprocessor
+from .type_grounding_llm import TypeGroundingLLM
+from .type_resolver import collect_e55_grounding_requests
 
 
 class AgenticState(TypedDict, total=False):
@@ -45,6 +47,7 @@ class AgenticRunner:
     vector_store: Optional[VectorStore]
     extractor: Optional[LLMExtractor] = None
     wsd_preprocessor: Optional[WsdPreprocessor] = None
+    type_grounding_llm: Optional[TypeGroundingLLM] = None
     user_name: str = ""
 
     def build(self):
@@ -86,12 +89,22 @@ class AgenticRunner:
                     existing_types=existing_types,
                     day_bucket=state.get("day_bucket", ""),
                 )
+                llm_ground: Optional[Dict[str, Any]] = None
+                if self.type_grounding_llm and self.type_resolver:
+                    reqs = collect_e55_grounding_requests(spec)
+                    if reqs:
+                        llm_ground = self.type_grounding_llm.run(
+                            state.get("text") or "",
+                            reqs,
+                            state.get("wsd_profile"),
+                        )
                 if self.type_resolver:
                     spec = self.type_resolver.resolve_graph_spec(
                         spec,
                         existing_types,
                         journal_text=state.get("text") or "",
                         wsd_profile=state.get("wsd_profile"),
+                        llm_grounding=llm_ground,
                     )
                 return {**state, "graph_spec": spec}
             except Exception as e:

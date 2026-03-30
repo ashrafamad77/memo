@@ -488,6 +488,71 @@ def _split_camel_tokens(s: str) -> List[str]:
     return re.findall(r"[A-Za-z]{2,}|\d{3,}", spaced)
 
 
+# Single-token E55 names that are everyday verbs/nouns — Wikidata is usually a song/film/person.
+# We only allow wikidata_id / aat_id if the journal text shows that lemma (or common inflection).
+_AMBIGUOUS_LEMMA_JOURNAL_PATTERNS: Dict[str, str] = {
+    "stay": r"\b(stay|stays|stayed|staying|séjour|séjours|rester|resté|restée|restés|restées)\b",
+    "go": r"\b(go|goes|going|went|gone)\b",
+    "eat": r"\b(eat|eats|ate|eating|eaten)\b",
+    "run": r"\b(run|runs|running|ran)\b",
+    "walk": r"\b(walk|walks|walked|walking)\b",
+    "sleep": r"\b(sleep|sleeps|slept|sleeping)\b",
+    "wake": r"\b(wake|wakes|woke|woken|waking)\b",
+    "play": r"\b(play|plays|played|playing)\b",
+    "read": r"\b(read|reads|reading)\b",
+    "write": r"\b(write|writes|wrote|written|writing)\b",
+    "talk": r"\b(talk|talks|talked|talking)\b",
+    "sit": r"\b(sit|sits|sat|sitting)\b",
+    "stand": r"\b(stand|stands|stood|standing)\b",
+    "leave": r"\b(leave|leaves|left|leaving)\b",
+    "come": r"\b(come|comes|came|coming)\b",
+    "get": r"\b(get|gets|got|getting|gotten)\b",
+    "take": r"\b(take|takes|took|taken|taking)\b",
+    "give": r"\b(give|gives|gave|given|giving)\b",
+    "make": r"\b(make|makes|made|making)\b",
+    "see": r"\b(see|sees|saw|seen|seeing)\b",
+    "work": r"\b(work|works|worked|working)\b",
+    "rest": r"\b(rest|rests|rested|resting)\b",
+    "wait": r"\b(wait|waits|waited|waiting)\b",
+    "stop": r"\b(stop|stops|stopped|stopping)\b",
+    "start": r"\b(start|starts|started|starting)\b",
+    "live": r"\b(live|lives|lived|living)\b",
+    "love": r"\b(love|loves|loved|loving)\b",
+    "hope": r"\b(hope|hopes|hoped|hoping)\b",
+    "fear": r"\b(fear|fears|feared|fearing)\b",
+    "think": r"\b(think|thinks|thought|thinking)\b",
+    "feel": r"\b(feel|feels|felt|feeling)\b",
+}
+
+
+def _ambiguous_type_lemma(raw: str) -> Optional[str]:
+    toks = _split_camel_tokens((raw or "").strip())
+    if len(toks) != 1:
+        return None
+    lemma = _casefold_type(toks[0]).replace(" ", "")
+    if lemma in _AMBIGUOUS_LEMMA_JOURNAL_PATTERNS:
+        return lemma
+    return None
+
+
+def _journal_supports_ambiguous_lemma(lemma: str, journal_text: str) -> bool:
+    if not (journal_text or "").strip():
+        return False
+    j = _casefold_type(journal_text)
+    pat = _AMBIGUOUS_LEMMA_JOURNAL_PATTERNS.get(lemma)
+    if not pat:
+        return False
+    return bool(re.search(pat, j))
+
+
+def _ambiguous_type_blocks_authority(raw: str, journal_text: str) -> bool:
+    """If True, skip Wikidata/AAT/LLM ids — type is a generic lemma absent from journal wording."""
+    lem = _ambiguous_type_lemma(raw)
+    if not lem:
+        return False
+    return not _journal_supports_ambiguous_lemma(lem, journal_text)
+
+
 def _normalize_context_category(raw: str) -> str:
     c = (raw or "").strip().lower()
     aliases = {
@@ -734,6 +799,73 @@ def _type_item_category(entry: Any, host_label: str) -> str:
         if c:
             return c
     return _infer_host_category(host_label)
+
+
+def collect_e55_grounding_requests(spec: Dict[str, Any]) -> List[Dict[str, str]]:
+    """
+    Unique taxonomy labels from the graph spec for LLM authority grounding.
+    Each item: name, context_category, host_label (CIDOC class hosting the type).
+    """
+    nodes = spec.get("nodes", [])
+    edges = spec.get("edges", [])
+    if not isinstance(nodes, list):
+        return []
+    if not isinstance(edges, list):
+        edges = []
+    p141_e55_ids = _e55_target_ids_from_p141(edges)
+    cat_by_type: Dict[str, str] = {}
+    host_by_type: Dict[str, str] = {}
+
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        lbl = str(node.get("label", ""))
+        props = node.get("properties", {})
+        if not isinstance(props, dict):
+            props = {}
+
+        if lbl == "E55_Type":
+            nm = str(node.get("name") or "").strip()
+            if not nm:
+                continue
+            cc = str(node.get("context_category") or props.get("context_category") or "").strip()
+            if not cc and str(node.get("id") or "") in p141_e55_ids:
+                cc = "state"
+            if not cc:
+                cc = "other"
+            cat_by_type[nm] = _normalize_context_category(cc)
+            host_by_type.setdefault(nm, "E55_Type")
+
+        for t in node.get("types") or []:
+            nm = _type_item_name(t)
+            if not nm:
+                continue
+            cc = _type_item_category(t, lbl)
+            cn = _normalize_context_category(cc)
+            cat_by_type.setdefault(nm, cn)
+            host_by_type.setdefault(nm, lbl)
+
+    strings: Set[str] = set()
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        if node.get("label") == "E55_Type":
+            nm = str(node.get("name") or "").strip()
+            if nm:
+                strings.add(nm)
+        for t in node.get("types") or []:
+            nm = _type_item_name(t)
+            if nm:
+                strings.add(nm)
+
+    return [
+        {
+            "name": nm,
+            "context_category": cat_by_type.get(nm, "other"),
+            "host_label": host_by_type.get(nm, "E55_Type"),
+        }
+        for nm in sorted(strings)
+    ]
 
 
 def _strip_resolver_fields_from_spec(spec: Dict[str, Any]) -> None:
@@ -1189,10 +1321,30 @@ class TypeResolver:
         journal_text: str,
         context_category: str,
         wsd_profile: Optional[Dict[str, Any]] = None,
+        llm_grounding: Optional[Dict[str, Dict[str, str]]] = None,
     ) -> Tuple[str, Optional[str], str, Optional[str]]:
         """Returns (canonical_name, wikidata_id, description, aat_id)."""
         raw = (raw or "").strip()
         norm = self.normalize_type_name(raw, working)
+        block_ambiguous = _ambiguous_type_blocks_authority(raw, journal_text)
+        if llm_grounding and not block_ambiguous:
+            row = llm_grounding.get(raw)
+            if isinstance(row, dict):
+                wid = str(row.get("wikidata_id") or "").strip()
+                aid = str(row.get("aat_id") or "").strip()
+                desc = str(row.get("description") or "").strip()
+                if wid and _safe_wikidata_qid(wid):
+                    hit_name = self.find_e55_name_by_wikidata_id(wid)
+                    if hit_name:
+                        return hit_name, wid, desc, None
+                    return norm, wid, desc, None
+                if aid and not wid:
+                    return norm, None, desc or "Getty AAT", aid
+        if block_ambiguous:
+            close = self._closest_existing(norm, working)
+            if close:
+                return close, None, "", None
+            return norm, None, "", None
         info: Optional[Dict[str, str]] = None
         for tv in self._term_variants(norm, raw):
             info = self.get_wikidata_info(
@@ -1247,10 +1399,17 @@ class TypeResolver:
         *,
         journal_text: str = "",
         wsd_profile: Optional[Dict[str, Any]] = None,
+        llm_grounding: Optional[Dict[str, Dict[str, str]]] = None,
     ) -> Dict[str, Any]:
         """Normalize type strings, merge by Wikidata id, attach _e55_authority_meta; strip LLM helper fields."""
         if existing is None:
             existing = self.get_existing_types()
+
+        if llm_grounding is not None:
+            spec["_type_llm_grounding"] = llm_grounding
+        eff_llm = spec.get("_type_llm_grounding")
+        if not isinstance(eff_llm, dict):
+            eff_llm = {}
 
         nodes = spec.get("nodes", [])
         edges = spec.get("edges", [])
@@ -1312,6 +1471,7 @@ class TypeResolver:
                 journal_text=jt,
                 context_category=cat,
                 wsd_profile=wsd_profile,
+                llm_grounding=eff_llm if eff_llm else None,
             )
             canon = resolved_map[s][0]
             if canon not in working:

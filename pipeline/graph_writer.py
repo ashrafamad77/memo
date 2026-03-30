@@ -433,7 +433,9 @@ class GraphWriter:
                 existing=tr.get_existing_types(),
                 journal_text=raw_text or "",
                 wsd_profile=wsd_profile,
+                llm_grounding=spec.get("_type_llm_grounding"),
             )
+            spec.pop("_type_llm_grounding", None)
         auth_meta = spec.pop("_e55_authority_meta", None) or {}
 
         def _e55_merge_props(

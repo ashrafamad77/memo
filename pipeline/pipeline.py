@@ -103,11 +103,18 @@ class MemoryPipeline:
         from .type_resolver import TypeResolver
         from .graph_writer import GraphWriter
         from .wsd_preprocess import WsdPreprocessor
+        from .type_grounding_llm import TypeGroundingLLM
 
         entry_id = entry_id or str(uuid.uuid4())
         deployment = (AZURE_OPENAI_DEPLOYMENT or "gpt-4o-mini").strip()
 
         wsd_preprocessor = WsdPreprocessor(
+            api_key=AZURE_OPENAI_API_KEY,
+            model=deployment,
+            azure_endpoint=AZURE_OPENAI_ENDPOINT.strip(),
+            api_version=AZURE_OPENAI_API_VERSION,
+        )
+        type_grounding_llm = TypeGroundingLLM(
             api_key=AZURE_OPENAI_API_KEY,
             model=deployment,
             azure_endpoint=AZURE_OPENAI_ENDPOINT.strip(),
@@ -138,6 +145,7 @@ class MemoryPipeline:
             vector_store=self.vector_store,
             extractor=self.extractor,
             wsd_preprocessor=wsd_preprocessor,
+            type_grounding_llm=type_grounding_llm,
             user_name=USER_NAME,
         )
         app = runner.build()
