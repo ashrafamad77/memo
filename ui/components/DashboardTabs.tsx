@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { apiGet } from "@/lib/api";
+import { apiDelete, apiGet } from "@/lib/api";
 import { InboxQueue } from "@/components/InboxQueue";
 import { EntityTimeline } from "@/components/EntityTimeline";
 import { BasicOverviewPanel } from "@/components/BasicOverviewPanel";
@@ -290,6 +290,7 @@ export function DashboardTabs() {
   const [impactLedgerData, setImpactLedgerData] = useState<unknown>(null);
   const [impactLedgerLoading, setImpactLedgerLoading] = useState(false);
   const [impactLedgerError, setImpactLedgerError] = useState("");
+  const [deletingEntryId, setDeletingEntryId] = useState<string | null>(null);
 
   useEffect(() => {
     return () => {
@@ -452,7 +453,39 @@ export function DashboardTabs() {
                     <div className="text-xs font-semibold text-zinc-700 dark:text-zinc-200">
                       {e.day || "—"}
                     </div>
-                    <div className="text-[11px] text-zinc-500">{e.input_time || ""}</div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <div className="text-[11px] text-zinc-500">{e.input_time || ""}</div>
+                      <button
+                        type="button"
+                        disabled={deletingEntryId === e.id}
+                        onClick={async () => {
+                          if (
+                            !window.confirm(
+                              "Delete this entry from the graph and search index? Shared people, places, and types are kept. This cannot be undone.",
+                            )
+                          ) {
+                            return;
+                          }
+                          setDeletingEntryId(e.id);
+                          setStatus("");
+                          try {
+                            await apiDelete(`/entry/${encodeURIComponent(e.id)}`);
+                            setTimeline((prev) => prev.filter((x) => x.id !== e.id));
+                            window.dispatchEvent(
+                              new CustomEvent("memo:entry-deleted", { detail: { entryId: e.id } }),
+                            );
+                          } catch (err: unknown) {
+                            const msg = err instanceof Error ? err.message : String(err);
+                            setStatus(msg);
+                          } finally {
+                            setDeletingEntryId(null);
+                          }
+                        }}
+                        className="rounded-lg border border-rose-200/80 px-2 py-0.5 text-[11px] font-semibold text-rose-700 hover:bg-rose-500/10 disabled:opacity-50 dark:border-rose-900/60 dark:text-rose-300 dark:hover:bg-rose-950/50"
+                      >
+                        {deletingEntryId === e.id ? "…" : "Delete"}
+                      </button>
+                    </div>
                   </div>
                   <div className="mt-2 text-sm text-zinc-700 dark:text-zinc-200">
                     {(e.text || "").slice(0, 240)}
@@ -496,7 +529,7 @@ export function DashboardTabs() {
       default:
         return null;
     }
-  }, [tab, graphRoots, timeline, insights, goToSuggestions]);
+  }, [tab, graphRoots, timeline, insights, goToSuggestions, deletingEntryId]);
 
   return (
     <div className="flex h-full flex-col">

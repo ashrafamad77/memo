@@ -147,6 +147,17 @@ class VectorStore:
             uuid=entry_id,
         )
 
+    def delete_by_entry_id(self, entry_id: str) -> bool:
+        """Remove the vector object for this journal entry (uuid = entry_id). Best-effort if missing."""
+        eid = (entry_id or "").strip()
+        if not eid:
+            return False
+        try:
+            self.client.data_object.delete(uuid=eid, class_name=self.collection_name)
+            return True
+        except Exception:
+            return False
+
     def search(self, query: str, n_results: int = 5) -> List[dict]:
         """Semantic search over journal entries."""
         query_embedding = self._embed(query)

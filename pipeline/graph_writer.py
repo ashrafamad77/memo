@@ -53,6 +53,12 @@ MULTI_LABEL_MAP = {
 }
 
 
+def _spec_type_item_str(t: Any) -> str:
+    if isinstance(t, dict):
+        return str(t.get("name") or "").strip()
+    return str(t or "").strip()
+
+
 class GraphWriter:
     """Writes a CIDOC CRM graph spec to Neo4j."""
 
@@ -97,6 +103,7 @@ class GraphWriter:
         user_name: str = "",
         day_bucket: str = "",
         input_ts: Optional[str] = None,
+        wsd_profile: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         if not spec or (not spec.get("nodes") and not spec.get("edges")):
             return {"status": "skipped", "reason": "empty_spec"}
@@ -111,6 +118,8 @@ class GraphWriter:
                 user_name=user_name,
                 day_bucket=day_bucket,
                 ts=ts,
+                driver=self.driver,
+                wsd_profile=wsd_profile,
             )
 
     @staticmethod
@@ -122,6 +131,8 @@ class GraphWriter:
         user_name: str,
         day_bucket: str,
         ts: str,
+        driver=None,
+        wsd_profile: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         nodes: List[Dict] = spec.get("nodes", [])
         edges: List[Dict] = spec.get("edges", [])
@@ -368,7 +379,7 @@ class GraphWriter:
                         continue
                     ntypes = n.get("types", [])
                     if isinstance(ntypes, list) and ntypes:
-                        assigned_type_name = str(ntypes[0] or "").strip() or assigned_type_name
+                        assigned_type_name = _spec_type_item_str(ntypes[0]) or assigned_type_name
                     break
                 if inferred_p141 and (
                     not assigned_type_name.strip() or assigned_type_name in ("AssignedState", "State")
@@ -412,6 +423,66 @@ class GraphWriter:
             )
             if not has_causal and default_trigger:
                 normalized_edges.append((aid, default_trigger, "P15_was_influenced_by", {}))
+
+        if driver is not None:
+            from .type_resolver import TypeResolver
+
+            tr = TypeResolver(driver)
+            tr.resolve_graph_spec(
+                spec,
+                existing=tr.get_existing_types(),
+                journal_text=raw_text or "",
+                wsd_profile=wsd_profile,
+            )
+        auth_meta = spec.pop("_e55_authority_meta", None) or {}
+
+        def _e55_merge_props(
+            tname: str, node_props: Optional[Dict[str, Any]] = None
+        ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+            np = node_props if isinstance(node_props, dict) else {}
+            wid = str(np.get("wikidata_id", "") or "").strip()
+            desc = str(np.get("description", "") or "").strip()
+            aid = str(np.get("aat_id", "") or "").strip()
+            am = auth_meta.get(tname)
+            if isinstance(am, dict):
+                if not wid:
+                    wid = str(am.get("wikidata_id", "") or "").strip()
+                if not desc:
+                    desc = str(am.get("description", "") or "").strip()
+                if not aid:
+                    aid = str(am.get("aat_id", "") or "").strip()
+            if wid:
+                aid = ""
+            return (
+                wid if wid else None,
+                desc if desc else None,
+                aid if aid else None,
+            )
+
+        def _merge_e55_type(
+            tx_inner, tname: str, node_props: Optional[Dict[str, Any]] = None
+        ) -> None:
+            wid_p, desc_p, aid_p = _e55_merge_props(tname, node_props)
+            tx_inner.run(
+                """
+                MERGE (n:E55_Type {name: $name})
+                ON CREATE SET n.wikidata_id = $wid, n.description = $desc, n.aat_id = $aid
+                SET n.wikidata_id = coalesce($wid, n.wikidata_id),
+                    n.description = CASE
+                        WHEN $desc IS NOT NULL AND $desc <> '' THEN $desc
+                        ELSE n.description
+                    END,
+                    n.aat_id = CASE
+                        WHEN $wid IS NOT NULL AND $wid <> '' THEN null
+                        WHEN $aid IS NOT NULL AND $aid <> '' THEN $aid
+                        ELSE n.aat_id
+                    END
+                """,
+                name=tname,
+                wid=wid_p,
+                desc=desc_p,
+                aid=aid_p,
+            )
 
         short_name = raw_text[:60].strip()
         if len(raw_text) > 60:
@@ -462,12 +533,7 @@ class GraphWriter:
 
             # E55 types are global vocabulary nodes and should be merged by name.
             if label == "E55_Type":
-                tx.run(
-                    """
-                    MERGE (n:E55_Type {name: $name})
-                    """,
-                    name=name,
-                )
+                _merge_e55_type(tx, name, props)
                 id_to_type_name[nid] = name
             elif label == "E21_Person":
                 # Merge people globally by name so user/known persons are not duplicated per entry.
@@ -529,34 +595,37 @@ class GraphWriter:
 
             if isinstance(types, list):
                 for t in types:
-                    tname = str(t or "").strip()
+                    tname = _spec_type_item_str(t)
                     if not tname:
                         continue
                     if label == "E55_Type":
+                        _merge_e55_type(tx, tname, {})
                         tx.run(
                             """
                             MATCH (n:E55_Type {name: $name})
-                            MERGE (t:E55_Type {name: $tname})
+                            MATCH (t:E55_Type {name: $tname})
                             MERGE (n)-[:P2_has_type]->(t)
                             """,
                             name=name,
                             tname=tname,
                         )
                     elif label == "E21_Person":
+                        _merge_e55_type(tx, tname, {})
                         tx.run(
                             """
                             MATCH (n:E21_Person {id: $id})
-                            MERGE (t:E55_Type {name: $tname})
+                            MATCH (t:E55_Type {name: $tname})
                             MERGE (n)-[:P2_has_type]->(t)
                             """,
                             id=id_to_person_id.get(nid, ""),
                             tname=tname,
                         )
                     else:
+                        _merge_e55_type(tx, tname, {})
                         tx.run(
                             """
                             MATCH (n {key: $key})
-                            MERGE (t:E55_Type {name: $tname})
+                            MATCH (t:E55_Type {name: $tname})
                             MERGE (n)-[:P2_has_type]->(t)
                             """,
                             key=key,
@@ -670,13 +739,14 @@ class GraphWriter:
                 )
 
         if user_name:
+            _merge_e55_type(tx, "User", {})
             tx.run(
                 """
                 MERGE (u:E21_Person:E39_Actor {name: $name})
                 ON CREATE SET u.first_seen = datetime($ts)
                 SET u.last_seen = datetime($ts)
                 WITH u
-                MERGE (ut:E55_Type {name: 'User'})
+                MATCH (ut:E55_Type {name: 'User'})
                 MERGE (u)-[:P2_has_type]->(ut)
                 """,
                 name=user_name,

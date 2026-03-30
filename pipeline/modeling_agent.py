@@ -52,8 +52,18 @@ Tu recois une decomposition semantique (prep) et tu produis une specification de
 Types existants dans la base (reutilise-les si pertinent):
 {existing_types}
 
+You are a professional taxonomist. When choosing an E55_Type, prioritize accuracy and consistency. Check the 'Existing Types' list first. If you must propose a new type, use a formal, standard English noun in CamelCase (e.g. MorningMeal, not EatingInMorning).
+
+Never use an E55_Type **name** that only repeats a CIDOC role or generic class: avoid Place, Person, Activity, Event, Object, Concept, Organization, Project, Location, Group, Actor, State, Type. Those words describe **node labels**, not taxonomy. Prefer journal-grounded labels (CoffeeBreak, TrainStation, TeamMeeting, CodeReview).
+
 Utilisateur (auteur du journal): {user_name}
 IMPORTANT: L'utilisateur s'appelle EXACTEMENT "{user_name}". Utilise ce nom exact pour le noeud E21_Person de l'utilisateur. Ne cree PAS de noeud separe "Utilisateur" — utilise "{user_name}".
+
+Chaque libelle E55_Type (types sur un noeud OU noeud dedie label E55_Type) doit inclure **context_category** pour le controle d'autorite Wikidata:
+- **Activity** (E7, E10, E5), **Place** (lieu / mention spatiale), **Person**, **Organization**, **Object** (E22), **Concept** (E28, E89), **State** (emotion / sensation / attente via E13), **Transfer** (E10), **Event** (autre), **Other** si doute.
+
+Tu peux donner **types** soit comme chaine (ancien style), soit comme objet: {{"name": "DeepWork", "context_category": "Activity"}}.
+Pour un noeud **E55_Type** dedie, ajoute en plus du **name**: **"context_category": "State"** (au meme niveau que name, pas seulement dans properties).
 
 Retourne UNIQUEMENT un JSON valide avec cette structure:
 
@@ -63,7 +73,7 @@ Retourne UNIQUEMENT un JSON valide avec cette structure:
       "id": "n1",
       "label": "E7_Activity",
       "name": "cours",
-      "types": ["SocialActivity"],
+      "types": [{{"name": "SocialActivity", "context_category": "Activity"}}],
       "properties": {{"event_time_text": "14h", "event_time_iso": "2026-03-13T14:00:00Z"}}
     }}
   ],
@@ -121,6 +131,135 @@ def _e13_inferred_labels(nodes: List[Dict[str, Any]]) -> Set[str]:
         if lab:
             out.add(lab)
     return out
+
+
+_LAZY_CIDOC_E55_LOWER = frozenset(
+    {
+        "place",
+        "person",
+        "activity",
+        "event",
+        "object",
+        "concept",
+        "organization",
+        "organisation",
+        "transfer",
+        "state",
+        "type",
+        "location",
+        "group",
+        "actor",
+        "project",
+    }
+)
+
+
+def _is_lazy_e55_name(name: str) -> bool:
+    return (name or "").strip().lower() in _LAZY_CIDOC_E55_LOWER
+
+
+def _camel_from_human_label(s: str) -> str:
+    parts = re.findall(r"[A-Za-zÀ-ÿ]+", s or "", flags=re.UNICODE)
+    if not parts:
+        return ""
+    out: List[str] = []
+    for p in parts:
+        q = p.strip("'")
+        if not q:
+            continue
+        out.append(q[0].upper() + q[1:].lower() if len(q) > 1 else q.upper())
+    return "".join(out)
+
+
+def _fallback_e55_for_cidoc_label(label: str) -> str:
+    return {
+        "E53_Place": "NamedPlace",
+        "E7_Activity": "NarratedActivity",
+        "E21_Person": "NamedPerson",
+        "E74_Group": "NamedOrganization",
+        "E22_Human_Made_Object": "NamedObject",
+        "E28_Conceptual_Object": "NamedConcept",
+        "E5_Event": "NarratedEvent",
+        "E10_Transfer_of_Custody": "CustodyEpisode",
+        "E89_Propositional_Object": "Proposition",
+        "E13_Attribute_Assignment": "LivedState",
+    }.get(label or "", "SemanticType")
+
+
+def _type_from_node_context(human_name: str, cidoc_label: str) -> str:
+    slug = _camel_from_human_label(human_name)
+    if slug and not _is_lazy_e55_name(slug):
+        return slug
+    return _fallback_e55_for_cidoc_label(cidoc_label)
+
+
+def _spec_type_name_part(t: Any) -> str:
+    if isinstance(t, dict):
+        return str(t.get("name") or "").strip()
+    return str(t or "").strip()
+
+
+def _with_spec_type_name(t: Any, new_name: str) -> Any:
+    if isinstance(t, dict):
+        d = dict(t)
+        d["name"] = new_name
+        return d
+    return new_name
+
+
+def _sanitize_lazy_e55_types(nodes: List[Dict[str, Any]], edges: List[Dict[str, Any]]) -> None:
+    """Replace CIDOC-echo E55 names with names derived from the typed node (Wikidata / UX)."""
+    id_to_node: Dict[str, Dict[str, Any]] = {}
+    for n in nodes:
+        if isinstance(n, dict) and str(n.get("id") or ""):
+            id_to_node[str(n["id"])] = n
+
+    def _preds(prop: str, to_id: str) -> List[str]:
+        out_ids: List[str] = []
+        for e in edges:
+            if not isinstance(e, dict) or e.get("property") != prop:
+                continue
+            if str(e.get("to") or "") != to_id:
+                continue
+            fid = str(e.get("from") or "")
+            if fid:
+                out_ids.append(fid)
+        return out_ids
+
+    for n in nodes:
+        if not isinstance(n, dict) or n.get("label") == "E55_Type":
+            continue
+        lab = str(n.get("label") or "")
+        nm = str(n.get("name") or "")
+        types = n.get("types")
+        if not isinstance(types, list):
+            continue
+        for i, t in enumerate(types):
+            tnm = _spec_type_name_part(t)
+            if not _is_lazy_e55_name(tnm):
+                continue
+            rep = _type_from_node_context(nm, lab)
+            n["types"][i] = _with_spec_type_name(t, rep)
+
+    for n in nodes:
+        if not isinstance(n, dict) or n.get("label") != "E55_Type":
+            continue
+        nid = str(n.get("id") or "")
+        tnm = str(n.get("name") or "").strip()
+        if not nid or not _is_lazy_e55_name(tnm):
+            continue
+        ctx_name = ""
+        ctx_label = ""
+        for fid in _preds("P2_has_type", nid) + _preds("P141_assigned", nid):
+            fn = id_to_node.get(fid)
+            if not fn:
+                continue
+            ctx_name = str(fn.get("name") or "")
+            ctx_label = str(fn.get("label") or "")
+            if ctx_name.strip():
+                break
+        rep = _type_from_node_context(ctx_name, ctx_label or "E55_Type")
+        n["name"] = rep
 
 
 def _state_sensation_e7_name(name: str) -> bool:
@@ -284,5 +423,6 @@ class ModelingAgent:
             nodes = []
         if not isinstance(edges, list):
             edges = []
+        _sanitize_lazy_e55_types(nodes, edges)
         _prune_redundant_state_e7(nodes, edges)
         return {"nodes": nodes, "edges": edges}

@@ -260,6 +260,25 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="entry not found")
         return out
 
+    @app.delete("/entry/{entry_id}")
+    def delete_entry(entry_id: str):
+        """Delete journal entry from Neo4j (scoped nodes + E73) and from Weaviate when available."""
+        eid = (entry_id or "").strip()
+        if not eid:
+            raise HTTPException(status_code=400, detail="entry_id is required")
+        graph_out = repo.delete_journal_entry(eid)
+        if not graph_out.get("ok"):
+            raise HTTPException(status_code=404, detail=graph_out.get("reason") or "entry not found")
+        vector_ok = False
+        try:
+            from pipeline.vector_store import VectorStore
+
+            vs = VectorStore()
+            vector_ok = vs.delete_by_entry_id(eid)
+        except Exception:
+            vector_ok = False
+        return {"ok": True, "entry_id": eid, "vector_deleted": vector_ok}
+
     @app.get("/persons")
     def persons(query: str = "", limit: int = 50):
         return {"items": repo.persons(query=query, limit=limit)}

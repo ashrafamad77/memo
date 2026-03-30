@@ -328,8 +328,9 @@ class Neo4jRepo:
 
     def timeline(self, limit: int = 50) -> List[Dict[str, Any]]:
         q = """
-        MATCH (e:E73_Information_Object)-[:P67_refers_to]->(ev:E7_Activity)
+        MATCH (e:E73_Information_Object)
         WHERE coalesce(e.entry_kind,'') = 'journal_entry'
+        OPTIONAL MATCH (e)-[:P67_refers_to]->(ev:E7_Activity)
         OPTIONAL MATCH (ev)-[:P4_has_time_span]->(d:E52_Time_Span)
         WITH e,
              collect(DISTINCT ev.key) as event_keys,
@@ -338,12 +339,66 @@ class Neo4jRepo:
                e.text as text,
                toString(e.input_time) as input_time,
                event_keys[0] as event_key,
-               days[0] as day
+               coalesce(days[0], toString(date(e.input_time))) as day
         ORDER BY e.input_time DESC
         LIMIT $limit
         """
         with self._driver.session() as s:
             return [dict(r) for r in s.run(q, limit=int(limit))]
+
+    def delete_journal_entry(self, entry_id: str) -> Dict[str, Any]:
+        """
+        Remove one journal entry (E73) and all entry-scoped graph nodes (key starts with entry_id|).
+        Shared nodes (people, places, E55_Type, day bucket) are kept; only P67 edges from the journal go away.
+        Also removes DisambiguationTask nodes tagged with this entry_id.
+        """
+        eid = (entry_id or "").strip()
+        if not eid:
+            return {"ok": False, "reason": "empty_id", "entry_id": ""}
+        prefix = f"{eid}|"
+
+        def work(tx):
+            row = tx.run(
+                """
+                MATCH (j:E73_Information_Object {id: $id})
+                WHERE coalesce(j.entry_kind, '') = 'journal_entry'
+                RETURN j.id AS id
+                """,
+                id=eid,
+            ).single()
+            if not row:
+                return False
+            tx.run(
+                """
+                MATCH (t:DisambiguationTask)
+                WHERE t.entry_id = $eid
+                DETACH DELETE t
+                """,
+                eid=eid,
+            )
+            tx.run(
+                """
+                MATCH (n)
+                WHERE n.key STARTS WITH $prefix
+                DETACH DELETE n
+                """,
+                prefix=prefix,
+            )
+            tx.run(
+                """
+                MATCH (j:E73_Information_Object {id: $id})
+                WHERE coalesce(j.entry_kind, '') = 'journal_entry'
+                DETACH DELETE j
+                """,
+                id=eid,
+            )
+            return True
+
+        with self._driver.session() as s:
+            ok = s.execute_write(work)
+        if not ok:
+            return {"ok": False, "reason": "not_found", "entry_id": eid}
+        return {"ok": True, "entry_id": eid}
 
     def entry_detail(self, entry_id: str) -> Optional[Dict[str, Any]]:
         q = """

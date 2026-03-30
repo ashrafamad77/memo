@@ -1,6 +1,6 @@
 """Agentic orchestration (LangGraph) for the memory pipeline.
 
-Flow: Prep → Model → TypeResolve → WriteGraph → WriteVector
+Flow: Prep → WSD (LLM JSON) → Model → TypeResolve → WriteGraph → WriteVector
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from .graph_store import GraphStore
 from .vector_store import VectorStore
 from .llm_extractor import LLMExtractor
 from .pipeline import MemoryPipeline
+from .wsd_preprocess import WsdPreprocessor
 
 
 class AgenticState(TypedDict, total=False):
@@ -25,6 +26,7 @@ class AgenticState(TypedDict, total=False):
     entry_id: str
     day_bucket: str
     prep: Dict[str, Any]
+    wsd_profile: Dict[str, Any]
     graph_spec: Dict[str, Any]
     person_resolution: Dict[str, Any]
     extraction: Any
@@ -42,6 +44,7 @@ class AgenticRunner:
     graph_store: Optional[GraphStore]
     vector_store: Optional[VectorStore]
     extractor: Optional[LLMExtractor] = None
+    wsd_preprocessor: Optional[WsdPreprocessor] = None
     user_name: str = ""
 
     def build(self):
@@ -55,6 +58,19 @@ class AgenticRunner:
                 return {**state, "prep": prep}
             except Exception as e:
                 return {**state, "prep": {"_error": str(e)}}
+
+        def wsd_node(state: AgenticState) -> AgenticState:
+            if not self.wsd_preprocessor:
+                return {**state, "wsd_profile": {"entities": []}}
+            try:
+                prof = self.wsd_preprocessor.run(state.get("text") or "")
+                if not isinstance(prof, dict):
+                    prof = {"entities": []}
+                if not isinstance(prof.get("entities"), list):
+                    prof = {"entities": []}
+                return {**state, "wsd_profile": prof}
+            except Exception:
+                return {**state, "wsd_profile": {"entities": []}}
 
         def model_node(state: AgenticState) -> AgenticState:
             prep = state.get("prep") or {}
@@ -71,7 +87,12 @@ class AgenticRunner:
                     day_bucket=state.get("day_bucket", ""),
                 )
                 if self.type_resolver:
-                    spec = self.type_resolver.resolve_graph_spec(spec, existing_types)
+                    spec = self.type_resolver.resolve_graph_spec(
+                        spec,
+                        existing_types,
+                        journal_text=state.get("text") or "",
+                        wsd_profile=state.get("wsd_profile"),
+                    )
                 return {**state, "graph_spec": spec}
             except Exception as e:
                 return {**state, "graph_spec": {"nodes": [], "edges": [], "_error": str(e)}}
@@ -87,6 +108,7 @@ class AgenticRunner:
                     raw_text=state["text"],
                     user_name=self.user_name,
                     day_bucket=state.get("day_bucket", ""),
+                    wsd_profile=state.get("wsd_profile"),
                 )
                 return {**state, "graph_status": "ok", "graph_audit": audit}
             except Exception as e:
@@ -177,13 +199,15 @@ class AgenticRunner:
                 return {**state, "vector_status": f"error: {e}"}
 
         g.add_node("prep", prep_node)
+        g.add_node("wsd", wsd_node)
         g.add_node("model", model_node)
         g.add_node("disambiguate_persons", disambiguate_persons_node)
         g.add_node("persist_graph", persist_graph_node)
         g.add_node("persist_vector", persist_vector_node)
 
         g.set_entry_point("prep")
-        g.add_edge("prep", "model")
+        g.add_edge("prep", "wsd")
+        g.add_edge("wsd", "model")
         g.add_edge("model", "disambiguate_persons")
         g.add_edge("disambiguate_persons", "persist_graph")
         g.add_edge("persist_graph", "persist_vector")

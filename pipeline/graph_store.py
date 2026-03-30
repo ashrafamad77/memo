@@ -99,6 +99,10 @@ class GraphStore:
             FOR (u:E21_Person) REQUIRE u.name IS UNIQUE
         """)
         tx.run("""
+            CREATE INDEX e55_wikidata_id IF NOT EXISTS
+            FOR (t:E55_Type) ON (t.wikidata_id)
+        """)
+        tx.run("""
             CREATE CONSTRAINT event_key IF NOT EXISTS
             FOR (e:E7_Activity) REQUIRE e.key IS UNIQUE
         """)

@@ -102,9 +102,17 @@ class MemoryPipeline:
         from .modeling_agent import ModelingAgent
         from .type_resolver import TypeResolver
         from .graph_writer import GraphWriter
+        from .wsd_preprocess import WsdPreprocessor
 
         entry_id = entry_id or str(uuid.uuid4())
         deployment = (AZURE_OPENAI_DEPLOYMENT or "gpt-4o-mini").strip()
+
+        wsd_preprocessor = WsdPreprocessor(
+            api_key=AZURE_OPENAI_API_KEY,
+            model=deployment,
+            azure_endpoint=AZURE_OPENAI_ENDPOINT.strip(),
+            api_version=AZURE_OPENAI_API_VERSION,
+        )
 
         modeling_agent = ModelingAgent(
             api_key=AZURE_OPENAI_API_KEY,
@@ -129,6 +137,7 @@ class MemoryPipeline:
             graph_store=self.graph_store,
             vector_store=self.vector_store,
             extractor=self.extractor,
+            wsd_preprocessor=wsd_preprocessor,
             user_name=USER_NAME,
         )
         app = runner.build()
@@ -153,6 +162,7 @@ class MemoryPipeline:
             "vector": out.get("vector_status", "skipped"),
             "prep": prep,
             "graph_spec": out.get("graph_spec", {}),
+            "wsd_profile": out.get("wsd_profile") or {"entities": []},
         }
 
     def persist_extraction(self, text: str, extraction, entry_id: Optional[str] = None) -> dict:
