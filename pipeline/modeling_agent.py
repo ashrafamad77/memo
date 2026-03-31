@@ -52,9 +52,18 @@ Tu recois une decomposition semantique (prep) et tu produis une specification de
 Types existants dans la base (reutilise-les si pertinent):
 {existing_types}
 
-You are a professional taxonomist. When choosing an E55_Type, prioritize accuracy and consistency. Check the 'Existing Types' list first. If you must propose a new type, use a formal, standard English noun in CamelCase (e.g. MorningMeal, not EatingInMorning).
+You are a professional taxonomist. When choosing an E55_Type, follow this priority order:
+1. **Preferred vocabulary** (reuse exactly if semantically appropriate):
+{preferred_types}
 
-Never use an E55_Type **name** that only repeats a CIDOC role or generic class: avoid Place, Person, Activity, Event, Object, Concept, Organization, Project, Location, Group, Actor, State, Type. Those words describe **node labels**, not taxonomy. Prefer journal-grounded labels (CoffeeBreak, TrainStation, TeamMeeting, CodeReview).
+2. **Existing types in the graph** (listed above under "Types existants") — reuse the exact string.
+3. **New type** — only if nothing in 1 or 2 fits. Use a standard English noun in CamelCase that could be a Wikipedia article title for the *concept* (e.g. `Visit`, `Lecture`, `Programming`). Never coin compound action phrases (`Urbanvisit`, `DeepCodingSession`, `MorningStayAtPlace`).
+
+**E55_Type on an E7_Activity classifies the ACTIVITY TYPE, not the specific event.**
+The event's name (e.g. `MorningStayAtVictoria`) already describes the instance. Its *type* should be the abstract concept: `Visit`, `WorkSession`, `Programming`, etc.
+
+Never use an E55_Type **name** that only repeats a CIDOC role or generic class: avoid Place, Person, Activity, Event, Object, Concept, Organization, Project, Location, Group, Actor, State, Type, Other, Unknown, Misc. Those words describe **node labels**, not taxonomy.
+If uncertain about a place type, prefer the most specific seed vocab match (e.g. `Neighbourhood` for urban areas) or leave the types array **empty** — never use `Other` as a fallback.
 
 Utilisateur (auteur du journal): {user_name}
 IMPORTANT: L'utilisateur s'appelle EXACTEMENT "{user_name}". Utilise ce nom exact pour le noeud E21_Person de l'utilisateur. Ne cree PAS de noeud separe "Utilisateur" — utilise "{user_name}".
@@ -150,6 +159,10 @@ _LAZY_CIDOC_E55_LOWER = frozenset(
         "group",
         "actor",
         "project",
+        "other",
+        "unknown",
+        "misc",
+        "miscellaneous",
     }
 )
 
@@ -393,12 +406,20 @@ class ModelingAgent:
         if not prep or not prep.get("micro_events"):
             return {"nodes": [], "edges": []}
 
+        from .type_vocab import seed_type_names
+
         client = self._get_client()
         types_str = ", ".join(existing_types) if existing_types else "(aucun)"
+        seed_names = seed_type_names()
+        # Format seed vocab as a compact two-column list for readability
+        cols = 4
+        rows = [seed_names[i:i + cols] for i in range(0, len(seed_names), cols)]
+        preferred_str = "\n".join("   " + ", ".join(row) for row in rows)
         prompt = MODELING_PROMPT.format(
             cidoc_vocab=CIDOC_VOCAB,
             existing_types=types_str,
             user_name=user_name or "utilisateur",
+            preferred_types=preferred_str,
         )
         prep_json = json.dumps(prep, ensure_ascii=False, indent=2)
         full = prompt + f"\n\nJour: {day_bucket}\n\nDecomposition prep:\n{prep_json}"

@@ -2,11 +2,14 @@
 import difflib
 import hashlib
 import json
+import logging
 import os
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import requests
+
+_log = logging.getLogger(__name__)
 
 
 # Shared across TypeResolver instances in one process (e.g. agentic resolve + writer post-pass).
@@ -14,6 +17,7 @@ _WIKIDATA_TERM_CACHE: Dict[str, Optional[Dict[str, str]]] = {}
 _SPARQL_FORBIDDEN_CACHE: Dict[str, Optional[bool]] = {}
 _SPARQL_CLASS_LABELS_CACHE: Dict[str, List[str]] = {}
 _SPARQL_P31_ROOT_CACHE: Dict[str, Optional[bool]] = {}
+_SPARQL_CHART_MEDIA_CACHE: Dict[str, Optional[bool]] = {}
 
 # E53_Place guard: P31/P279* must reach this class. Default Q2221906 = geographic location.
 _WD_DEFAULT_PLACE_TAXONOMY_ROOT = (
@@ -52,6 +56,11 @@ _AAT_TERM_CACHE: Dict[str, Optional[Dict[str, str]]] = {}
 _WD_ROOT_DISEASE = "Q12136"
 _WD_ROOT_TAXON = "Q16521"
 _WD_ROOT_HUMAN = "Q5"
+# Reject Wikidata hits that are songs, films, albums, or singles (lexical traps for verbs like "Stay").
+_WD_ROOT_SONG = "Q7366"
+_WD_ROOT_FILM = "Q11424"
+_WD_ROOT_ALBUM = "Q482994"
+_WD_ROOT_MUSIC_SINGLE = "Q134556"
 
 _JOURNAL_STOPWORDS = frozenset(
     """
@@ -135,6 +144,34 @@ ASK {{
         return None
     out = bool(data["boolean"])
     _SPARQL_FORBIDDEN_CACHE[cache_key] = out
+    return out
+
+
+def wikidata_entity_is_chart_or_screen_work(qid: str) -> Optional[bool]:
+    """
+    True  => P31/P279* reaches song, film, album, or music single (reject for type grounding).
+    False => does not reach those roots.
+    None  => WDQS error / timeout.
+    """
+    q = _safe_wikidata_qid(qid)
+    if not q:
+        return None
+    if q in _SPARQL_CHART_MEDIA_CACHE:
+        return _SPARQL_CHART_MEDIA_CACHE[q]
+    ask = f"""
+PREFIX wd: <http://www.wikidata.org/entity/>
+PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+ASK {{
+  VALUES ?bad {{ wd:{_WD_ROOT_SONG} wd:{_WD_ROOT_FILM} wd:{_WD_ROOT_ALBUM} wd:{_WD_ROOT_MUSIC_SINGLE} }}
+  wd:{q} wdt:P31/wdt:P279* ?bad .
+}}
+"""
+    data = _sparql_wdqs(ask)
+    if not data or "boolean" not in data:
+        _SPARQL_CHART_MEDIA_CACHE[q] = None
+        return None
+    out = bool(data["boolean"])
+    _SPARQL_CHART_MEDIA_CACHE[q] = out
     return out
 
 
@@ -522,6 +559,14 @@ _AMBIGUOUS_LEMMA_JOURNAL_PATTERNS: Dict[str, str] = {
     "fear": r"\b(fear|fears|feared|fearing)\b",
     "think": r"\b(think|thinks|thought|thinking)\b",
     "feel": r"\b(feel|feels|felt|feeling)\b",
+}
+
+# When lexical authority is blocked, try these formal phrases before AAT / Wikidata (lemma → terms).
+_VERB_CONCEPT_FALLBACK_TERMS: Dict[str, List[str]] = {
+    "stay": ["sojourn", "occupying", "occupancy", "temporary residence", "physical presence"],
+    "live": ["residence", "dwelling", "habitation"],
+    "rest": ["repose", "relaxation"],
+    "work": ["labor", "occupation", "employment"],
 }
 
 
@@ -1088,6 +1133,31 @@ class TypeResolver:
             result = s.run("MATCH (t:E55_Type) RETURN t.name AS name ORDER BY name")
             return [r["name"] for r in result if r["name"]]
 
+    def get_grounded_types(self) -> Dict[str, Dict[str, Optional[str]]]:
+        """Return {name: {wikidata_id, aat_id, description}} for E55_Type nodes that already
+        have a KB identifier. Used to skip TypeGroundingLLM for types grounded in a prior entry."""
+        with self.driver.session() as s:
+            result = s.run(
+                """
+                MATCH (t:E55_Type)
+                WHERE t.wikidata_id IS NOT NULL OR t.aat_id IS NOT NULL
+                RETURN t.name AS name,
+                       t.wikidata_id AS wikidata_id,
+                       t.aat_id AS aat_id,
+                       t.description AS description
+                """
+            )
+            out: Dict[str, Dict[str, Optional[str]]] = {}
+            for r in result:
+                nm = r.get("name")
+                if nm:
+                    out[str(nm)] = {
+                        "wikidata_id": r.get("wikidata_id"),
+                        "aat_id": r.get("aat_id"),
+                        "description": r.get("description"),
+                    }
+            return out
+
     def find_e55_name_by_wikidata_id(self, wikidata_id: str) -> Optional[str]:
         qid = (wikidata_id or "").strip()
         if not qid:
@@ -1114,13 +1184,14 @@ class TypeResolver:
         context_category: str = "",
         journal_text: str = "",
         wsd_profile: Optional[Dict[str, Any]] = None,
+        wikidata_candidates: Optional[List[Dict[str, Any]]] = None,
+        wikidata_confidence: str = "medium",
     ) -> Optional[Dict[str, str]]:
         """
-        Search Wikidata (short query variants + merge), lexical + description penalties, then:
-        - SPARQL ASK: reject if P31/P279* hits forbidden roots for context_category.
-        - SPARQL SELECT: class labels + overlap boost vs journal keywords.
-        Optional WSD profile: expert keywords + negatives; E53_Place rows require place taxonomy root.
-        Cached per (term, category, journal hash, WSD row sig).
+        Default pipeline: pass `wikidata_candidates` from the batch TypeGroundingLLM row — embed rerank +
+        qid exists + SPARQL only. With no candidates, returns None (no per-type LLM).
+
+        Legacy (MEMO_WD_LEGACY_WBSEARCH=1): wbsearchentities + heuristics (+ optional tie-break LLM).
         """
         st = (scoring_term or "").strip()
         if not st or len(st) < _WD_MIN_QUERY_LEN:
@@ -1129,12 +1200,63 @@ class TypeResolver:
         j_sig = _journal_text_cache_sig(journal_text)
         wsd_row = _find_wsd_row_for_term(st, cat, wsd_profile)
         wsd_sig = _wsd_row_cache_sig(wsd_row)
+
+        try:
+            from .type_grounding_embed import (
+                batch_candidates_cache_sig,
+                legacy_wbsearch_enabled,
+                resolve_wikidata_from_batch_candidates,
+            )
+        except ImportError:
+
+            def legacy_wbsearch_enabled() -> bool:
+                return True
+
+            def batch_candidates_cache_sig(_a: Any, _b: str) -> str:
+                return ""
+
+            resolve_wikidata_from_batch_candidates = None  # type: ignore[misc, assignment]
+
+        if not legacy_wbsearch_enabled():
+            cand_sig = batch_candidates_cache_sig(wikidata_candidates or [], wikidata_confidence)
+            cache_key = f"emb|{st}\n{cat}\n{j_sig}\n{wsd_sig}\n{cand_sig}"
+            if cache_key in self._wikidata_cache:
+                return self._wikidata_cache[cache_key]
+            if cache_key in _WIKIDATA_TERM_CACHE:
+                self._wikidata_cache[cache_key] = _WIKIDATA_TERM_CACHE[cache_key]
+                return self._wikidata_cache[cache_key]
+            if not wikidata_candidates:
+                self._wikidata_cache[cache_key] = None
+                _WIKIDATA_TERM_CACHE[cache_key] = None
+                return None
+            out_e: Optional[Dict[str, str]] = None
+            if resolve_wikidata_from_batch_candidates is not None:
+                try:
+                    out_e = resolve_wikidata_from_batch_candidates(
+                        st,
+                        journal_text,
+                        cat,
+                        wsd_profile,
+                        list(wikidata_candidates),
+                        wikidata_confidence,
+                    )
+                except Exception:
+                    out_e = None
+            self._wikidata_cache[cache_key] = out_e
+            _WIKIDATA_TERM_CACHE[cache_key] = out_e
+            return out_e
+
+        # ---------------------------------------------------------------------------
+        # LEGACY: wbsearchentities + lexical heuristics (+ optional LLM tie-break).
+        # Remove after 2026-05-15 once batch + embed + SPARQL path is stable in prod.
+        # ---------------------------------------------------------------------------
         cache_key = f"{st}\n{cat}\n{j_sig}\n{wsd_sig}"
         if cache_key in self._wikidata_cache:
             return self._wikidata_cache[cache_key]
         if cache_key in _WIKIDATA_TERM_CACHE:
             self._wikidata_cache[cache_key] = _WIKIDATA_TERM_CACHE[cache_key]
             return self._wikidata_cache[cache_key]
+
         variants = _wikidata_wbsearch_variants(st, search_phrase=search_phrase)
         if not variants:
             self._wikidata_cache[cache_key] = None
@@ -1189,6 +1311,8 @@ class TypeResolver:
                 if not qid:
                     continue
                 if wikidata_entity_forbidden_by_ontology(qid, cat) is True:
+                    continue
+                if wikidata_entity_is_chart_or_screen_work(qid) is True:
                     continue
                 label = str(h.get("label") or "")
                 desc = str(h.get("description") or "")
@@ -1313,6 +1437,79 @@ class TypeResolver:
                 out.append(t)
         return out
 
+    def _resolve_ambiguous_verb_conceptually(
+        self,
+        raw: str,
+        norm: str,
+        working: List[str],
+        journal_text: str,
+        context_category: str,
+        wsd_profile: Optional[Dict[str, Any]],
+    ) -> Optional[Tuple[str, Optional[str], str, Optional[str]]]:
+        """
+        Legacy only: generic lemma not in journal → paraphrase phrases + AAT substring + wbsearch.
+        Batch+embed pipeline does not use this path.
+        """
+        try:
+            from .type_grounding_embed import legacy_wbsearch_enabled
+
+            if not legacy_wbsearch_enabled():
+                _log.debug(
+                    "ambiguous_verb path skipped (modern pipeline; use batch LLM + confidence): %r",
+                    raw,
+                )
+                return None
+        except ImportError:
+            pass
+        lemma = _ambiguous_type_lemma(raw)
+        if not lemma:
+            return None
+        from .verb_concept_llm import llm_paraphrase_verb_to_concepts
+
+        merged: List[str] = []
+        seen: Set[str] = set()
+        for t in llm_paraphrase_verb_to_concepts(raw, journal_text, lemma) + _VERB_CONCEPT_FALLBACK_TERMS.get(
+            lemma, []
+        ):
+            s = (t or "").strip()
+            if len(s) < 2:
+                continue
+            k = s.casefold()
+            if k in seen:
+                continue
+            seen.add(k)
+            merged.append(s)
+        if not merged:
+            return None
+        cat = _normalize_context_category(context_category)
+        aat_kw: Set[str] = set(_journal_keywords(journal_text))
+        wsd_row = _find_wsd_row_for_term(raw, context_category, wsd_profile)
+        if wsd_row:
+            aat_kw |= _expert_keywords_from_wsd(wsd_row)
+        for phrase in merged[:12]:
+            aat = lookup_getty_aat_concept(phrase, cat, aat_kw)
+            if aat and aat.get("aat_id"):
+                alab = (aat.get("label") or "").strip()
+                return norm, None, alab or (aat.get("description") or "Getty AAT"), str(aat["aat_id"])
+        for phrase in merged[:12]:
+            info = self.get_wikidata_info(
+                phrase,
+                context_category=cat,
+                journal_text=journal_text,
+                wsd_profile=wsd_profile,
+            )
+            if not info or not info.get("id"):
+                continue
+            qid = info["id"]
+            desc = (info.get("description") or "").strip()
+            hit_name = self.find_e55_name_by_wikidata_id(qid)
+            if hit_name:
+                return hit_name, qid, desc, None
+            lab = (info.get("label") or norm).strip()
+            canon = self.normalize_type_name(self._label_to_camel(lab), working)
+            return canon, qid, desc, None
+        return None
+
     def _resolve_one(
         self,
         raw: str,
@@ -1321,30 +1518,138 @@ class TypeResolver:
         journal_text: str,
         context_category: str,
         wsd_profile: Optional[Dict[str, Any]] = None,
-        llm_grounding: Optional[Dict[str, Dict[str, str]]] = None,
+        llm_grounding: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> Tuple[str, Optional[str], str, Optional[str]]:
         """Returns (canonical_name, wikidata_id, description, aat_id)."""
         raw = (raw or "").strip()
         norm = self.normalize_type_name(raw, working)
-        block_ambiguous = _ambiguous_type_blocks_authority(raw, journal_text)
+
+        # Step 0: seed vocabulary — no LLM / SPARQL / embed needed for pre-mapped types.
+        from .type_vocab import get_seed_entry
+        seed = get_seed_entry(norm) or get_seed_entry(raw)
+        if seed:
+            wid = str(seed.get("wikidata_id") or "").strip()
+            desc = str(seed.get("description") or "").strip()
+            if wid:
+                # Reuse an existing Neo4j node that already carries this QID (dedup).
+                existing_hit = self.find_e55_name_by_wikidata_id(wid)
+                if existing_hit:
+                    return existing_hit, wid, desc, None
+                if norm not in working:
+                    working.append(norm)
+                return norm, wid, desc, None
+            # Seed entry exists but has no QID yet: fall through to normal grounding,
+            # which will resolve it once and persist the result to Neo4j.
+        try:
+            from .type_grounding_embed import (
+                embed_grounding_enabled,
+                legacy_wbsearch_enabled,
+                resolve_wikidata_from_batch_candidates,
+                validate_batch_aat,
+                validate_wikidata_candidate,
+                wikidata_qid_exists,
+            )
+        except ImportError:
+            embed_grounding_enabled = lambda: False  # type: ignore[misc, assignment]
+            legacy_wbsearch_enabled = lambda: True  # type: ignore[misc, assignment]
+            resolve_wikidata_from_batch_candidates = lambda *a, **k: None  # type: ignore[misc, assignment]
+            validate_batch_aat = lambda *a, **k: None  # type: ignore[misc, assignment]
+            validate_wikidata_candidate = lambda *a, **k: False  # type: ignore[misc, assignment]
+            wikidata_qid_exists = lambda *a, **k: False  # type: ignore[misc, assignment]
+
+        _modern = embed_grounding_enabled()
+        block_ambiguous = _ambiguous_type_blocks_authority(raw, journal_text) and legacy_wbsearch_enabled()
+
         if llm_grounding and not block_ambiguous:
             row = llm_grounding.get(raw)
             if isinstance(row, dict):
+                if _modern:
+                    conf = str(row.get("confidence") or "medium").strip().lower()
+                    if conf not in ("high", "medium", "low"):
+                        conf = "medium"
+                    if conf == "low":
+                        _log.info(
+                            "type_resolve: batch confidence=low for type %r — skipping Wikidata/AAT",
+                            raw,
+                        )
+                        close = self._closest_existing(norm, working)
+                        if close:
+                            return close, None, "", None
+                        return norm, None, "", None
+                    wc = row.get("wikidata_candidates")
+                    candidates: List[Dict[str, Any]] = wc if isinstance(wc, list) else []
+                    wd_info = resolve_wikidata_from_batch_candidates(
+                        raw,
+                        journal_text,
+                        context_category,
+                        wsd_profile,
+                        candidates,
+                        conf,
+                    )
+                    if wd_info and wd_info.get("id"):
+                        qid = str(wd_info["id"])
+                        desc = (wd_info.get("description") or "").strip()
+                        hit_name = self.find_e55_name_by_wikidata_id(qid)
+                        if hit_name:
+                            return hit_name, qid, desc, None
+                        lab = (wd_info.get("label") or norm).strip()
+                        canon = self.normalize_type_name(self._label_to_camel(lab), working)
+                        return canon, qid, desc, None
+                    _log.debug(
+                        "type_resolve: no Wikidata candidate passed embed+SPARQL for type %r (conf=%s)",
+                        raw,
+                        conf,
+                    )
+                    aat_t = validate_batch_aat(
+                        str(row.get("aat_id") or ""),
+                        str(row.get("aat_label") or ""),
+                        str(row.get("aat_confidence") or "low"),
+                    )
+                    if aat_t:
+                        aid, alab = aat_t
+                        return norm, None, alab, aid
+                    close = self._closest_existing(norm, working)
+                    if close:
+                        return close, None, "", None
+                    return norm, None, "", None
+
                 wid = str(row.get("wikidata_id") or "").strip()
                 aid = str(row.get("aat_id") or "").strip()
                 desc = str(row.get("description") or "").strip()
                 if wid and _safe_wikidata_qid(wid):
-                    hit_name = self.find_e55_name_by_wikidata_id(wid)
-                    if hit_name:
-                        return hit_name, wid, desc, None
-                    return norm, wid, desc, None
+                    wsd_r = _find_wsd_row_for_term(raw, context_category, wsd_profile)
+                    use_wid = True
+                    try:
+                        use_wid = wikidata_qid_exists(wid) and validate_wikidata_candidate(
+                            wid, context_category, wsd_r
+                        )
+                    except Exception:
+                        pass
+                    if use_wid:
+                        hit_name = self.find_e55_name_by_wikidata_id(wid)
+                        if hit_name:
+                            return hit_name, wid, desc, None
+                        return norm, wid, desc, None
                 if aid and not wid:
                     return norm, None, desc or "Getty AAT", aid
+
         if block_ambiguous:
+            concept = self._resolve_ambiguous_verb_conceptually(
+                raw, norm, working, journal_text, context_category, wsd_profile
+            )
+            if concept:
+                return concept
             close = self._closest_existing(norm, working)
             if close:
                 return close, None, "", None
             return norm, None, "", None
+
+        if _modern:
+            close = self._closest_existing(norm, working)
+            if close:
+                return close, None, "", None
+            return norm, None, "", None
+
         info: Optional[Dict[str, str]] = None
         for tv in self._term_variants(norm, raw):
             info = self.get_wikidata_info(
@@ -1399,7 +1704,7 @@ class TypeResolver:
         *,
         journal_text: str = "",
         wsd_profile: Optional[Dict[str, Any]] = None,
-        llm_grounding: Optional[Dict[str, Dict[str, str]]] = None,
+        llm_grounding: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Normalize type strings, merge by Wikidata id, attach _e55_authority_meta; strip LLM helper fields."""
         if existing is None:

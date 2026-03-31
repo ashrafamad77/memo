@@ -93,11 +93,32 @@ class AgenticRunner:
                 if self.type_grounding_llm and self.type_resolver:
                     reqs = collect_e55_grounding_requests(spec)
                     if reqs:
-                        llm_ground = self.type_grounding_llm.run(
-                            state.get("text") or "",
-                            reqs,
-                            state.get("wsd_profile"),
-                        )
+                        # Skip grounding for types already resolved: seed vocab entries
+                        # with known QIDs, and types cached in Neo4j from prior entries.
+                        from .type_vocab import SEED_VOCAB
+                        seeded_lower = {
+                            k.lower()
+                            for k, v in SEED_VOCAB.items()
+                            if v.get("wikidata_id")
+                        }
+                        try:
+                            neo4j_grounded_lower = {
+                                n.lower()
+                                for n in self.type_resolver.get_grounded_types()
+                            }
+                        except Exception:
+                            neo4j_grounded_lower = set()
+                        skip_lower = seeded_lower | neo4j_grounded_lower
+                        reqs_to_ground = [
+                            r for r in reqs
+                            if (r.get("name") or "").lower() not in skip_lower
+                        ]
+                        if reqs_to_ground:
+                            llm_ground = self.type_grounding_llm.run(
+                                state.get("text") or "",
+                                reqs_to_ground,
+                                state.get("wsd_profile"),
+                            )
                 if self.type_resolver:
                     spec = self.type_resolver.resolve_graph_spec(
                         spec,
