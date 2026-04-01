@@ -63,7 +63,9 @@ You are a professional taxonomist. When choosing an E55_Type, follow this priori
 The event's name (e.g. `MorningStayAtVictoria`) already describes the instance. Its *type* should be the abstract concept: `Visit`, `WorkSession`, `Programming`, etc.
 
 Never use an E55_Type **name** that only repeats a CIDOC role or generic class: avoid Place, Person, Activity, Event, Object, Concept, Organization, Project, Location, Group, Actor, State, Type, Other, Unknown, Misc. Those words describe **node labels**, not taxonomy.
-If uncertain about a place type, prefer the most specific seed vocab match (e.g. `Neighbourhood` for urban areas) or leave the types array **empty** — never use `Other` as a fallback.
+
+**Activities (E7_Activity):** always assign a type — pick the closest match from the preferred vocabulary. If nothing specific fits, use `WorkSession` or `Visit` rather than leaving types empty.
+**Places (E53_Place):** if you cannot determine the specific place type, leave the types array **empty** — never use `Other` as a fallback.
 
 Utilisateur (auteur du journal): {user_name}
 IMPORTANT: L'utilisateur s'appelle EXACTEMENT "{user_name}". Utilise ce nom exact pour le noeud E21_Person de l'utilisateur. Ne cree PAS de noeud separe "Utilisateur" — utilise "{user_name}".

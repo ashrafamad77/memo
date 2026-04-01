@@ -4,7 +4,9 @@ Executes a graph spec (nodes + edges) produced by the Modeling Agent.
 Minimal structural completeness only; E13 P141 may be inferred from text when the
 agent omits a concrete E55_Type (see _infer_e13_p141_type).
 """
+import json
 import logging
+import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -424,6 +426,43 @@ class GraphWriter:
             if not has_causal and default_trigger:
                 normalized_edges.append((aid, default_trigger, "P15_was_influenced_by", {}))
 
+        # Completeness rule: every E7_Activity should have at least one E55_Type.
+        # Use context clues from the edges rather than parsing the node name.
+        # Completeness rule: E53_Place nodes without a type get a default based on context.
+        places_with_p2 = {f for (f, _t, p, _ep) in normalized_edges if p == "P2_has_type"
+                          if id_to_label.get(f) == "E53_Place"}
+        places_as_p7_target = {t for (_f, t, p, _ep) in normalized_edges if p == "P7_took_place_at"}
+        for nid, lab in list(id_to_label.items()):
+            if lab != "E53_Place":
+                continue
+            if nid in places_with_p2:
+                continue
+            # Only type places that are actual activity venues (P7 target); leave remote refs untyped
+            if nid not in places_as_p7_target:
+                continue
+            # If the place name matches a seed vocab entry, use that canonical type.
+            # Otherwise fall back to Neighbourhood (generic urban venue).
+            from .type_vocab import get_seed_entry
+            pname = _get_node_name(nid)
+            seed = get_seed_entry(pname)
+            place_type = pname if seed else "Neighbourhood"
+            tid = f"auto_place_type_{nid}"
+            _add_node_once(tid, "E55_Type", place_type)
+            normalized_edges.append((nid, tid, "P2_has_type", {}))
+
+        activities_with_p2 = {f for (f, _t, p, _ep) in normalized_edges if p == "P2_has_type"}
+        activities_with_place = {f for (f, _t, p, _ep) in normalized_edges if p == "P7_took_place_at"}
+        for nid, lab in list(id_to_label.items()):
+            if lab not in {"E7_Activity", "E10_Transfer_of_Custody"}:
+                continue
+            if nid in activities_with_p2:
+                continue
+            # Activity at a place → Visit; everything else → WorkSession
+            fallback_type = "Visit" if nid in activities_with_place else "WorkSession"
+            tid = f"auto_type_{nid}"
+            _add_node_once(tid, "E55_Type", fallback_type)
+            normalized_edges.append((nid, tid, "P2_has_type", {}))
+
         if driver is not None:
             from .type_resolver import TypeResolver
 
@@ -540,18 +579,24 @@ class GraphWriter:
             elif label == "E21_Person":
                 # Merge people globally by name so user/known persons are not duplicated per entry.
                 person_id = str(props.get("person_id", "") or "").strip()
+                wid_person = str(props.get("wikidata_id") or "").strip() or None
+                wdesc_person = str(props.get("wikidata_description") or "").strip() or None
                 if person_id:
                     row = tx.run(
                         """
                         MERGE (n:E21_Person:E39_Actor {id: $pid})
                         ON CREATE SET n.first_seen = datetime($ts)
                         SET n.last_seen = datetime($ts),
-                            n.name = coalesce(n.name, $name)
+                            n.name = coalesce(n.name, $name),
+                            n.wikidata_id = coalesce($wid, n.wikidata_id),
+                            n.wikidata_description = coalesce($wdesc, n.wikidata_description)
                         RETURN n.id as id
                         """,
                         pid=person_id,
                         name=name,
                         ts=ts,
+                        wid=wid_person,
+                        wdesc=wdesc_person,
                     ).single()
                 else:
                     row = tx.run(
@@ -559,11 +604,15 @@ class GraphWriter:
                         MERGE (n:E21_Person:E39_Actor {name: $name})
                         ON CREATE SET n.first_seen = datetime($ts)
                         SET n.last_seen = datetime($ts),
-                            n.id = coalesce(n.id, randomUUID())
+                            n.id = coalesce(n.id, randomUUID()),
+                            n.wikidata_id = coalesce($wid, n.wikidata_id),
+                            n.wikidata_description = coalesce($wdesc, n.wikidata_description)
                         RETURN n.id as id
                         """,
                         name=name,
                         ts=ts,
+                        wid=wid_person,
+                        wdesc=wdesc_person,
                     ).single()
                 id_to_person_name[nid] = name
                 if row and row.get("id"):
@@ -582,6 +631,12 @@ class GraphWriter:
                 if "event_time_text" in props:
                     prop_sets.append("n.event_time_text = $ett")
                     prop_params["ett"] = str(props["event_time_text"])
+                if label == "E53_Place" and props.get("wikidata_id"):
+                    prop_sets.append("n.wikidata_id = coalesce(n.wikidata_id, $wid)")
+                    prop_params["wid"] = str(props["wikidata_id"])
+                    if props.get("wikidata_description"):
+                        prop_sets.append("n.wikidata_description = coalesce(n.wikidata_description, $wdesc)")
+                        prop_params["wdesc"] = str(props["wikidata_description"])
 
                 extra = (", " + ", ".join(prop_sets)) if prop_sets else ""
 
@@ -844,4 +899,52 @@ class GraphWriter:
             and int(assignment_missing_p140) == 0
             and int(assignment_missing_p141) == 0,
         }
+        wtasks = spec.get("_entity_linking_wikidata_tasks") or []
+        if isinstance(wtasks, list):
+            for item in wtasks:
+                if not isinstance(item, dict):
+                    continue
+                mention = str(item.get("mention") or "").strip()
+                place_key = str(item.get("place_key") or "").strip()
+                eid = str(item.get("entry_id") or "").strip()
+                entity_label = str(item.get("entity_label") or "E53_Place").strip()
+                cands = item.get("candidates") or []
+                if not mention or not place_key or not eid:
+                    continue
+                try:
+                    cj = json.dumps(cands, ensure_ascii=False)
+                except (TypeError, ValueError):
+                    cj = "[]"
+                dup = tx.run(
+                    """
+                    MATCH (e:DisambiguationTask {place_key: $place_key, type: 'place_wikidata'})
+                    WHERE e.status = 'open'
+                    RETURN e.id AS id LIMIT 1
+                    """,
+                    place_key=place_key,
+                ).single()
+                if dup and dup.get("id"):
+                    continue
+                tid = str(uuid.uuid4())
+                tx.run(
+                    """
+                    CREATE (t:DisambiguationTask {
+                      id: $id,
+                      type: 'place_wikidata',
+                      mention: $mention,
+                      status: 'open',
+                      created_at: datetime(),
+                      entry_id: $entry_id,
+                      place_key: $place_key,
+                      entity_label: $entity_label,
+                      candidates_json: $candidates_json
+                    })
+                    """,
+                    id=tid,
+                    mention=mention,
+                    entry_id=eid,
+                    place_key=place_key,
+                    entity_label=entity_label or "E53_Place",
+                    candidates_json=cj,
+                )
         return audit

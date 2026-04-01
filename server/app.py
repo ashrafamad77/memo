@@ -37,8 +37,9 @@ class ChatIn(BaseModel):
     message: str = Field(..., min_length=1)
 
 class ResolveTaskIn(BaseModel):
-    decision: str = Field(..., pattern="^(merge|split)$")
+    decision: str = Field(..., pattern="^(merge|split|pick|skip)$")
     target_person_id: str | None = None
+    wikidata_id: str | None = None
 
 
 ONBOARDING_STEPS = [
@@ -415,6 +416,7 @@ def create_app() -> FastAPI:
                 task_id=task_id,
                 decision=payload.decision,
                 target_person_id=payload.target_person_id,
+                wikidata_id=payload.wikidata_id,
             )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e

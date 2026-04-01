@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
@@ -2436,50 +2437,148 @@ class Neo4jRepo:
                p.id as proposed_person_id,
                p.name as proposed_name,
                p.role as proposed_role,
-               t.entry_id as entry_id
+               t.entry_id as entry_id,
+               t.place_key as place_key,
+               t.entity_label as entity_label,
+               t.candidates_json as candidates_json
         ORDER BY t.created_at DESC
         LIMIT $limit
         """
         with self._driver.session() as s:
-            return [dict(r) for r in s.run(q, status=status, limit=int(limit))]
+            rows = [dict(r) for r in s.run(q, status=status, limit=int(limit))]
+        out: List[Dict[str, Any]] = []
+        for r in rows:
+            cj = r.pop("candidates_json", None)
+            if cj:
+                try:
+                    r["candidates"] = json.loads(cj) if isinstance(cj, str) else cj
+                except json.JSONDecodeError:
+                    r["candidates"] = []
+            else:
+                r["candidates"] = None
+            out.append(r)
+        return out
 
     def resolve_task(
         self,
         task_id: str,
         decision: str,
         target_person_id: Optional[str] = None,
+        wikidata_id: Optional[str] = None,
         decided_by: str = "user",
     ) -> Dict[str, Any]:
         decision = (decision or "").strip().lower()
-        if decision not in {"merge", "split"}:
-            raise ValueError("decision must be merge|split")
+        tid = (task_id or "").strip()
+        if not tid:
+            raise ValueError("task_id required")
 
         q_get = """
         MATCH (t:DisambiguationTask {id: $id})
         OPTIONAL MATCH (t)-[:CANDIDATE]->(c:E21_Person)
         OPTIONAL MATCH (t)-[:PROPOSED]->(p:E21_Person)
-        RETURN t as t, c.id as candidate_id, p.id as proposed_id
+        RETURN coalesce(t.type, 'person') AS task_type,
+               t.place_key AS place_key,
+               t.candidates_json AS candidates_json,
+               c.id AS candidate_id,
+               p.id AS proposed_id
         """
         with self._driver.session() as s:
-            row = s.run(q_get, id=task_id).single()
+            row = s.run(q_get, id=tid).single()
             if not row:
                 raise ValueError("task not found")
+            task_type = str(row.get("task_type") or "person").strip()
+            place_key = str(row.get("place_key") or "").strip()
+            candidates_json = row.get("candidates_json")
             candidate_id = row.get("candidate_id")
             proposed_id = row.get("proposed_id")
 
+            if task_type == "place_wikidata":
+                if decision not in {"pick", "skip"}:
+                    raise ValueError("place linking tasks require decision pick|skip")
+                if decision == "pick":
+                    qid = (wikidata_id or "").strip()
+                    if not qid or not qid.startswith("Q"):
+                        raise ValueError("pick requires a valid wikidata_id (Q…)")
+
+                    desc = ""
+                    if candidates_json:
+                        try:
+                            arr = (
+                                json.loads(candidates_json)
+                                if isinstance(candidates_json, str)
+                                else candidates_json
+                            )
+                            if isinstance(arr, list):
+                                for c in arr:
+                                    if not isinstance(c, dict):
+                                        continue
+                                    if str(c.get("wikidata_id") or "").strip() == qid:
+                                        desc = str(c.get("description") or "").strip()
+                                        break
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+
+                    try:
+                        from pipeline.type_grounding_embed import wikidata_qid_exists
+                    except ImportError:
+                        wikidata_qid_exists = None  # type: ignore[misc, assignment]
+                    if wikidata_qid_exists is not None:
+                        try:
+                            if not wikidata_qid_exists(qid):
+                                raise ValueError("wikidata_id does not exist or could not be verified")
+                        except ValueError:
+                            raise
+                        except Exception as exc:
+                            raise ValueError(
+                                "could not verify wikidata_id; try again later"
+                            ) from exc
+
+                    if not place_key:
+                        raise ValueError("task missing place_key")
+                    upd = s.run(
+                        """
+                        MATCH (n)
+                        WHERE n.key = $place_key AND (n:E53_Place OR n:E74_Group)
+                        SET n.wikidata_id = $qid,
+                            n.wikidata_description = CASE
+                              WHEN $desc IS NOT NULL AND $desc <> '' THEN $desc
+                              ELSE coalesce(n.wikidata_description, '')
+                            END
+                        RETURN n.key AS k
+                        """,
+                        place_key=place_key,
+                        qid=qid,
+                        desc=desc or None,
+                    ).single()
+                    if not upd or not upd.get("k"):
+                        raise ValueError("place/group node not found for this task")
+
+                s.run(
+                    """
+                    MATCH (t:DisambiguationTask {id: $id})
+                    SET t.status = 'resolved',
+                        t.decision = $decision,
+                        t.decided_by = $decided_by,
+                        t.resolved_at = datetime()
+                    """,
+                    id=tid,
+                    decision=decision,
+                    decided_by=decided_by,
+                )
+                return {"ok": True, "task_id": tid, "decision": decision}
+
+            # Person disambiguation
+            if decision not in {"merge", "split"}:
+                raise ValueError("person tasks require decision merge|split")
+
             if decision == "merge":
-                # Merge proposed into candidate by default; target_person_id can override.
                 dst = target_person_id or candidate_id
                 src = proposed_id if dst == candidate_id else candidate_id
                 if not src or not dst:
                     raise ValueError("task missing candidate/proposed person")
-                if src == dst:
-                    # nothing to do
-                    pass
-                else:
+                if src != dst:
                     self.merge_persons(src_person_id=src, dst_person_id=dst)
 
-            # Mark task resolved
             s.run(
                 """
                 MATCH (t:DisambiguationTask {id: $id})
@@ -2488,11 +2587,11 @@ class Neo4jRepo:
                     t.decided_by = $decided_by,
                     t.resolved_at = datetime()
                 """,
-                id=task_id,
+                id=tid,
                 decision=decision,
                 decided_by=decided_by,
             )
-            return {"ok": True, "task_id": task_id, "decision": decision}
+            return {"ok": True, "task_id": tid, "decision": decision}
 
     def merge_persons(self, src_person_id: str, dst_person_id: str) -> None:
         """

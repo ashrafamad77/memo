@@ -20,7 +20,28 @@ from .llm_extractor import LLMExtractor
 from .pipeline import MemoryPipeline
 from .wsd_preprocess import WsdPreprocessor
 from .type_grounding_llm import TypeGroundingLLM
-from .type_resolver import collect_e55_grounding_requests
+from .type_resolver import (
+    collect_e55_grounding_requests,
+    collect_entity_linking_requests,
+    apply_entity_linking,
+    build_entity_linking_wikidata_tasks,
+)
+
+
+def _extract_user_profile(spec: Dict[str, Any], user_name: str) -> Dict[str, Any]:
+    """Pull the author's profile properties from the E21_Person node in the spec."""
+    for node in spec.get("nodes", []):
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("label", "")) != "E21_Person":
+            continue
+        if user_name and str(node.get("name", "")).lower() != user_name.lower():
+            continue
+        props = node.get("properties", {})
+        if not isinstance(props, dict):
+            return {}
+        return {k: v for k, v in props.items() if v and not k.startswith("_")}
+    return {}
 
 
 class AgenticState(TypedDict, total=False):
@@ -127,6 +148,41 @@ class AgenticRunner:
                         wsd_profile=state.get("wsd_profile"),
                         llm_grounding=llm_ground,
                     )
+
+                # Entity linking: E53_Place / E21_Person / E74_Group → Wikidata instance QIDs
+                if self.type_grounding_llm:
+                    el_reqs = collect_entity_linking_requests(spec, user_name=self.user_name)
+                    if el_reqs:
+                        user_profile = _extract_user_profile(spec, self.user_name)
+                        el_bundle = self.type_grounding_llm.run_entity_linking(
+                            state.get("text") or "",
+                            el_reqs,
+                            user_profile=user_profile,
+                        )
+                        # apply_entity_linking expects flat name -> {wikidata_id, description, ...}
+                        el_confirmed = (
+                            el_bundle.get("confirmed")
+                            if isinstance(el_bundle, dict)
+                            else None
+                        )
+                        if isinstance(el_confirmed, dict) and el_confirmed:
+                            spec = apply_entity_linking(
+                                spec, el_confirmed, user_name=self.user_name
+                            )
+                        el_pending = (
+                            el_bundle.get("pending")
+                            if isinstance(el_bundle, dict)
+                            else None
+                        )
+                        if isinstance(el_pending, dict) and el_pending:
+                            wtasks = build_entity_linking_wikidata_tasks(
+                                spec,
+                                str(state.get("entry_id") or ""),
+                                el_pending,
+                            )
+                            if wtasks:
+                                spec["_entity_linking_wikidata_tasks"] = wtasks
+
                 return {**state, "graph_spec": spec}
             except Exception as e:
                 return {**state, "graph_spec": {"nodes": [], "edges": [], "_error": str(e)}}

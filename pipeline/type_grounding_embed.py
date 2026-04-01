@@ -118,6 +118,56 @@ def wikidata_fetch_labels_descriptions(qids: List[str]) -> Dict[str, Tuple[str, 
     return out
 
 
+def wikidata_entity_search_candidates(mention: str, *, limit: int = 12) -> List[Dict[str, Any]]:
+    """Short-string Wikidata search for entity linking when the LLM yields no valid QIDs.
+
+    Uses ``wbsearchentities`` (same API as legacy type_resolver). Results are Wikidata-backed
+    labels/descriptions — not model-invented pairs.
+    """
+    q = (mention or "").strip()
+    if len(q) < 2 or len(q) > 200:
+        return []
+    lim = max(1, min(int(limit), 50))
+    try:
+        r = requests.get(
+            _WIKIDATA_API,
+            params={
+                "action": "wbsearchentities",
+                "search": q,
+                "language": "en",
+                "uselang": "en",
+                "format": "json",
+                "limit": str(lim),
+            },
+            headers={"User-Agent": _WIKIDATA_UA},
+            timeout=12,
+        )
+        r.raise_for_status()
+        data = r.json()
+    except Exception:
+        return []
+    out: List[Dict[str, Any]] = []
+    seen: Set[str] = set()
+    for h in data.get("search") or []:
+        if not isinstance(h, dict):
+            continue
+        qid = str(h.get("id") or "").strip().upper()
+        if not re.match(r"^Q\d+$", qid) or qid in seen:
+            continue
+        seen.add(qid)
+        lab = str(h.get("label") or "").strip()
+        desc = str(h.get("description") or "").strip()
+        out.append({
+            "wikidata_id": qid,
+            "label": lab,
+            "description": desc,
+            "confidence": "medium",
+        })
+        if len(out) >= lim:
+            break
+    return out
+
+
 def _cosine(a: List[float], b: List[float]) -> float:
     if not a or not b or len(a) != len(b):
         return 0.0

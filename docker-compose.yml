@@ -1,6 +1,16 @@
-# Neo4j (graph) + Weaviate (vector store) + transformers inference (text2vec)
+# Neo4j (graph) + Weaviate (vector store) + transformers inference (text2vec) + entity-fishing (EL)
 # Usage: docker-compose up -d
 # Bare-metal app: EMBEDDING_INFERENCE_URL=http://127.0.0.1:8082 (host port 8082 → sidecar 8080)
+# entity-fishing REST: http://localhost:8090/service/disambiguate
+#
+# entity-fishing KB data setup (one-time, ~15 GB):
+#   mkdir -p ./data/entity-fishing
+#   cd ./data/entity-fishing
+#   wget https://science-miner.s3.amazonaws.com/entity-fishing/0.0.6/db-kb.zip
+#   wget https://science-miner.s3.amazonaws.com/entity-fishing/0.0.6/db-en.zip
+#   unzip db-kb.zip && unzip db-en.zip
+# Then: docker-compose up -d entity-fishing
+#
 # Puis: python main.py add "..."
 
 services:
@@ -38,6 +48,16 @@ services:
       DEFAULT_VECTORIZER_MODULE: "text2vec-transformers"
     volumes:
       - weaviate_data:/var/lib/weaviate
+
+  entity-fishing:
+    image: grobid/entity-fishing:0.0.6
+    ports:
+      - "8090:8090"
+    volumes:
+      - ./data/entity-fishing/db-kb:/opt/entity-fishing/data/db/kb
+      - ./data/entity-fishing/db-en:/opt/entity-fishing/data/db/en
+    # Comment out if KB data not yet downloaded — use public API in the meantime:
+    # ENTITY_FISHING_URL=https://cloud.science-miner.com/nerd in .env
 
 volumes:
   neo4j_data:

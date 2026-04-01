@@ -846,6 +846,150 @@ def _type_item_category(entry: Any, host_label: str) -> str:
     return _infer_host_category(host_label)
 
 
+def collect_entity_linking_requests(
+    spec: Dict[str, Any], user_name: str = ""
+) -> List[Dict[str, str]]:
+    """Collect E53_Place, E21_Person, E74_Group nodes that need Wikidata instance linking.
+
+    Skips the journal author and nodes that already have a wikidata_id in their properties.
+    Returns list of {name, cidoc_label}.
+    """
+    nodes = spec.get("nodes", [])
+    if not isinstance(nodes, list):
+        return []
+    seen: Set[str] = set()
+    out: List[Dict[str, str]] = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        label = str(node.get("label", ""))
+        if label not in ("E53_Place", "E21_Person", "E74_Group"):
+            continue
+        name = str(node.get("name") or "").strip()
+        if not name or name in seen:
+            continue
+        if user_name and name.lower() == user_name.lower():
+            continue
+        # Skip if already linked
+        props = node.get("properties", {})
+        if isinstance(props, dict) and props.get("wikidata_id"):
+            continue
+        seen.add(name)
+        out.append({"name": name, "cidoc_label": label})
+    return out
+
+
+def apply_entity_linking(
+    spec: Dict[str, Any],
+    el_results: Dict[str, Dict[str, Any]],
+    user_name: str = "",
+) -> Dict[str, Any]:
+    """Write validated Wikidata QIDs back into E53_Place/E21_Person/E74_Group node properties.
+
+    ``el_results`` must be a flat map: entity display name -> {wikidata_id, description?, ...}
+    (e.g. only the ``confirmed`` slice from ``TypeGroundingLLM.run_entity_linking``).
+
+    Validates each QID with wikidata_qid_exists() before storing — drops hallucinated IDs.
+    """
+    if not el_results:
+        return spec
+    try:
+        from .type_grounding_embed import wikidata_qid_exists
+    except ImportError:
+        wikidata_qid_exists = lambda q: False  # type: ignore[misc, assignment]
+
+    for node in spec.get("nodes", []):
+        if not isinstance(node, dict):
+            continue
+        label = str(node.get("label", ""))
+        if label not in ("E53_Place", "E21_Person", "E74_Group"):
+            continue
+        name = str(node.get("name") or "").strip()
+        if not name:
+            continue
+        if user_name and name.lower() == user_name.lower():
+            continue
+        result = el_results.get(name)
+        if not isinstance(result, dict):
+            continue
+        qid = str(result.get("wikidata_id") or "").strip()
+        if not qid or not qid.startswith("Q"):
+            continue
+        # Validate: reject hallucinated QIDs
+        try:
+            if not wikidata_qid_exists(qid):
+                _log.info("entity_linking: QID %s for %r does not exist, dropping", qid, name)
+                continue
+        except Exception:
+            continue  # network error: skip rather than store bad data
+        props = node.get("properties", {})
+        if not isinstance(props, dict):
+            props = {}
+        props["wikidata_id"] = qid
+        desc = str(result.get("description") or "").strip()
+        if desc:
+            props["wikidata_description"] = desc
+        node["properties"] = props
+    return spec
+
+
+_KEYED_LINK_LABELS = frozenset({"E53_Place", "E74_Group"})
+
+
+def build_entity_linking_wikidata_tasks(
+    spec: Dict[str, Any],
+    entry_id: str,
+    pending: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Turn LLM ``pending`` entity-linking map into inbox rows for keyed places/groups.
+
+    Only ``E53_Place`` and ``E74_Group`` use ``{entry_id}|{spec_node_id}`` keys in
+    :class:`pipeline.graph_writer.GraphWriter`; other pending entities are skipped here.
+    """
+    eid = (entry_id or "").strip()
+    if not eid or not pending or not isinstance(pending, dict):
+        return []
+    nodes = spec.get("nodes", [])
+    if not isinstance(nodes, list):
+        return []
+
+    def _match_keyed_node(mention: str) -> Optional[Tuple[str, str]]:
+        m = mention.strip().casefold()
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            label = str(node.get("label", ""))
+            if label not in _KEYED_LINK_LABELS:
+                continue
+            n = str(node.get("name") or "").strip().casefold()
+            if n != m:
+                continue
+            nid = str(node.get("id") or "").strip()
+            if not nid:
+                continue
+            return nid, label
+        return None
+
+    out: List[Dict[str, Any]] = []
+    for name, cands in pending.items():
+        if not isinstance(cands, list) or not cands:
+            continue
+        hit = _match_keyed_node(str(name))
+        if not hit:
+            continue
+        nid, cidoc_label = hit
+        out.append(
+            {
+                "mention": str(name).strip(),
+                "place_key": f"{eid}|{nid}",
+                "entry_id": eid,
+                "entity_label": cidoc_label,
+                "candidates": cands,
+            }
+        )
+    return out
+
+
 def collect_e55_grounding_requests(spec: Dict[str, Any]) -> List[Dict[str, str]]:
     """
     Unique taxonomy labels from the graph spec for LLM authority grounding.

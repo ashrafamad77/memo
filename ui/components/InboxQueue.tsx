@@ -4,8 +4,16 @@ import { useEffect, useState } from "react";
 
 import { API_BASE, apiGet } from "@/lib/api";
 
+type WikidataCandidate = {
+  wikidata_id: string;
+  label?: string;
+  description?: string;
+  confidence?: string;
+};
+
 type Task = {
   id: string;
+  type?: string;
   mention: string;
   score?: number;
   created_at?: string;
@@ -17,6 +25,9 @@ type Task = {
   proposed_name?: string;
   proposed_role?: string;
   entry_id?: string;
+  place_key?: string;
+  entity_label?: string;
+  candidates?: WikidataCandidate[] | null;
 };
 
 export function InboxQueue() {
@@ -33,7 +44,7 @@ export function InboxQueue() {
     refresh().catch((e) => setErr(e?.message || String(e)));
   }, []);
 
-  async function resolve(taskId: string, decision: "merge" | "split") {
+  async function resolvePerson(taskId: string, decision: "merge" | "split") {
     setErr("");
     setBusy(taskId);
     try {
@@ -41,6 +52,31 @@ export function InboxQueue() {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ decision }),
+      });
+      if (!res.ok) {
+        const t = await res.text().catch(() => "");
+        throw new Error(`resolve failed: ${res.status} ${t}`);
+      }
+      await refresh();
+    } catch (e: any) {
+      setErr(e?.message || String(e));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function resolvePlace(taskId: string, decision: "pick" | "skip", wikidataId?: string) {
+    setErr("");
+    setBusy(taskId);
+    try {
+      const body: Record<string, string> = { decision };
+      if (decision === "pick" && wikidataId) {
+        body.wikidata_id = wikidataId;
+      }
+      const res = await fetch(`${API_BASE}/inbox/${taskId}/resolve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
         const t = await res.text().catch(() => "");
@@ -64,40 +100,94 @@ export function InboxQueue() {
 
   return (
     <div className="mt-3 space-y-3">
-      {items.map((t) => (
-        <div key={t.id} className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/40 p-3">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="text-sm font-semibold">
-                Disambiguate: <span className="text-zinc-900 dark:text-zinc-100">{t.mention}</span>
+      {items.map((t) => {
+        const isPlace = t.type === "place_wikidata";
+        return (
+          <div
+            key={t.id}
+            className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/40 p-3"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold">
+                  {isPlace ? (
+                    <>
+                      Link place:{" "}
+                      <span className="text-zinc-900 dark:text-zinc-100">{t.mention}</span>
+                      {t.entity_label ? (
+                        <span className="ml-2 font-normal text-zinc-500 dark:text-zinc-400">
+                          ({t.entity_label})
+                        </span>
+                      ) : null}
+                    </>
+                  ) : (
+                    <>
+                      Disambiguate:{" "}
+                      <span className="text-zinc-900 dark:text-zinc-100">{t.mention}</span>
+                    </>
+                  )}
+                </div>
+                {isPlace ? (
+                  <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                    Pick a Wikidata match or skip to leave the place unlinked.
+                  </div>
+                ) : (
+                  <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                    candidate: {t.candidate_name || "—"} ({t.candidate_role || "—"}) · proposed:{" "}
+                    {t.proposed_name || "—"} ({t.proposed_role || "—"}) · score:{" "}
+                    {typeof t.score === "number" ? t.score.toFixed(2) : "—"}
+                  </div>
+                )}
               </div>
-              <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                candidate: {t.candidate_name || "—"} ({t.candidate_role || "—"}) · proposed:{" "}
-                {t.proposed_name || "—"} ({t.proposed_role || "—"}) · score:{" "}
-                {typeof t.score === "number" ? t.score.toFixed(2) : "—"}
-              </div>
+              <div className="shrink-0 text-[11px] text-zinc-500">{t.created_at || ""}</div>
             </div>
-            <div className="shrink-0 text-[11px] text-zinc-500">{t.created_at || ""}</div>
+            {isPlace ? (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {(t.candidates || []).map((c) => (
+                  <button
+                    key={c.wikidata_id}
+                    disabled={busy === t.id}
+                    type="button"
+                    title={c.description || c.wikidata_id}
+                    onClick={() => resolvePlace(t.id, "pick", c.wikidata_id)}
+                    className="max-w-full rounded-lg bg-zinc-50 dark:bg-zinc-900 px-3 py-2 text-left text-xs font-semibold text-zinc-950 disabled:opacity-50"
+                  >
+                    <span className="block truncate">{c.label || c.wikidata_id}</span>
+                    <span className="block font-mono text-[10px] font-normal text-zinc-500">
+                      {c.wikidata_id}
+                    </span>
+                  </button>
+                ))}
+                <button
+                  disabled={busy === t.id}
+                  type="button"
+                  onClick={() => resolvePlace(t.id, "skip")}
+                  className="rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent px-3 py-2 text-xs font-semibold text-zinc-900 dark:text-zinc-100 disabled:opacity-50"
+                >
+                  Skip
+                </button>
+              </div>
+            ) : (
+              <div className="mt-3 flex gap-2">
+                <button
+                  disabled={busy === t.id}
+                  onClick={() => resolvePerson(t.id, "merge")}
+                  className="rounded-lg bg-zinc-50 dark:bg-zinc-900 px-3 py-2 text-xs font-semibold text-zinc-950 disabled:opacity-50"
+                >
+                  Merge (same person)
+                </button>
+                <button
+                  disabled={busy === t.id}
+                  onClick={() => resolvePerson(t.id, "split")}
+                  className="rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent px-3 py-2 text-xs font-semibold text-zinc-900 dark:text-zinc-100 disabled:opacity-50"
+                >
+                  Split (different)
+                </button>
+              </div>
+            )}
           </div>
-          <div className="mt-3 flex gap-2">
-            <button
-              disabled={busy === t.id}
-              onClick={() => resolve(t.id, "merge")}
-              className="rounded-lg bg-zinc-50 dark:bg-zinc-900 px-3 py-2 text-xs font-semibold text-zinc-950 disabled:opacity-50"
-            >
-              Merge (same person)
-            </button>
-            <button
-              disabled={busy === t.id}
-              onClick={() => resolve(t.id, "split")}
-              className="rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent px-3 py-2 text-xs font-semibold text-zinc-900 dark:text-zinc-100 disabled:opacity-50"
-            >
-              Split (different)
-            </button>
-          </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
-
