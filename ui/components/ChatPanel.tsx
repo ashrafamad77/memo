@@ -2,17 +2,95 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { API_BASE } from "@/lib/api";
+import { API_BASE, apiGet } from "@/lib/api";
+
+type WikidataCandidate = {
+  wikidata_id: string;
+  label?: string;
+  description?: string;
+  confidence?: string;
+};
+
+type InboxTask = {
+  id: string;
+  type?: string;
+  mention: string;
+  score?: number;
+  created_at?: string;
+  status: "open" | "resolved";
+  candidate_person_id?: string;
+  candidate_name?: string;
+  candidate_role?: string;
+  proposed_person_id?: string;
+  proposed_name?: string;
+  proposed_role?: string;
+  entry_id?: string;
+  place_key?: string;
+  entity_label?: string;
+  candidates?: WikidataCandidate[] | null;
+};
+
+type HintContext = {
+  msgId: string;
+  entryId: string;
+  taskId: string;
+  mention: string;
+};
 
 type ChatMsg = {
   id: string;
   role: "user" | "assistant";
   text: string;
   badge?: "Onboarding mode" | "Clarification needed";
+  /** When set, this assistant bubble includes inline disambiguation for this entry. */
+  entryId?: string;
+  openTasks?: InboxTask[];
+  /** Snapshot before a hint — shown collapsed above fresh choices. */
+  frozenOpenTasks?: InboxTask[];
+  /** New assistant row after a hint (visual “continuation”). */
+  hintFollowUp?: boolean;
 };
+
+const BUSY_HINTS = [
+  "Reading your entry…",
+  "Extracting people, places, and events…",
+  "Writing to your memory graph…",
+  "Resolving types and Wikidata links…",
+];
 
 function uid(): string {
   return Math.random().toString(16).slice(2) + Date.now().toString(16);
+}
+
+function FrozenTaskSnapshot({ task: t }: { task: InboxTask }) {
+  const isPlace = t.type === "place_wikidata";
+  return (
+    <div className="rounded-lg border border-zinc-200/80 bg-zinc-50/80 p-2 dark:border-zinc-700 dark:bg-zinc-900/50">
+      <div className="text-[11px] font-semibold text-zinc-600 dark:text-zinc-300">
+        {isPlace ? `Place: ${t.mention}` : `Person: ${t.mention}`}
+      </div>
+      {isPlace ? (
+        <div className="mt-1 flex flex-wrap gap-1">
+          {(t.candidates || []).map((c) => (
+            <span
+              key={c.wikidata_id}
+              className="inline-block max-w-full rounded border border-zinc-200 bg-white/90 px-2 py-1 text-[10px] text-zinc-600 dark:border-zinc-600 dark:bg-zinc-950 dark:text-zinc-400"
+            >
+              <span className="font-medium text-zinc-800 dark:text-zinc-200">{c.label || c.wikidata_id}</span>
+              {c.description ? (
+                <span className="mt-0.5 block line-clamp-1 text-zinc-500">{c.description}</span>
+              ) : null}
+              <span className="font-mono text-zinc-400">{c.wikidata_id}</span>
+            </span>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-1 text-[10px] text-zinc-500">
+          {t.candidate_name || "—"} → {t.proposed_name || "—"}
+        </p>
+      )}
+    </div>
+  );
 }
 
 export function ChatPanel() {
@@ -21,24 +99,39 @@ export function ChatPanel() {
   ]);
   const [text, setText] = useState<string>("");
   const [busy, setBusy] = useState<boolean>(false);
+  const [busyHintIdx, setBusyHintIdx] = useState(0);
+  const [inlineBusy, setInlineBusy] = useState<string>("");
+  const [hintContext, setHintContext] = useState<HintContext | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const autoScrollRef = useRef<boolean>(true);
 
   const canSend = useMemo(() => text.trim().length > 0, [text]);
 
+  function clearHintContext() {
+    setHintContext(null);
+  }
+
+  useEffect(() => {
+    if (!busy) return;
+    setBusyHintIdx(0);
+    const t = setInterval(() => {
+      setBusyHintIdx((i) => (i + 1) % BUSY_HINTS.length);
+    }, 2800);
+    return () => clearInterval(t);
+  }, [busy]);
+
   useEffect(() => {
     if (!autoScrollRef.current) return;
     const el = scrollRef.current;
     if (!el) return;
-    // Wait a tick so layout is updated before scrolling.
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         if (!autoScrollRef.current) return;
         el.scrollTop = el.scrollHeight;
       });
     });
-  }, [msgs, busy]);
+  }, [msgs, busy, inlineBusy]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -46,15 +139,93 @@ export function ChatPanel() {
 
     const onScroll = () => {
       const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-      // If you're within 60px of the bottom, keep chatbot auto-focus.
       autoScrollRef.current = distanceFromBottom < 60;
     };
 
-    // Initialize based on current scroll position.
     onScroll();
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => el.removeEventListener("scroll", onScroll);
   }, []);
+
+  function patchOpenTasksForMessage(msgId: string, tasks: InboxTask[]) {
+    setMsgs((prev) =>
+      prev.map((m) => {
+        if (m.id !== msgId) return m;
+        const nextText =
+          tasks.length === 0
+            ? "All set — every open link for this entry is resolved. You can keep chatting or finish later in the inbox anytime."
+            : m.text;
+        return { ...m, openTasks: tasks, text: nextText };
+      }),
+    );
+  }
+
+  function mergeCandidatesOntoTasks(
+    tasks: InboxTask[],
+    taskId: string,
+    candidates: WikidataCandidate[],
+  ): InboxTask[] {
+    return tasks.map((t) => (t.id === taskId ? { ...t, candidates } : t));
+  }
+
+  async function fetchOpenTasksForEntry(entryId: string): Promise<InboxTask[]> {
+    const out = await apiGet<{ items: InboxTask[] }>(
+      `/inbox?status=open&limit=50&entry_id=${encodeURIComponent(entryId)}`,
+    );
+    return out.items || [];
+  }
+
+  async function resolvePlaceInline(msgId: string, entryId: string, taskId: string, wikidataId?: string) {
+    setInlineBusy(taskId);
+    try {
+      const body: Record<string, string> = { decision: wikidataId ? "pick" : "skip" };
+      if (wikidataId) body.wikidata_id = wikidataId;
+      const res = await fetch(`${API_BASE}/inbox/${encodeURIComponent(taskId)}/resolve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const t = await res.text().catch(() => "");
+        throw new Error(`resolve failed: ${res.status} ${t}`);
+      }
+      const tasks = await fetchOpenTasksForEntry(entryId);
+      patchOpenTasksForMessage(msgId, tasks);
+      window.dispatchEvent(new CustomEvent("memo:inbox-changed"));
+    } catch (e: any) {
+      setMsgs((prev) => [
+        ...prev,
+        { id: uid(), role: "assistant", text: "Error: " + (e?.message || String(e)) },
+      ]);
+    } finally {
+      setInlineBusy("");
+    }
+  }
+
+  async function resolvePersonInline(msgId: string, entryId: string, taskId: string, decision: "merge" | "split") {
+    setInlineBusy(taskId);
+    try {
+      const res = await fetch(`${API_BASE}/inbox/${encodeURIComponent(taskId)}/resolve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision }),
+      });
+      if (!res.ok) {
+        const t = await res.text().catch(() => "");
+        throw new Error(`resolve failed: ${res.status} ${t}`);
+      }
+      const tasks = await fetchOpenTasksForEntry(entryId);
+      patchOpenTasksForMessage(msgId, tasks);
+      window.dispatchEvent(new CustomEvent("memo:inbox-changed"));
+    } catch (e: any) {
+      setMsgs((prev) => [
+        ...prev,
+        { id: uid(), role: "assistant", text: "Error: " + (e?.message || String(e)) },
+      ]);
+    } finally {
+      setInlineBusy("");
+    }
+  }
 
   async function send() {
     const t = text.trim();
@@ -62,17 +233,85 @@ export function ChatPanel() {
     setMsgs((prev) => [...prev, { id: uid(), role: "user", text: t }]);
     setText("");
     setBusy(true);
+    const hint = hintContext;
+    if (hint) {
+      clearHintContext();
+    }
     try {
+      const body: Record<string, string> = { message: t };
+      if (hint?.taskId) {
+        body.disambiguation_hint_task_id = hint.taskId;
+      }
       const res = await fetch(API_BASE + "/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ message: t }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
         const err = await res.text().catch(() => "");
         throw new Error("API error " + res.status + ": " + err);
       }
       const out = await res.json();
+      if (out?.type === "disambiguation_hint") {
+        const entryId = String(out.entry_id || "").trim();
+        const taskId = String(out.task_id || "").trim();
+        const ok = Boolean(out.ok);
+        const apiCands: WikidataCandidate[] = Array.isArray(out.candidates) ? out.candidates : [];
+        let tasksFromApi: InboxTask[] = entryId ? await fetchOpenTasksForEntry(entryId) : [];
+        if (ok && taskId && apiCands.length) {
+          tasksFromApi = mergeCandidatesOntoTasks(tasksFromApi, taskId, apiCands);
+        }
+        const followText = String(
+          out?.message || (ok ? "Updated the list from your hint." : "No new matches from that hint."),
+        );
+
+        setMsgs((prev) => {
+          const anchorMsgId =
+            hint?.msgId ||
+            [...prev]
+              .reverse()
+              .find((m) => m.role === "assistant" && m.entryId === entryId && m.openTasks?.length)
+              ?.id;
+
+          let next = prev;
+          if (ok && anchorMsgId) {
+            next = prev.map((m) => {
+              if (m.id !== anchorMsgId || !m.openTasks?.length) return m;
+              return {
+                ...m,
+                frozenOpenTasks: JSON.parse(JSON.stringify(m.openTasks)) as InboxTask[],
+                openTasks: undefined,
+              };
+            });
+          }
+
+          if (ok && tasksFromApi.length > 0) {
+            next = [
+              ...next,
+              {
+                id: uid(),
+                role: "assistant",
+                text: followText,
+                entryId,
+                openTasks: tasksFromApi,
+                hintFollowUp: true,
+              },
+            ];
+          } else {
+            next = [
+              ...next,
+              {
+                id: uid(),
+                role: "assistant",
+                text: followText,
+              },
+            ];
+          }
+          return next;
+        });
+        window.dispatchEvent(new CustomEvent("memo:inbox-changed"));
+        return;
+      }
       if (out?.type === "question" && out?.question) {
         const mode = String(out?.mode || "").toLowerCase();
         const badge =
@@ -90,10 +329,30 @@ export function ChatPanel() {
       } else {
         const result = out?.result;
         const id = result?.entry_id || "—";
-        setMsgs((prev) => [...prev, { id: uid(), role: "assistant", text: "Stored: " + id }]);
+        const openTasks: InboxTask[] = Array.isArray(out?.open_tasks) ? out.open_tasks : [];
+        const n = openTasks.length;
+        const summary =
+          n === 0
+            ? `Stored your entry (${id}). Nothing needs linking right now — you’re all set.`
+            : `Stored your entry (${id}). ${n === 1 ? "One item" : `${n} items`} below could use your help — pick a button, skip, or use “Describe where this was…” and then type a short hint in the box (city, country, station…). You can always finish in the Inbox tab.`;
+        const msgId = uid();
+        setMsgs((prev) => [
+          ...prev,
+          {
+            id: msgId,
+            role: "assistant",
+            text: summary,
+            entryId: String(result?.entry_id || ""),
+            openTasks: n > 0 ? openTasks : undefined,
+          },
+        ]);
         window.dispatchEvent(new CustomEvent("memo:new-entry"));
+        window.dispatchEvent(new CustomEvent("memo:inbox-changed"));
       }
     } catch (e: any) {
+      if (hint) {
+        setHintContext(hint);
+      }
       setMsgs((prev) => [
         ...prev,
         { id: uid(), role: "assistant", text: "Error: " + (e?.message || String(e)) },
@@ -107,7 +366,15 @@ export function ChatPanel() {
     <div className="flex h-full flex-col min-h-0">
       <div className="flex items-center justify-between gap-3 border-b border-zinc-200 dark:border-zinc-800 px-4 py-3">
         <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Memo</div>
-        <div className="text-xs text-zinc-400 dark:text-zinc-400">chat</div>
+        <div className="min-w-0 text-right">
+          {busy ? (
+            <div className="text-xs text-zinc-500 dark:text-zinc-400 animate-pulse truncate max-w-[200px]">
+              {BUSY_HINTS[busyHintIdx]}
+            </div>
+          ) : (
+            <div className="text-xs text-zinc-400 dark:text-zinc-400">chat</div>
+          )}
+        </div>
       </div>
 
       <div
@@ -120,8 +387,12 @@ export function ChatPanel() {
               key={m.id}
               className={
                 m.role === "user"
-                  ? "ml-auto max-w-[95%] rounded-2xl bg-zinc-100 dark:bg-zinc-800 px-3 py-2 text-sm text-zinc-900 dark:text-zinc-100"
-                  : "max-w-[95%] rounded-2xl bg-zinc-50 dark:bg-zinc-900 px-3 py-2 text-sm text-zinc-900 dark:text-zinc-100"
+                  ? "ml-auto max-w-[95%] rounded-2xl border border-indigo-200/50 bg-indigo-50/90 px-3 py-2 text-sm text-indigo-950 dark:border-indigo-800/40 dark:bg-indigo-950/35 dark:text-indigo-50"
+                  : `max-w-[95%] rounded-2xl border px-3 py-2 text-sm ${
+                      m.hintFollowUp
+                        ? "border-indigo-500/35 bg-gradient-to-br from-slate-900/90 to-indigo-950/50 text-slate-100 shadow-md shadow-indigo-950/20"
+                        : "border-zinc-200/80 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100"
+                    }`
               }
             >
               {m.role === "assistant" && m.badge ? (
@@ -129,7 +400,141 @@ export function ChatPanel() {
                   {m.badge}
                 </div>
               ) : null}
-              {m.text}
+              {m.role === "assistant" && m.hintFollowUp ? (
+                <div className="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-indigo-200">
+                  <span className="inline-block h-2 w-2 rounded-full bg-red-500 shadow-sm shadow-red-500/50" />
+                  After your hint — updated choices
+                </div>
+              ) : null}
+              <div className="whitespace-pre-wrap">{m.text}</div>
+              {m.role === "assistant" && m.frozenOpenTasks && m.frozenOpenTasks.length > 0 ? (
+                <details className="mt-3 rounded-xl border border-zinc-300/60 bg-zinc-100/50 dark:border-zinc-700 dark:bg-black/20">
+                  <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium text-zinc-600 dark:text-zinc-400">
+                    Earlier suggestions (before your hint) — tap to expand
+                  </summary>
+                  <div className="space-y-2 border-t border-zinc-200/80 p-3 dark:border-zinc-800">
+                    {m.frozenOpenTasks.map((t) => (
+                      <FrozenTaskSnapshot key={`f-${t.id}`} task={t} />
+                    ))}
+                  </div>
+                </details>
+              ) : null}
+              {m.role === "assistant" && m.entryId && m.openTasks && m.openTasks.length > 0 ? (
+                <div
+                  className={
+                    m.hintFollowUp
+                      ? "mt-3 space-y-3 border-l-2 border-red-500/70 pl-3"
+                      : "mt-3 space-y-3 border-t border-indigo-200/30 pt-3 dark:border-indigo-800/30"
+                  }
+                >
+                  {m.openTasks.map((t) => {
+                    const isPlace = t.type === "place_wikidata";
+                    return (
+                      <div
+                        key={t.id}
+                        className="rounded-xl border border-indigo-200/40 bg-white/70 p-3 dark:border-indigo-800/40 dark:bg-slate-950/60"
+                      >
+                        <div className="text-xs font-semibold text-indigo-950 dark:text-indigo-100">
+                          {isPlace ? (
+                            <>
+                              Link place:{" "}
+                              <span className="text-indigo-900 dark:text-white">{t.mention}</span>
+                              {t.entity_label ? (
+                                <span className="ml-1 font-normal text-indigo-600/80 dark:text-indigo-300/80">
+                                  ({t.entity_label})
+                                </span>
+                              ) : null}
+                            </>
+                          ) : (
+                            <>
+                              Person:{" "}
+                              <span className="text-indigo-900 dark:text-white">{t.mention}</span>
+                            </>
+                          )}
+                        </div>
+                        {isPlace ? (
+                          <div className="mt-1 space-y-1 text-[11px] text-indigo-800/80 dark:text-indigo-200/80">
+                            <p>Choose a match or skip. You can also describe the location in your own words.</p>
+                            <button
+                              type="button"
+                              disabled={inlineBusy === t.id || busy}
+                              onClick={() =>
+                                setHintContext({
+                                  msgId: m.id,
+                                  entryId: m.entryId!,
+                                  taskId: t.id,
+                                  mention: t.mention,
+                                })
+                              }
+                              className="text-left font-medium text-indigo-700 underline decoration-indigo-400/70 underline-offset-2 hover:text-indigo-900 dark:text-indigo-200 dark:hover:text-white"
+                            >
+                              Add a hint for this place…
+                            </button>
+                          </div>
+                        ) : (
+                          <p className="mt-1 text-[11px] text-indigo-800/80 dark:text-indigo-200/80">
+                            candidate: {t.candidate_name || "—"} ({t.candidate_role || "—"}) · proposed:{" "}
+                            {t.proposed_name || "—"} ({t.proposed_role || "—"})
+                          </p>
+                        )}
+                        {isPlace ? (
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {(t.candidates || []).map((c) => (
+                              <button
+                                key={c.wikidata_id}
+                                disabled={inlineBusy === t.id}
+                                type="button"
+                                title={c.description || c.wikidata_id}
+                                onClick={() =>
+                                  void resolvePlaceInline(m.id, m.entryId!, t.id, c.wikidata_id)
+                                }
+                                className="max-w-full rounded-lg border border-indigo-300/50 bg-indigo-600 px-3 py-2 text-left text-xs font-semibold text-white shadow-sm transition hover:bg-indigo-500 disabled:opacity-50 dark:border-indigo-500/40 dark:bg-indigo-600 dark:hover:bg-indigo-500"
+                              >
+                                <span className="block truncate">{c.label || c.wikidata_id}</span>
+                                {c.description ? (
+                                  <span className="mt-0.5 block line-clamp-2 text-[10px] font-normal text-indigo-100/95">
+                                    {c.description}
+                                  </span>
+                                ) : null}
+                                <span className="block font-mono text-[10px] font-normal text-indigo-200/90">
+                                  {c.wikidata_id}
+                                </span>
+                              </button>
+                            ))}
+                            <button
+                              disabled={inlineBusy === t.id}
+                              type="button"
+                              onClick={() => void resolvePlaceInline(m.id, m.entryId!, t.id)}
+                              className="rounded-lg border-2 border-indigo-400/40 bg-transparent px-3 py-2 text-xs font-semibold text-indigo-800 hover:bg-indigo-50 disabled:opacity-50 dark:border-indigo-500/50 dark:text-indigo-100 dark:hover:bg-indigo-950/50"
+                            >
+                              Skip
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            <button
+                              disabled={inlineBusy === t.id}
+                              type="button"
+                              onClick={() => void resolvePersonInline(m.id, m.entryId!, t.id, "merge")}
+                              className="rounded-lg border border-indigo-300/50 bg-indigo-600 px-3 py-2 text-xs font-semibold text-white hover:bg-indigo-500 disabled:opacity-50 dark:bg-indigo-600"
+                            >
+                              Merge (same person)
+                            </button>
+                            <button
+                              disabled={inlineBusy === t.id}
+                              type="button"
+                              onClick={() => void resolvePersonInline(m.id, m.entryId!, t.id, "split")}
+                              className="rounded-lg border-2 border-indigo-400/40 px-3 py-2 text-xs font-semibold text-indigo-800 dark:text-indigo-100"
+                            >
+                              Split (different)
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
             </div>
           ))}
           <div ref={endRef} />
@@ -137,6 +542,21 @@ export function ChatPanel() {
       </div>
 
       <div className="border-t border-zinc-200 dark:border-zinc-800 p-3">
+        {hintContext ? (
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-200/80 bg-amber-50/90 px-3 py-2 text-xs text-amber-950 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-100">
+            <span>
+              Sending as a <span className="font-semibold">hint</span> for place{" "}
+              <span className="font-semibold">{hintContext.mention}</span> — not a new journal entry.
+            </span>
+            <button
+              type="button"
+              onClick={clearHintContext}
+              className="shrink-0 rounded-md border border-amber-300 bg-white px-2 py-0.5 font-medium text-amber-900 hover:bg-amber-100 dark:border-amber-800 dark:bg-zinc-900 dark:text-amber-50 dark:hover:bg-zinc-800"
+            >
+              Cancel
+            </button>
+          </div>
+        ) : null}
         <div className="flex gap-2">
           <textarea
             value={text}
@@ -144,14 +564,17 @@ export function ChatPanel() {
             onKeyDown={(e) => {
               if (e.key !== "Enter") return;
               if (e.shiftKey) return;
-              // Keep IME composition (e.g. accented chars) working correctly.
               if ((e.nativeEvent as any).isComposing) return;
               e.preventDefault();
               if (!busy && canSend) void send();
             }}
             rows={4}
             className="min-h-[96px] flex-1 resize-y rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 px-3 py-2 text-sm text-zinc-900 dark:text-zinc-100 outline-none placeholder:text-zinc-500 focus:border-zinc-400 dark:focus:border-zinc-600"
-            placeholder="Write an entry…"
+            placeholder={
+              hintContext
+                ? `e.g. central London, weekend in the UK, Victoria BC…`
+                : "Write an entry…"
+            }
           />
           <button
             disabled={!canSend || busy}
@@ -165,4 +588,3 @@ export function ChatPanel() {
     </div>
   );
 }
-

@@ -31,7 +31,8 @@ USER_NAME = os.getenv("USER_NAME", "")  # e.g. Ashraf
 USER_AGE = os.getenv("USER_AGE", "")  # optional
 USER_LANG = os.getenv("USER_LANG", "")  # optional, e.g. french
 
-# CORS – frontend origin (port 3000), same setup locally and on VPS
+# CORS – frontend origin (port 3000). If you open the UI as http://<LAN-IP>:3000 (Next uses -H 0.0.0.0),
+# add that exact origin here, e.g. CORS_ORIGINS=http://192.168.1.42:3000,http://localhost:3000
 CORS_ORIGINS = os.getenv(
     "CORS_ORIGINS",
     "http://localhost:3000,http://127.0.0.1:3000,http://88.223.92.163:3000",

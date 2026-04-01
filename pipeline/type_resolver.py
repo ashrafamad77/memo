@@ -17,6 +17,7 @@ _WIKIDATA_TERM_CACHE: Dict[str, Optional[Dict[str, str]]] = {}
 _SPARQL_FORBIDDEN_CACHE: Dict[str, Optional[bool]] = {}
 _SPARQL_CLASS_LABELS_CACHE: Dict[str, List[str]] = {}
 _SPARQL_P31_ROOT_CACHE: Dict[str, Optional[bool]] = {}
+_SPARQL_E53_FORBIDDEN_CACHE: Dict[str, Optional[bool]] = {}
 _SPARQL_CHART_MEDIA_CACHE: Dict[str, Optional[bool]] = {}
 
 # E53_Place guard: P31/P279* must reach this class. Default Q2221906 = geographic location.
@@ -97,7 +98,7 @@ def _safe_wikidata_qid(raw: str) -> Optional[str]:
     return s if re.match(r"^Q\d+$", s) else None
 
 
-def _sparql_wdqs(query: str) -> Optional[Dict[str, Any]]:
+def _sparql_wdqs(query: str, *, timeout: int = 10) -> Optional[Dict[str, Any]]:
     try:
         r = requests.get(
             _WDQS_URL,
@@ -106,7 +107,7 @@ def _sparql_wdqs(query: str) -> Optional[Dict[str, Any]]:
                 "User-Agent": _WIKIDATA_UA,
                 "Accept": "application/sparql-results+json",
             },
-            timeout=10,
+            timeout=timeout,
         )
         r.raise_for_status()
         return r.json()
@@ -175,22 +176,42 @@ ASK {{
     return out
 
 
-def wikidata_entity_p31_reaches_root(qid: str, root_qid: str) -> Optional[bool]:
+def wikidata_entity_p31_reaches_root(
+    qid: str,
+    root_qid: str,
+    *,
+    instance_only: bool = False,
+    timeout: int = 10,
+) -> Optional[bool]:
     """
     True  => wd:qid is compatible with the place taxonomy root:
     - instance chain: wdt:P31/wdt:P279* root (specific instances), or
-    - class chain: wdt:P279* root (class items with no P31).
+    - class chain: wdt:P279* root (class items with no P31) — skipped when instance_only=True.
     False => SPARQL proved neither path exists.
     None  => WDQS error (caller should not treat as disproof).
+
+    Use instance_only=True for entity linking (E53/E74) to reject abstract concept items whose
+    P279* subclass chain reaches the root but that have no P31 grounding them as actual instances
+    (e.g. Q7075 "library" as a concept class must not pass for an E53_Place candidate).
     """
     q = _safe_wikidata_qid(qid)
     root = _safe_wikidata_qid(root_qid)
     if not q or not root:
         return None
-    cache_key = f"pctax|{q}|{root}"
+    suffix = "|inst" if instance_only else ""
+    cache_key = f"pctax|{q}|{root}{suffix}"
     if cache_key in _SPARQL_P31_ROOT_CACHE:
         return _SPARQL_P31_ROOT_CACHE[cache_key]
-    ask = f"""
+    if instance_only:
+        ask = f"""
+PREFIX wd: <http://www.wikidata.org/entity/>
+PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+ASK {{
+  wd:{q} wdt:P31/wdt:P279* wd:{root} .
+}}
+"""
+    else:
+        ask = f"""
 PREFIX wd: <http://www.wikidata.org/entity/>
 PREFIX wdt: <http://www.wikidata.org/prop/direct/>
 ASK {{
@@ -201,13 +222,45 @@ ASK {{
   }}
 }}
 """
-    data = _sparql_wdqs(ask)
+    data = _sparql_wdqs(ask, timeout=timeout)
     if not data or "boolean" not in data:
-        _SPARQL_P31_ROOT_CACHE[cache_key] = None
+        # Do not cache failures — allows retry with a longer timeout in the same process.
         return None
     out = bool(data["boolean"])
     _SPARQL_P31_ROOT_CACHE[cache_key] = out
     return out
+
+
+def wikidata_e53_must_not_reach_forbidden(qid: str, *, timeout: int = 10) -> Optional[bool]:
+    """True => P31/P279* reaches a clearly non-place class (reject). False => safe. None => WDQS error.
+
+    Complements geographic-root checks: blocks items that might share edges in odd WD shapes.
+    """
+    q = _safe_wikidata_qid(qid)
+    if not q:
+        return None
+    if q in _SPARQL_E53_FORBIDDEN_CACHE:
+        return _SPARQL_E53_FORBIDDEN_CACHE[q]
+    # Humans, taxa, creative works, identifiers, software/catalog/website, deities, software
+    vals = (
+        "wd:Q5 wd:Q16521 wd:Q11424 wd:Q7366 wd:Q482994 wd:Q134556 wd:Q178885 wd:Q4271324 "
+        "wd:Q11688446 wd:Q737498 wd:Q5633421 wd:Q4167410 wd:Q36646373 wd:Q36524 "
+        "wd:Q1982918 wd:Q35127 wd:Q856638 wd:Q7397 wd:Q166142"
+    )
+    ask = f"""
+PREFIX wd: <http://www.wikidata.org/entity/>
+PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+ASK {{
+  VALUES ?bad {{ {vals} }}
+  wd:{q} wdt:P31/wdt:P279* ?bad .
+}}
+"""
+    data = _sparql_wdqs(ask, timeout=timeout)
+    if not data or "boolean" not in data:
+        return None
+    bad = bool(data["boolean"])
+    _SPARQL_E53_FORBIDDEN_CACHE[q] = bad
+    return bad
 
 
 def wikidata_entity_class_labels_en(qid: str) -> List[str]:
@@ -1745,6 +1798,7 @@ class TypeResolver:
                         conf,
                     )
                     aat_t = validate_batch_aat(
+                        raw,
                         str(row.get("aat_id") or ""),
                         str(row.get("aat_label") or ""),
                         str(row.get("aat_confidence") or "low"),

@@ -2419,10 +2419,21 @@ class Neo4jRepo:
             "evidence": evidence,
         }
 
-    def inbox(self, status: str = "open", limit: int = 50) -> List[Dict[str, Any]]:
-        q = """
+    def inbox(
+        self,
+        status: str = "open",
+        limit: int = 50,
+        entry_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        entry_filter = ""
+        params: Dict[str, Any] = {"status": status, "limit": int(limit)}
+        eid = (entry_id or "").strip()
+        if eid:
+            entry_filter = "AND t.entry_id = $entry_id"
+            params["entry_id"] = eid
+        q = f"""
         MATCH (t:DisambiguationTask)
-        WHERE t.status = $status
+        WHERE t.status = $status {entry_filter}
         OPTIONAL MATCH (t)-[:CANDIDATE]->(c:E21_Person)
         OPTIONAL MATCH (t)-[:PROPOSED]->(p:E21_Person)
         RETURN t.id as id,
@@ -2445,7 +2456,7 @@ class Neo4jRepo:
         LIMIT $limit
         """
         with self._driver.session() as s:
-            rows = [dict(r) for r in s.run(q, status=status, limit=int(limit))]
+            rows = [dict(r) for r in s.run(q, **params)]
         out: List[Dict[str, Any]] = []
         for r in rows:
             cj = r.pop("candidates_json", None)
@@ -2478,6 +2489,7 @@ class Neo4jRepo:
         OPTIONAL MATCH (t)-[:PROPOSED]->(p:E21_Person)
         RETURN coalesce(t.type, 'person') AS task_type,
                t.place_key AS place_key,
+               t.entity_label AS entity_label,
                t.candidates_json AS candidates_json,
                c.id AS candidate_id,
                p.id AS proposed_id
@@ -2488,6 +2500,7 @@ class Neo4jRepo:
                 raise ValueError("task not found")
             task_type = str(row.get("task_type") or "person").strip()
             place_key = str(row.get("place_key") or "").strip()
+            entity_label = str(row.get("entity_label") or "").strip()
             candidates_json = row.get("candidates_json")
             candidate_id = row.get("candidate_id")
             proposed_id = row.get("proposed_id")
@@ -2565,7 +2578,18 @@ class Neo4jRepo:
                     decision=decision,
                     decided_by=decided_by,
                 )
-                return {"ok": True, "task_id": tid, "decision": decision}
+                # Include enrichment metadata so the caller can trigger sibling re-enrichment.
+                entry_id = place_key.split("|")[0] if "|" in place_key else ""
+                return {
+                    "ok": True,
+                    "task_id": tid,
+                    "decision": decision,
+                    "_enrich": {
+                        "entry_id": entry_id,
+                        "resolved_qid": qid if decision == "pick" else "",
+                        "entity_label": entity_label,
+                    },
+                }
 
             # Person disambiguation
             if decision not in {"merge", "split"}:
@@ -2592,6 +2616,64 @@ class Neo4jRepo:
                 decided_by=decided_by,
             )
             return {"ok": True, "task_id": tid, "decision": decision}
+
+    def get_open_tasks_for_entry(
+        self, entry_id: str, *, exclude_task_id: str = ""
+    ) -> List[Dict[str, Any]]:
+        """Return open place_wikidata tasks that share the same journal entry as entry_id."""
+        prefix = (entry_id or "").strip() + "|"
+        q = """
+        MATCH (t:DisambiguationTask)
+        WHERE t.status = 'open'
+          AND t.type = 'place_wikidata'
+          AND t.place_key STARTS WITH $prefix
+          AND ($exclude = '' OR t.id <> $exclude)
+        RETURN t.id AS id, t.mention AS mention, t.entity_label AS entity_label,
+               t.place_key AS place_key
+        """
+        with self._driver.session() as s:
+            return [dict(r) for r in s.run(q, prefix=prefix, exclude=exclude_task_id or "")]
+
+    def get_disambiguation_task(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """Return one task row by id (for hint / tooling)."""
+        tid = (task_id or "").strip()
+        if not tid:
+            return None
+        q = """
+        MATCH (t:DisambiguationTask {id: $id})
+        RETURN t.id AS id,
+               t.status AS status,
+               coalesce(t.type, '') AS type,
+               t.mention AS mention,
+               coalesce(t.entity_label, '') AS entity_label,
+               coalesce(t.entry_id, '') AS entry_id,
+               t.candidates_json AS candidates_json
+        """
+        with self._driver.session() as s:
+            row = s.run(q, id=tid).single()
+            if not row:
+                return None
+            d = dict(row)
+            cj = d.pop("candidates_json", None)
+            if cj:
+                try:
+                    d["candidates"] = json.loads(cj) if isinstance(cj, str) else cj
+                except json.JSONDecodeError:
+                    d["candidates"] = []
+            else:
+                d["candidates"] = []
+            return d
+
+    def update_task_candidates(
+        self, task_id: str, candidates: List[Dict[str, Any]]
+    ) -> None:
+        """Overwrite candidates_json for a disambiguation task (used by enrichment)."""
+        with self._driver.session() as s:
+            s.run(
+                "MATCH (t:DisambiguationTask {id: $id}) SET t.candidates_json = $cj",
+                id=task_id,
+                cj=json.dumps(candidates),
+            )
 
     def merge_persons(self, src_person_id: str, dst_person_id: str) -> None:
         """

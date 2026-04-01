@@ -22,7 +22,8 @@ _VocabEntry = Dict[str, Optional[str]]
 
 SEED_VOCAB: Dict[str, _VocabEntry] = {
     # ── Activities (E7_Activity types) ────────────────────────────────────────
-    "Visit":        {"wikidata_id": "Q1137809",   "description": "act of going to see a person or place"},
+    # Was Q1137809 — that is "courthouse" on Wikidata, not this sense; no solid seed QID for "visit".
+    "Visit":        {"wikidata_id": None,         "description": "act of going to see a person or place"},
     "Meeting":      {"wikidata_id": None,        "description": "encounter between people for a purpose"},
     "Meal":         {"wikidata_id": None,        "description": "eating occasion"},
     "Lunch":        {"wikidata_id": None,        "description": "midday meal"},
@@ -108,6 +109,34 @@ def get_seed_entry(type_name: str) -> Optional[_VocabEntry]:
     for k, v in SEED_VOCAB.items():
         if k.lower() == lower:
             return v
+    return None
+
+
+def mention_to_type_qid(mention: str) -> Optional[str]:
+    """Return the Wikidata concept QID for a place/group mention, via seed vocab lookup.
+
+    Used by entity enrichment: "Library" -> Q7075 so SPARQL can find library instances
+    in a resolved location. Tries CamelCase and compound-word normalizations.
+    Returns None if no seeded QID maps to this mention.
+    """
+    m = (mention or "").strip()
+    if not m:
+        return None
+    candidates = [
+        m,                                              # "Library"
+        m.capitalize(),                                 # "library" -> "Library"
+        m.title(),                                      # "train station" -> "Train Station" (no match, but harmless)
+        "".join(w.capitalize() for w in m.split()),    # "train station" -> "TrainStation"
+    ]
+    for key in candidates:
+        entry = SEED_VOCAB.get(key)
+        if entry and entry.get("wikidata_id"):
+            return str(entry["wikidata_id"])
+    # Case-insensitive fallback
+    m_lower = m.lower()
+    for k, v in SEED_VOCAB.items():
+        if k.lower() == m_lower and v.get("wikidata_id"):
+            return str(v["wikidata_id"])
     return None
 
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """CLI for the Personal Memory Pipeline."""
+import os
 import sys
 from pathlib import Path
 
@@ -145,6 +146,54 @@ def cmd_reset_all(pipeline: MemoryPipeline):
     res = pipeline.reset_all()
     msg = f"Graph: {'ok' if res['graph'] else 'skipped'} | Vector: {'ok' if res['vector'] else 'skipped'}"
     console.print(Panel(f"[green]✓ Reset terminé.[/green]\n{msg}", title="Reset all"))
+
+
+def cmd_reset_all_keep_profile(pipeline: MemoryPipeline):
+    """Clear journal graph + vectors; keep USER_NAME profile (skip UI onboarding)."""
+    res = pipeline.reset_all(keep_user_profile=True)
+    msg = f"Graph: {'ok' if res['graph'] else 'skipped'} | Vector: {'ok' if res['vector'] else 'skipped'} | Profile: kept for {USER_NAME or 'User'}"
+    console.print(Panel(f"[green]✓ Reset (profile preserved).[/green]\n{msg}", title="Reset all"))
+
+
+def cmd_reset_graph_keep_profile(pipeline: MemoryPipeline):
+    """Clear Neo4j except journal owner + User type; vectors unchanged."""
+    if pipeline.reset_graph(keep_user_profile=True):
+        console.print(
+            Panel(
+                f"[green]✓ Graph cleared; profile kept for {USER_NAME or 'User'}.[/green]",
+                title="Reset graph",
+            )
+        )
+    else:
+        console.print("[yellow]Neo4j non disponible.[/yellow]")
+
+
+def cmd_profile_seed():
+    """Write profile from env MEMO_PROFILE_* (same fields as chat onboarding)."""
+    from server.neo4j_repo import Neo4jRepo
+
+    un = (USER_NAME or "").strip() or "User"
+    mapping = {
+        "current_city": "MEMO_PROFILE_CURRENT_CITY",
+        "home_country": "MEMO_PROFILE_HOME_COUNTRY",
+        "nationality": "MEMO_PROFILE_NATIONALITY",
+        "timezone": "MEMO_PROFILE_TIMEZONE",
+        "work_context": "MEMO_PROFILE_WORK_CONTEXT",
+    }
+    fields = {k: (os.getenv(envk) or "").strip() for k, envk in mapping.items()}
+    fields = {k: v for k, v in fields.items() if v}
+    if not fields:
+        console.print(
+            "[yellow]Set MEMO_PROFILE_CURRENT_CITY, MEMO_PROFILE_HOME_COUNTRY, MEMO_PROFILE_TIMEZONE "
+            "(and optional nationality/work_context) in .env, then re-run.[/yellow]"
+        )
+        return
+    repo = Neo4jRepo()
+    try:
+        out = repo.upsert_user_profile(user_name=un, fields=fields)
+    finally:
+        repo.close()
+    console.print(Panel(f"[green]✓ Profile saved for {un}[/green]\n{out}", title="profile-seed"))
 
 
 def cmd_self_test(pipeline: MemoryPipeline):
@@ -325,8 +374,11 @@ Usage:
   python main.py list [--limit 20]
   python main.py reset
   python main.py reset-graph
+  python main.py reset-graph-keep-profile
   python main.py reset-vector
   python main.py reset-all
+  python main.py reset-all-keep-profile
+  python main.py profile-seed
   python main.py self-test
 
 Examples:
@@ -354,9 +406,13 @@ Examples:
         if idx + 1 < len(args):
             limit = int(args[idx + 1])
             args = [a for i, a in enumerate(args) if i not in (idx, idx + 1)]
-    
+
+    if command == "profile-seed":
+        cmd_profile_seed()
+        return 0
+
     pipeline = MemoryPipeline()
-    
+
     try:
         if command == "add":
             text = " ".join(args) if args else input("Entrée journal: ")
@@ -392,11 +448,17 @@ Examples:
         elif command == "reset-graph":
             cmd_reset_graph(pipeline)
 
+        elif command == "reset-graph-keep-profile":
+            cmd_reset_graph_keep_profile(pipeline)
+
         elif command == "reset-vector":
             cmd_reset_vector(pipeline)
 
         elif command == "reset-all":
             cmd_reset_all(pipeline)
+
+        elif command == "reset-all-keep-profile":
+            cmd_reset_all_keep_profile(pipeline)
 
         elif command == "self-test":
             cmd_self_test(pipeline)

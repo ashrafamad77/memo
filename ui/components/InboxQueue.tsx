@@ -44,6 +44,14 @@ export function InboxQueue() {
     refresh().catch((e) => setErr(e?.message || String(e)));
   }, []);
 
+  useEffect(() => {
+    function onInboxChanged() {
+      refresh().catch(() => {});
+    }
+    window.addEventListener("memo:inbox-changed", onInboxChanged);
+    return () => window.removeEventListener("memo:inbox-changed", onInboxChanged);
+  }, []);
+
   async function resolvePerson(taskId: string, decision: "merge" | "split") {
     setErr("");
     setBusy(taskId);
@@ -153,6 +161,11 @@ export function InboxQueue() {
                     className="max-w-full rounded-lg bg-zinc-50 dark:bg-zinc-900 px-3 py-2 text-left text-xs font-semibold text-zinc-950 disabled:opacity-50"
                   >
                     <span className="block truncate">{c.label || c.wikidata_id}</span>
+                    {c.description ? (
+                      <span className="mt-0.5 block line-clamp-2 text-[10px] font-normal font-sans text-zinc-500 dark:text-zinc-400">
+                        {c.description}
+                      </span>
+                    ) : null}
                     <span className="block font-mono text-[10px] font-normal text-zinc-500">
                       {c.wikidata_id}
                     </span>

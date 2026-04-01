@@ -154,6 +154,13 @@ class AgenticRunner:
                     el_reqs = collect_entity_linking_requests(spec, user_name=self.user_name)
                     if el_reqs:
                         user_profile = _extract_user_profile(spec, self.user_name)
+                        # Spec nodes rarely carry profile_* properties (those come from onboarding,
+                        # not from the current journal entry).  Fall back to Neo4j when sparse.
+                        _PROFILE_KEYS = {"current_city", "home_country", "nationality", "timezone"}
+                        if self.graph_store and not (_PROFILE_KEYS & set(user_profile)):
+                            neo4j_profile = self.graph_store.get_user_profile(self.user_name)
+                            if neo4j_profile:
+                                user_profile = {**neo4j_profile, **user_profile}
                         el_bundle = self.type_grounding_llm.run_entity_linking(
                             state.get("text") or "",
                             el_reqs,

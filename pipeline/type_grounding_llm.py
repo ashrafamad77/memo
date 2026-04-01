@@ -6,7 +6,7 @@ import json
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -118,20 +118,40 @@ def _wikidata_coheres_with_mention(mention: str, label: str, description: str) -
 def _canonicalize_entity_link_candidates(
     entity_name: str,
     candidates: List[Dict[str, Any]],
+    *,
+    cidoc_label: str = "",
 ) -> List[Dict[str, Any]]:
     """Replace LLM labels with Wikidata API truth; drop QIDs that do not match the mention."""
     if not candidates:
         return []
     try:
-        from .type_grounding_embed import wikidata_fetch_labels_descriptions
+        from .type_grounding_embed import (
+            entity_link_qid_plausible_instance,
+            wikidata_batch_p31_blocklist_filter,
+            wikidata_fetch_labels_descriptions,
+        )
     except ImportError:
         return candidates
 
     qids = list({c["wikidata_id"] for c in candidates})
     fetched = wikidata_fetch_labels_descriptions(qids)
+
+    # Fast P31 blocklist: eliminates humans, journals, films etc. via wbgetentities (no SPARQL).
+    # This is the primary guard — runs before any slow SPARQL call.
+    instance_class = (cidoc_label or "").strip() in ("E53_Place", "E21_Person", "E74_Group")
+    p31_rejected: Set[str] = set()
+    if instance_class:
+        p31_rejected = wikidata_batch_p31_blocklist_filter(qids, cidoc_label)
+
     out: List[Dict[str, Any]] = []
     for c in candidates:
-        qid = c["wikidata_id"]
+        qid = str(c["wikidata_id"] or "").strip().upper()
+
+        # 1. P31 blocklist (fast, API-based) — blocks humans, journals, films, etc.
+        if qid in p31_rejected:
+            continue
+
+        # 2. Wikidata label/description existence check
         pair = fetched.get(qid)
         if not pair:
             logger.info(
@@ -143,12 +163,25 @@ def _canonicalize_entity_link_candidates(
         lab, desc = pair[0] or "", pair[1] or ""
         if not (lab or desc):
             continue
+
+        # 3. Mention coherence: Wikidata label/description must relate to the entity name
         if not _wikidata_coheres_with_mention(entity_name, lab, desc):
             logger.info(
                 "type_grounding_llm: dropped QID %s for mention %r (Wikidata label %r)",
                 qid,
                 entity_name,
                 lab,
+            )
+            continue
+
+        # 4. WDQS SPARQL ontology proof (strict by default — inconclusive ⇒ reject).
+        plausible = entity_link_qid_plausible_instance(qid, cidoc_label, description=desc)
+        if plausible is False:
+            logger.info(
+                "type_grounding_llm: dropped QID %s for %r — not a plausible %s instance (ontology)",
+                qid,
+                entity_name,
+                cidoc_label or "entity",
             )
             continue
         out.append({
@@ -163,11 +196,61 @@ def _canonicalize_entity_link_candidates(
 def _resolve_entity_link_candidates(
     entity_name: str,
     llm_candidates: Any,
+    *,
+    cidoc_label: str = "",
+    journal_text: str = "",
+    user_profile: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Parse LLM candidates, reconcile with Wikidata; if none survive, use wbsearchentities."""
     raw: List[Any] = []
     if isinstance(llm_candidates, list):
-        raw = llm_candidates
+        raw = list(llm_candidates)
+
+    llm_qids: Set[str] = set()
+    for c in raw:
+        if isinstance(c, dict):
+            q = _normalize_qid(str(c.get("wikidata_id") or ""))
+            if q:
+                llm_qids.add(q)
+
+    if (cidoc_label or "").strip() == "E53_Place":
+        try:
+            from .type_grounding_embed import (
+                _e53_journal_geo_search_strings,
+                _e53_profile_geo_search_strings,
+                wikidata_entity_search_candidates,
+            )
+
+            has_geo_context = bool(
+                _e53_profile_geo_search_strings(entity_name, user_profile)
+                or _e53_journal_geo_search_strings(entity_name, journal_text)
+            )
+            if not has_geo_context and raw:
+                merged = []
+            else:
+                merged = wikidata_entity_search_candidates(
+                    entity_name,
+                    limit=max(12, _entity_link_max_candidates() * 4),
+                    cidoc_label=cidoc_label,
+                    journal_text=journal_text,
+                    user_profile=user_profile,
+                )
+        except Exception:
+            merged = []
+        for row in merged:
+            if not isinstance(row, dict):
+                continue
+            qid = _normalize_qid(str(row.get("wikidata_id") or ""))
+            if not qid or qid in llm_qids:
+                continue
+            llm_qids.add(qid)
+            raw.append({
+                "wikidata_id": qid,
+                "label": str(row.get("label") or "").strip(),
+                "description": str(row.get("description") or "").strip(),
+                "confidence": "medium",
+            })
+
     valid_candidates: List[Dict[str, Any]] = []
     for c in raw:
         if not isinstance(c, dict):
@@ -185,20 +268,30 @@ def _resolve_entity_link_candidates(
             "confidence": conf,
         })
     if valid_candidates:
-        canon = _canonicalize_entity_link_candidates(entity_name, valid_candidates)
+        canon = _canonicalize_entity_link_candidates(
+            entity_name, valid_candidates, cidoc_label=cidoc_label
+        )
         if canon:
             return _cap_entity_link_candidates(canon)
     try:
         from .type_grounding_embed import wikidata_entity_search_candidates
-        # Fetch extra rows so coherence + cap still leaves up to N good hits
+        # Fetch extra rows so coherence + ontology filter + cap still leaves up to N hits.
+        # Pass cidoc_label so abstract-concept descriptions are filtered before SPARQL checks.
         search_raw = wikidata_entity_search_candidates(
-            entity_name, limit=max(12, _entity_link_max_candidates() * 4)
+            entity_name,
+            limit=max(12, _entity_link_max_candidates() * 4),
+            cidoc_label=cidoc_label,
+            journal_text=journal_text,
+            user_profile=user_profile,
         )
     except Exception:
         search_raw = []
     if not search_raw:
         return []
-    resolved = _canonicalize_entity_link_candidates(entity_name, search_raw) or []
+    resolved = (
+        _canonicalize_entity_link_candidates(entity_name, search_raw, cidoc_label=cidoc_label)
+        or []
+    )
     return _cap_entity_link_candidates(resolved)
 
 
@@ -318,25 +411,156 @@ def _fill_expected_types(parsed: Dict[str, Dict[str, Any]], expected: Set[str]) 
             parsed[nm] = dict(_DEFAULT_LOW_ROW)
 
 
+def _profile_place_bias_sort_key(
+    user_profile: Optional[Dict[str, Any]],
+    label: str,
+    description: str,
+) -> Tuple[int, str]:
+    """Prefer candidates whose WD gloss matches the author's region; demote clear mismatches."""
+    if not isinstance(user_profile, dict) or not user_profile:
+        return (0, "")
+    parts = [
+        user_profile.get("current_city"),
+        user_profile.get("home_country"),
+        user_profile.get("nationality"),
+        user_profile.get("timezone"),
+    ]
+    blob = " ".join(str(p) for p in parts if p).lower()
+    if len(blob) < 2:
+        return (0, "")
+    uk = any(
+        x in blob
+        for x in (
+            "united kingdom",
+            " england",
+            " scotland",
+            " wales",
+            "britain",
+            "london",
+            "manchester",
+            "birmingham",
+            "liverpool",
+            "oxford",
+            "cambridge",
+            "bristol",
+            "york",
+            "edinburgh",
+            "cardiff",
+            "belfast",
+            "ireland",
+            "europe/london",
+            "europe/dublin",
+        )
+    ) or re.search(r"\buk\b", blob) is not None
+    canada = any(
+        x in blob
+        for x in (
+            "canada",
+            "canadian",
+            "british columbia",
+            "alberta",
+            "ontario",
+            "quebec",
+            "manitoba",
+            "vancouver",
+            "toronto",
+            "montreal",
+            "calgary",
+            "ottawa",
+            "victoria, bc",
+            "america/toronto",
+            "america/vancouver",
+        )
+    )
+    if uk == canada:
+        return (0, "")
+    text = f"{label} {description}".lower()
+    uk_in_text = any(
+        x in text
+        for x in (
+            "united kingdom",
+            " england",
+            ", england",
+            "scotland",
+            "wales",
+            "london",
+            "westminster",
+            "uk",
+        )
+    )
+    canada_in_text = any(
+        x in text
+        for x in (
+            "canada",
+            "canadian",
+            "british columbia",
+            "vancouver island",
+            "province of british columbia",
+            "victoria, british columbia",
+        )
+    )
+    if uk and not canada:
+        if canada_in_text and not uk_in_text:
+            return (-50, text)
+        if uk_in_text and not canada_in_text:
+            return (50, text)
+    if canada and not uk:
+        if uk_in_text and not canada_in_text:
+            return (-50, text)
+        if canada_in_text and not uk_in_text:
+            return (50, text)
+    return (0, text)
+
+
+def _sort_place_candidates_by_profile(
+    candidates: List[Dict[str, Any]],
+    user_profile: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    if not candidates or not isinstance(user_profile, dict) or not user_profile:
+        return candidates
+    scored = []
+    for i, c in enumerate(candidates):
+        lab = str(c.get("label") or "")
+        desc = str(c.get("description") or "")
+        score, _ = _profile_place_bias_sort_key(user_profile, lab, desc)
+        scored.append((score, i, c))
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    return [t[2] for t in scored]
+
+
 _ENTITY_SYSTEM = """You are an entity disambiguation system for a personal journal knowledge graph.
 
 You receive:
 1) A journal entry text.
 2) The journal author's profile — IMPORTANT: use the author's current city and country as the primary geographic anchor for all place disambiguation.
-3) A list of named entities (places, persons, organizations) to link to Wikidata.
+3) A list of named entities to link to Wikidata. Each has a "type" field with its CIDOC-CRM class:
+   - "E53_Place" → link to a specific real-world geographic or built place instance
+   - "E74_Group" → link to a specific real-world organization/institution instance
+   - "E21_Person" → link to a specific real person (public figure only)
 
 For each entity return up to 3 ranked candidates (most likely first). The review UI only shows three options.
 
 Rules:
-- Places: find the SPECIFIC real-world location, NOT the abstract type.
-  Weight the author's current city/country heavily — a place name likely refers to somewhere near the author.
-  E.g. if author is in Paris: "Victoria" is more likely a Paris landmark or nearby than Victoria, Australia.
+- E53_Place: propose only **concrete real-world** sites Wikidata treats as **geographic / built location instances**
+  (city, district, station, building, named library *as a specific institution at a place*).
+  NEVER propose **abstract type/concept** items (e.g. Q7075 *library* = the concept of a kind of institution),
+  **disambiguation pages**, or **non-place** records that share the title (e.g. an academic journal named "The Library").
+  If you cannot identify a specific real-world instance confidently → return empty candidates.
+  Weight the author's current city/country heavily (a local place is far more likely than a famous distant one).
+- E74_Group: propose only **concrete real-world organizations** (company, university, government body).
+  Same rule: no abstract types, no disambiguation pages.
 - Transit / stations: if the journal mentions trains, platforms, commuting, or "station", prefer a **railway station
-  or transit stop** Wikidata item (e.g. London Victoria station) over a city, state, or country named Victoria.
-  Do not substitute an unrelated famous QID (e.g. Q183 is Germany, not any place called Victoria).
-- Persons: only assign QIDs for well-known public figures you are very confident about. Private individuals → empty candidates.
+  or transit stop** Wikidata item over a city, state, or country named the same.
+  Do not substitute an unrelated QID (e.g. Q183 is Germany, not any place called Victoria).
+- **Homonymous places** (Victoria, Springfield, Paris, …): combine **journal cues** and **author profile**
+  (current city / country). Profile is a strong default for "where they usually are", but journals often describe
+  **travel** — if the text hints at another country or region (weekend abroad, train to…, etc.), include candidates
+  for that context too, not only the home city.
+  Put **different countries in different candidates' descriptions** (e.g. "…British Columbia, Canada" vs
+  "…Westminster, London, UK") so reviewers can tell them apart; never give two candidates the same vague gloss.
+- E21_Person: only assign QIDs for well-known public figures you are very confident about. Private individuals → empty candidates.
 - Never invent QIDs. Every QID must be the Wikidata item you mean — wrong ID + plausible label will be rejected server-side.
-- Confidence per candidate: "high" = very sure | "medium" = plausible | "low" = guessing (omit low).
+- Confidence: "high" = very sure | "medium" = plausible | "low" = guessing (omit low, return empty instead).
 
 Output:
 {"entities": [
@@ -347,7 +571,7 @@ Output:
     ]
   }
 ]}
-Return only the JSON object, no markdown. Empty candidates list if nothing fits.
+Return only the JSON object, no markdown. Empty candidates list if no specific real-world instance fits.
 """
 
 
@@ -470,6 +694,7 @@ class TypeGroundingLLM:
         t = (journal_text or "").strip()
         if len(t) < 4:
             return empty
+        jt_for_resolve = t[:4000]
         try:
             profile_lines = ""
             if isinstance(user_profile, dict) and user_profile:
@@ -500,6 +725,11 @@ class TypeGroundingLLM:
             if m:
                 content = m.group(0)
             data = json.loads(content)
+            cidoc_by_name = {
+                str(r.get("name") or "").strip(): str(r.get("cidoc_label") or "").strip()
+                for r in entity_requests
+                if str(r.get("name") or "").strip()
+            }
             confirmed: Dict[str, Dict[str, Any]] = {}
             pending: Dict[str, List[Dict[str, Any]]] = {}
             names_from_llm: Set[str] = set()
@@ -510,9 +740,19 @@ class TypeGroundingLLM:
                 if not name:
                     continue
                 names_from_llm.add(name)
-                valid_candidates = _resolve_entity_link_candidates(name, row.get("candidates"))
+                valid_candidates = _resolve_entity_link_candidates(
+                    name,
+                    row.get("candidates"),
+                    cidoc_label=cidoc_by_name.get(name, ""),
+                    journal_text=jt_for_resolve,
+                    user_profile=user_profile,
+                )
                 if not valid_candidates:
                     continue
+                if cidoc_by_name.get(name, "") == "E53_Place":
+                    valid_candidates = _sort_place_candidates_by_profile(
+                        valid_candidates, user_profile
+                    )
                 # Auto-accept first high-confidence candidate
                 high = next((c for c in valid_candidates if c["confidence"] == "high"), None)
                 if high:
@@ -527,8 +767,16 @@ class TypeGroundingLLM:
                     continue
                 if nm in names_from_llm:
                     continue
-                extra = _resolve_entity_link_candidates(nm, [])
+                extra = _resolve_entity_link_candidates(
+                    nm,
+                    [],
+                    cidoc_label=cidoc_by_name.get(nm, ""),
+                    journal_text=jt_for_resolve,
+                    user_profile=user_profile,
+                )
                 if extra:
+                    if cidoc_by_name.get(nm, "") == "E53_Place":
+                        extra = _sort_place_candidates_by_profile(extra, user_profile)
                     pending[nm] = extra
             return {"confirmed": confirmed, "pending": pending}
         except Exception as exc:

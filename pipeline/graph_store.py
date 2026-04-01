@@ -28,6 +28,28 @@ class GraphStore:
     def close(self):
         self.driver.close()
 
+    def get_user_profile(self, user_name: str) -> dict:
+        """Read profile_* properties from the E21_Person node for user_name.
+
+        Strips the 'profile_' prefix so the entity-linking LLM receives readable keys
+        like 'current_city', 'nationality' instead of 'profile_current_city'.
+        """
+        name = (user_name or "").strip()
+        if not name:
+            return {}
+        with self.driver.session() as s:
+            row = s.run(
+                "MATCH (p:E21_Person {name: $n}) RETURN properties(p) AS props LIMIT 1",
+                n=name,
+            ).single()
+            if not row:
+                return {}
+        return {
+            k[len("profile_"):]: v
+            for k, v in (row["props"] or {}).items()
+            if k.startswith("profile_") and v
+        }
+
     def reset_graph(self) -> None:
         """Delete all nodes and relationships. Use before migrating to new schema."""
         with self.driver.session() as session:
@@ -54,6 +76,51 @@ class GraphStore:
 
             session.execute_write(lambda tx: tx.run("MATCH (n) DETACH DELETE n"))
             # Re-apply current schema (constraints + indexes)
+            session.execute_write(self._init_schema)
+
+    def reset_graph_keep_user_profile(self, user_name: str) -> None:
+        """Wipe the graph but keep the journal owner person + ``User`` type node (profile fields).
+
+        After this, ``entry_count`` is 0 but onboarding chat is skipped if profile fields are set.
+        If no matching user row exists, behaves like a full reset (nothing to preserve).
+        """
+        name = (user_name or "").strip()
+        if not name:
+            self.reset_graph()
+            return
+        with self.driver.session() as session:
+            try:
+                rows = session.run(
+                    """
+                    SHOW CONSTRAINTS
+                    YIELD name, type, entityType, labelsOrTypes, properties
+                    WHERE entityType = 'NODE'
+                      AND type IN ['UNIQUENESS', 'NODE_PROPERTY_UNIQUENESS']
+                      AND labelsOrTypes = ['Person']
+                      AND properties = ['name']
+                    RETURN name
+                    """
+                )
+                for r in rows:
+                    cname = r.get("name")
+                    if cname:
+                        session.run(f"DROP CONSTRAINT {cname} IF EXISTS")
+            except Exception:
+                pass
+
+            def _wipe_except_profile(tx):
+                tx.run(
+                    """
+                    OPTIONAL MATCH (u:E21_Person {name: $name})-[:P2_has_type]->(ut:E55_Type {name: 'User'})
+                    WITH [x IN [u, ut] WHERE x IS NOT NULL] AS keep
+                    MATCH (n)
+                    WHERE NOT n IN keep
+                    DETACH DELETE n
+                    """,
+                    name=name,
+                )
+
+            session.execute_write(_wipe_except_profile)
             session.execute_write(self._init_schema)
 
     def _init_schema(self, tx):

@@ -273,11 +273,19 @@ class MemoryPipeline:
             return []
         return self.graph_store.query_entities(limit=limit)
 
-    def reset_graph(self) -> bool:
-        """Clear all Neo4j data. Returns True if done, False if graph unavailable."""
+    def reset_graph(self, *, keep_user_profile: bool = False) -> bool:
+        """Clear all Neo4j data. Returns True if done, False if graph unavailable.
+
+        If ``keep_user_profile`` is True, keep ``USER_NAME``'s person node and ``User`` E55_Type
+        (profile properties) so UI onboarding is not required again.
+        """
         if not self.graph_store:
             return False
-        self.graph_store.reset_graph()
+        un = (USER_NAME or "").strip()
+        if keep_user_profile and un:
+            self.graph_store.reset_graph_keep_user_profile(un)
+        else:
+            self.graph_store.reset_graph()
         return True
 
     def reset_vector(self) -> bool:
@@ -287,10 +295,10 @@ class MemoryPipeline:
         self.vector_store.reset_vector()
         return True
 
-    def reset_all(self) -> dict:
+    def reset_all(self, *, keep_user_profile: bool = False) -> dict:
         """Reset graph and vector stores."""
         return {
-            "graph": self.reset_graph(),
+            "graph": self.reset_graph(keep_user_profile=keep_user_profile),
             "vector": self.reset_vector(),
         }
 

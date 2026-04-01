@@ -7,6 +7,7 @@ from datetime import datetime
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from typing import Optional
 
 from .neo4j_repo import Neo4jRepo
 from pipeline import MemoryPipeline
@@ -35,11 +36,23 @@ async def _app_lifespan(app: FastAPI):
 
 class ChatIn(BaseModel):
     message: str = Field(..., min_length=1)
+    """When set, ``message`` is treated as a free-text hint to refine Wikidata options for this open task."""
+    disambiguation_hint_task_id: Optional[str] = None
 
 class ResolveTaskIn(BaseModel):
     decision: str = Field(..., pattern="^(merge|split|pick|skip)$")
     target_person_id: str | None = None
     wikidata_id: str | None = None
+
+
+class ProfileUpsertIn(BaseModel):
+    """Same fields as chat onboarding — set any subset (local dev / skipping UI questionnaire)."""
+
+    current_city: str | None = None
+    home_country: str | None = None
+    nationality: str | None = None
+    timezone: str | None = None
+    work_context: str | None = None
 
 
 ONBOARDING_STEPS = [
@@ -323,6 +336,19 @@ def create_app() -> FastAPI:
             "work_context": _s("work_context"),
         }
 
+    @app.post("/profile")
+    def upsert_profile(body: ProfileUpsertIn):
+        """Upsert journal owner profile in Neo4j (mirrors chat onboarding save)."""
+        user_name = (USER_NAME or "").strip() or "User"
+        raw = body.model_dump(exclude_none=True)
+        fields = {k: str(v).strip() for k, v in raw.items() if str(v or "").strip()}
+        if not fields:
+            raise HTTPException(
+                status_code=400,
+                detail="Provide at least one non-empty field (e.g. current_city, home_country, timezone).",
+            )
+        return repo.upsert_user_profile(user_name=user_name, fields=fields)
+
     @app.get("/weather")
     def get_weather():
         """Current + short forecast for profile `current_city` via Open-Meteo (no API key)."""
@@ -386,8 +412,13 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(e)) from e
 
     @app.get("/inbox")
-    def inbox(status: str = "open", limit: int = 50):
-        return {"items": repo.inbox(status=status, limit=limit)}
+    def inbox(status: str = "open", limit: int = 50, entry_id: str = ""):
+        eid = (entry_id or "").strip()
+        return {
+            "items": repo.inbox(
+                status=status, limit=limit, entry_id=eid if eid else None
+            )
+        }
 
     @app.get("/proposals")
     def proposals(days_ahead: int = 10):
@@ -412,7 +443,7 @@ def create_app() -> FastAPI:
     @app.post("/inbox/{task_id}/resolve")
     def resolve_task(task_id: str, payload: ResolveTaskIn):
         try:
-            return repo.resolve_task(
+            result = repo.resolve_task(
                 task_id=task_id,
                 decision=payload.decision,
                 target_person_id=payload.target_person_id,
@@ -420,6 +451,28 @@ def create_app() -> FastAPI:
             )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
+
+        # Run sibling re-enrichment before returning so the client's immediate
+        # inbox refresh sees updated candidates (BackgroundTasks run after the
+        # response is sent, which races with refresh() in the UI).
+        enrich_meta = result.pop("_enrich", None)
+        if (
+            enrich_meta
+            and enrich_meta.get("entry_id")
+            and enrich_meta.get("resolved_qid")
+            and enrich_meta.get("entity_label") == "E53_Place"
+        ):
+            from pipeline.entity_enrichment import enrich_sibling_tasks
+
+            enrich_sibling_tasks(
+                enrich_meta["entry_id"],
+                task_id,
+                enrich_meta["resolved_qid"],
+                enrich_meta["entity_label"],
+                repo,
+            )
+
+        return result
 
     @app.post("/chat")
     def chat(_in: ChatIn):
@@ -431,6 +484,68 @@ def create_app() -> FastAPI:
             pipeline = MemoryPipeline(use_graph=True, use_vector=True)
 
         user_name = (USER_NAME or "").strip() or "User"
+
+        hint_tid = (_in.disambiguation_hint_task_id or "").strip()
+        if hint_tid:
+            row = repo.get_disambiguation_task(hint_tid)
+            if not row:
+                raise HTTPException(status_code=404, detail="disambiguation task not found")
+            if str(row.get("status") or "") != "open":
+                raise HTTPException(status_code=400, detail="task is already resolved")
+            if str(row.get("type") or "") != "place_wikidata":
+                raise HTTPException(
+                    status_code=400,
+                    detail="free-text hints are only supported for place Wikidata tasks",
+                )
+            eid = str(row.get("entry_id") or "").strip()
+            if not eid:
+                raise HTTPException(status_code=400, detail="task has no entry_id")
+            detail = repo.entry_detail(eid)
+            journal = str((detail or {}).get("text") or "")
+            profile = repo.get_user_profile(user_name=user_name) or {}
+            from pipeline.disambiguation_hint import (
+                refresh_place_candidates_with_user_hint,
+                sibling_enrichment_anchor_qid_from_hint,
+            )
+
+            cands = refresh_place_candidates_with_user_hint(
+                mention=str(row.get("mention") or ""),
+                entity_label=str(row.get("entity_label") or "E53_Place"),
+                journal_text=journal,
+                hint=text,
+                user_profile=profile,
+            )
+            if not cands:
+                return {
+                    "type": "disambiguation_hint",
+                    "ok": False,
+                    "message": "I could not find new Wikidata matches from that hint. Try naming a city, country, or landmark (e.g. “central London”, “BC Canada”).",
+                    "task_id": hint_tid,
+                    "entry_id": eid,
+                    "mention": str(row.get("mention") or ""),
+                    "candidates": [],
+                }
+            repo.update_task_candidates(hint_tid, cands)
+            anchor_q = sibling_enrichment_anchor_qid_from_hint(text, journal)
+            if anchor_q:
+                from pipeline.entity_enrichment import enrich_sibling_tasks
+
+                enrich_sibling_tasks(
+                    eid,
+                    hint_tid,
+                    anchor_q,
+                    "E53_Place",
+                    repo,
+                )
+            return {
+                "type": "disambiguation_hint",
+                "ok": True,
+                "message": f'Updated options for “{row.get("mention") or "this place"}” using your note.',
+                "task_id": hint_tid,
+                "entry_id": eid,
+                "mention": str(row.get("mention") or ""),
+                "candidates": cands,
+            }
 
         # 1) Continue onboarding flow if in progress.
         if chat_state["mode"] == "onboarding":
@@ -499,7 +614,9 @@ def create_app() -> FastAPI:
             result = pipeline.process_agentic(text=original_text)
             chat_state["mode"] = None
             chat_state["pending"] = None
-            return {"type": "add_entry", "result": result}
+            eid = str(result.get("entry_id") or "").strip()
+            open_tasks = repo.inbox(status="open", limit=50, entry_id=eid) if eid else []
+            return {"type": "add_entry", "result": result, "open_tasks": open_tasks}
 
         # 3) New user onboarding trigger (cold start).
         profile = repo.get_user_profile(user_name=user_name)
@@ -532,7 +649,9 @@ def create_app() -> FastAPI:
                 return {"type": "question", "mode": "clarification", "question": ambiguity["question"]}
 
             result = pipeline.process_agentic(text=text)
-            return {"type": "add_entry", "result": result}
+            eid = str(result.get("entry_id") or "").strip()
+            open_tasks = repo.inbox(status="open", limit=50, entry_id=eid) if eid else []
+            return {"type": "add_entry", "result": result, "open_tasks": open_tasks}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e)) from e
 
