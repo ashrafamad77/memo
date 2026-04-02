@@ -17,7 +17,7 @@ Library-like items use an expanded ``P31`` pattern (public / national / research
 library building, etc.); a bare ``wdt:P31 wd:Q7075`` almost never matches real libraries.
 
 Results are then passed through the same **strict** gates as ingest
-(``_canonicalize_entity_link_candidates``): P31 blocklist + WDQS proof under
+(``canonicalize_entity_link_candidates``): P31 blocklist + WDQS proof under
 ``Q2221906`` / forbidden classes, so inbox options stay ontologically safe.
 """
 
@@ -103,9 +103,9 @@ def enrich_sibling_tasks(
             continue
 
         try:
-            from pipeline.type_grounding_llm import (
-                _canonicalize_entity_link_candidates,
-                _cap_entity_link_candidates,
+            from pipeline.entity_link_candidates import (
+                canonicalize_entity_link_candidates,
+                cap_entity_link_candidates,
             )
 
             shaped = [
@@ -119,10 +119,10 @@ def enrich_sibling_tasks(
                 if isinstance(c, dict) and c.get("wikidata_id")
             ]
             elab = str(sibling.get("entity_label") or "E53_Place").strip()
-            candidates = _canonicalize_entity_link_candidates(
+            candidates = canonicalize_entity_link_candidates(
                 mention, shaped, cidoc_label=elab
             )
-            candidates = _cap_entity_link_candidates(candidates)
+            candidates = cap_entity_link_candidates(candidates)
         except Exception as exc:
             logger.warning("entity_enrichment: canonicalize failed for %s: %s", mention, exc)
             continue

@@ -12,6 +12,114 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+
+def _merge_babelfy_e55_into_spec_grounding(
+    spec: Dict[str, Any],
+    journal_text: str,
+    wsd_profile: Optional[Dict[str, Any]],
+) -> None:
+    """Ground E55 names missing from ``_type_llm_grounding`` using Babelfy + combined LLM resolver.
+
+    Called inside ``_write_tx`` after normalization adds auto types (Visit, Neighbourhood, etc.)
+    that were not present when the agentic resolver ran. Uses the combined Babelfy+LLM approach
+    so abstract types like "Visit" get proper Wikidata QIDs even when they don't appear in text.
+    """
+    try:
+        from config import BABELFY_API_KEY
+    except ImportError:
+        BABELFY_API_KEY = ""
+    key = (BABELFY_API_KEY or "").strip()
+    if not key:
+        return
+    try:
+        from .babelfy_e55_grounding import (
+            collect_babelfy_evidence,
+            run_babelfy_e55_grounding,
+        )
+    except ImportError:
+        return
+    nodes = spec.get("nodes")
+    if not isinstance(nodes, list):
+        return
+    eff = spec.get("_type_llm_grounding")
+    if isinstance(eff, dict):
+        eff = dict(eff)
+    else:
+        eff = {}
+    missing: List[str] = []
+    seen = set(eff.keys())
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("label", "")) != "E55_Type":
+            continue
+        nm = str(node.get("name") or "").strip()
+        if nm and nm not in seen:
+            missing.append(nm)
+            seen.add(nm)
+    if not missing:
+        return
+    extra_reqs = [
+        {"name": nm, "context_category": "other", "host_label": "E55_Type"}
+        for nm in sorted(missing)
+    ]
+    try:
+        bf_out, _st = run_babelfy_e55_grounding(
+            journal_text or "", extra_reqs, api_key=key, wsd_profile=wsd_profile,
+        )
+    except Exception as exc:
+        logger.debug("graph_writer: Babelfy E55 supplement skipped: %s", exc)
+        bf_out = {}
+
+    # Collect all Babelfy concept evidence (cached — same text already called upstream)
+    concept_evidence: List[Any] = []
+    try:
+        concept_evidence = collect_babelfy_evidence(
+            journal_text or "", api_key=key, ann_type="CONCEPTS"
+        )
+    except Exception:
+        pass
+
+    # Combined LLM resolver for auto-added types using full Babelfy context
+    combined_e55_rows: Dict[str, Any] = {}
+    try:
+        from .llm_kb_fallback import llm_resolve_all_with_babelfy
+        combined_e55_rows, _ = llm_resolve_all_with_babelfy(
+            type_requests=extra_reqs,
+            entity_requests=[],
+            journal_text=journal_text or "",
+            concept_evidence=concept_evidence,
+            ne_evidence=[],
+            babelfy_type_hits=bf_out,
+            skip_type_names=set(),
+        )
+    except Exception as exc:
+        logger.debug("graph_writer: combined LLM resolver for auto-types skipped: %s", exc)
+
+    changed = False
+    for nm in missing:
+        bf_row = bf_out.get(nm)
+        llm_row = combined_e55_rows.get(nm)
+        has_bf_synset = isinstance(bf_row, dict) and str(
+            bf_row.get("babel_synset_id") or ""
+        ).startswith("bn:")
+        if has_bf_synset and llm_row:
+            merged = dict(bf_row)
+            if llm_row.get("wikidata_candidates"):
+                merged["wikidata_candidates"] = llm_row["wikidata_candidates"]
+                merged["description"] = llm_row.get("description") or merged.get("description", "")
+            eff[nm] = merged
+            changed = True
+        elif has_bf_synset:
+            eff[nm] = bf_row
+            changed = True
+        elif llm_row and llm_row.get("wikidata_candidates"):
+            eff[nm] = llm_row
+            changed = True
+    if changed:
+        spec["_type_llm_grounding"] = eff
+
+
 VALID_LABELS = {
     "E5_Event",
     "E7_Activity",
@@ -466,6 +574,7 @@ class GraphWriter:
         if driver is not None:
             from .type_resolver import TypeResolver
 
+            _merge_babelfy_e55_into_spec_grounding(spec, raw_text or "", wsd_profile)
             tr = TypeResolver(driver)
             tr.resolve_graph_spec(
                 spec,
@@ -479,11 +588,27 @@ class GraphWriter:
 
         def _e55_merge_props(
             tname: str, node_props: Optional[Dict[str, Any]] = None
-        ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        ) -> Tuple[
+            Optional[str],
+            Optional[str],
+            Optional[str],
+            Optional[str],
+            Optional[str],
+            Optional[str],
+            Optional[str],
+            Optional[str],
+            Optional[str],
+        ]:
             np = node_props if isinstance(node_props, dict) else {}
             wid = str(np.get("wikidata_id", "") or "").strip()
             desc = str(np.get("description", "") or "").strip()
             aid = str(np.get("aat_id", "") or "").strip()
+            bn = str(np.get("babel_synset_id", "") or "").strip()
+            wn = str(np.get("wordnet_synset_id", "") or "").strip()
+            bj = str(np.get("babelnet_sources_json", "") or "").strip()
+            bg = str(np.get("babel_gloss", "") or "").strip()
+            bru = str(np.get("babelnet_rdf_url", "") or "").strip()
+            dpu = str(np.get("dbpedia_url", "") or "").strip()
             am = auth_meta.get(tname)
             if isinstance(am, dict):
                 if not wid:
@@ -492,22 +617,53 @@ class GraphWriter:
                     desc = str(am.get("description", "") or "").strip()
                 if not aid:
                     aid = str(am.get("aat_id", "") or "").strip()
+                if not bn:
+                    bn = str(am.get("babel_synset_id", "") or "").strip()
+                if not wn:
+                    wn = str(am.get("wordnet_synset_id", "") or "").strip()
+                if not bj:
+                    bj = str(am.get("babelnet_sources_json", "") or "").strip()
+                if not bg:
+                    bg = str(am.get("babel_gloss", "") or "").strip()
+                if not bru:
+                    bru = str(am.get("babelnet_rdf_url", "") or "").strip()
+                if not dpu:
+                    dpu = str(am.get("dbpedia_url", "") or "").strip()
             if wid:
                 aid = ""
             return (
                 wid if wid else None,
                 desc if desc else None,
                 aid if aid else None,
+                bn if bn.startswith("bn:") else None,
+                wn if wn else None,
+                bj if bj else None,
+                bg if bg else None,
+                bru if bru else None,
+                dpu if dpu else None,
             )
 
         def _merge_e55_type(
             tx_inner, tname: str, node_props: Optional[Dict[str, Any]] = None
         ) -> None:
-            wid_p, desc_p, aid_p = _e55_merge_props(tname, node_props)
+            (
+                wid_p,
+                desc_p,
+                aid_p,
+                bn_p,
+                wn_p,
+                bj_p,
+                bg_p,
+                bru_p,
+                dpu_p,
+            ) = _e55_merge_props(tname, node_props)
             tx_inner.run(
                 """
                 MERGE (n:E55_Type {name: $name})
-                ON CREATE SET n.wikidata_id = $wid, n.description = $desc, n.aat_id = $aid
+                ON CREATE SET n.wikidata_id = $wid, n.description = $desc, n.aat_id = $aid,
+                    n.babel_synset_id = $bn, n.wordnet_synset_id = $wn,
+                    n.babelnet_sources_json = $bj,
+                    n.babel_gloss = $bg, n.babelnet_rdf_url = $bru, n.dbpedia_url = $dpu
                 SET n.wikidata_id = coalesce($wid, n.wikidata_id),
                     n.description = CASE
                         WHEN $desc IS NOT NULL AND $desc <> '' THEN $desc
@@ -517,12 +673,24 @@ class GraphWriter:
                         WHEN $wid IS NOT NULL AND $wid <> '' THEN null
                         WHEN $aid IS NOT NULL AND $aid <> '' THEN $aid
                         ELSE n.aat_id
-                    END
+                    END,
+                    n.babel_synset_id = coalesce($bn, n.babel_synset_id),
+                    n.wordnet_synset_id = coalesce($wn, n.wordnet_synset_id),
+                    n.babelnet_sources_json = coalesce($bj, n.babelnet_sources_json),
+                    n.babel_gloss = coalesce($bg, n.babel_gloss),
+                    n.babelnet_rdf_url = coalesce($bru, n.babelnet_rdf_url),
+                    n.dbpedia_url = coalesce($dpu, n.dbpedia_url)
                 """,
                 name=tname,
                 wid=wid_p,
                 desc=desc_p,
                 aid=aid_p,
+                bn=bn_p,
+                wn=wn_p,
+                bj=bj_p,
+                bg=bg_p,
+                bru=bru_p,
+                dpu=dpu_p,
             )
 
         short_name = raw_text[:60].strip()
@@ -581,6 +749,12 @@ class GraphWriter:
                 person_id = str(props.get("person_id", "") or "").strip()
                 wid_person = str(props.get("wikidata_id") or "").strip() or None
                 wdesc_person = str(props.get("wikidata_description") or "").strip() or None
+                bn_person = str(props.get("babel_synset_id") or "").strip() or None
+                wn_person = str(props.get("wordnet_synset_id") or "").strip() or None
+                bj_person = str(props.get("babelnet_sources_json") or "").strip() or None
+                bg_person = str(props.get("babel_gloss") or "").strip() or None
+                bru_person = str(props.get("babelnet_rdf_url") or "").strip() or None
+                dpu_person = str(props.get("dbpedia_url") or "").strip() or None
                 if person_id:
                     row = tx.run(
                         """
@@ -589,7 +763,13 @@ class GraphWriter:
                         SET n.last_seen = datetime($ts),
                             n.name = coalesce(n.name, $name),
                             n.wikidata_id = coalesce($wid, n.wikidata_id),
-                            n.wikidata_description = coalesce($wdesc, n.wikidata_description)
+                            n.wikidata_description = coalesce($wdesc, n.wikidata_description),
+                            n.babel_synset_id = coalesce($bn, n.babel_synset_id),
+                            n.wordnet_synset_id = coalesce($wn, n.wordnet_synset_id),
+                            n.babelnet_sources_json = coalesce($bj, n.babelnet_sources_json),
+                            n.babel_gloss = coalesce($bg, n.babel_gloss),
+                            n.babelnet_rdf_url = coalesce($bru, n.babelnet_rdf_url),
+                            n.dbpedia_url = coalesce($dpu, n.dbpedia_url)
                         RETURN n.id as id
                         """,
                         pid=person_id,
@@ -597,6 +777,12 @@ class GraphWriter:
                         ts=ts,
                         wid=wid_person,
                         wdesc=wdesc_person,
+                        bn=bn_person,
+                        wn=wn_person,
+                        bj=bj_person,
+                        bg=bg_person,
+                        bru=bru_person,
+                        dpu=dpu_person,
                     ).single()
                 else:
                     row = tx.run(
@@ -606,13 +792,25 @@ class GraphWriter:
                         SET n.last_seen = datetime($ts),
                             n.id = coalesce(n.id, randomUUID()),
                             n.wikidata_id = coalesce($wid, n.wikidata_id),
-                            n.wikidata_description = coalesce($wdesc, n.wikidata_description)
+                            n.wikidata_description = coalesce($wdesc, n.wikidata_description),
+                            n.babel_synset_id = coalesce($bn, n.babel_synset_id),
+                            n.wordnet_synset_id = coalesce($wn, n.wordnet_synset_id),
+                            n.babelnet_sources_json = coalesce($bj, n.babelnet_sources_json),
+                            n.babel_gloss = coalesce($bg, n.babel_gloss),
+                            n.babelnet_rdf_url = coalesce($bru, n.babelnet_rdf_url),
+                            n.dbpedia_url = coalesce($dpu, n.dbpedia_url)
                         RETURN n.id as id
                         """,
                         name=name,
                         ts=ts,
                         wid=wid_person,
                         wdesc=wdesc_person,
+                        bn=bn_person,
+                        wn=wn_person,
+                        bj=bj_person,
+                        bg=bg_person,
+                        bru=bru_person,
+                        dpu=dpu_person,
                     ).single()
                 id_to_person_name[nid] = name
                 if row and row.get("id"):
@@ -631,12 +829,36 @@ class GraphWriter:
                 if "event_time_text" in props:
                     prop_sets.append("n.event_time_text = $ett")
                     prop_params["ett"] = str(props["event_time_text"])
-                if label == "E53_Place" and props.get("wikidata_id"):
+                if label in ("E53_Place", "E74_Group") and props.get("wikidata_id"):
                     prop_sets.append("n.wikidata_id = coalesce(n.wikidata_id, $wid)")
                     prop_params["wid"] = str(props["wikidata_id"])
                     if props.get("wikidata_description"):
                         prop_sets.append("n.wikidata_description = coalesce(n.wikidata_description, $wdesc)")
                         prop_params["wdesc"] = str(props["wikidata_description"])
+                if label in ("E53_Place", "E74_Group"):
+                    bn_e = str(props.get("babel_synset_id") or "").strip()
+                    if bn_e.startswith("bn:"):
+                        prop_sets.append("n.babel_synset_id = coalesce(n.babel_synset_id, $bn)")
+                        prop_params["bn"] = bn_e
+                    if str(props.get("wordnet_synset_id") or "").strip():
+                        prop_sets.append("n.wordnet_synset_id = coalesce(n.wordnet_synset_id, $wn)")
+                        prop_params["wn"] = str(props["wordnet_synset_id"])
+                    if str(props.get("babelnet_sources_json") or "").strip():
+                        prop_sets.append(
+                            "n.babelnet_sources_json = coalesce(n.babelnet_sources_json, $bj)"
+                        )
+                        prop_params["bj"] = str(props["babelnet_sources_json"])
+                    if str(props.get("babel_gloss") or "").strip():
+                        prop_sets.append("n.babel_gloss = coalesce(n.babel_gloss, $bg)")
+                        prop_params["bg"] = str(props["babel_gloss"])
+                    if str(props.get("babelnet_rdf_url") or "").strip():
+                        prop_sets.append(
+                            "n.babelnet_rdf_url = coalesce(n.babelnet_rdf_url, $bru)"
+                        )
+                        prop_params["bru"] = str(props["babelnet_rdf_url"])
+                    if str(props.get("dbpedia_url") or "").strip():
+                        prop_sets.append("n.dbpedia_url = coalesce(n.dbpedia_url, $dpu)")
+                        prop_params["dpu"] = str(props["dbpedia_url"])
 
                 extra = (", " + ", ".join(prop_sets)) if prop_sets else ""
 

@@ -43,3 +43,28 @@ AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY", "")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "")  # e.g. https://xxx.cognitiveservices.azure.com/
 AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "")  # deployment name, e.g. gpt-4o-mini
 AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
+
+# Babelfy HTTP API 1.0 — https://babelfy.org/ (GET + Accept-Encoding: gzip; key shared with BabelNet).
+# Required API params: text, lang, key. Optional: annType, annRes, match, th, MCS, dens, cands, posTag, extAIDA.
+BABELFY_API_KEY = os.getenv("BABELFY_API_KEY", "")
+# Babelfy ``lang`` (e.g. EN, FR, or AGNOSTIC per API docs).
+MEMO_BABELFY_LANG = os.getenv("MEMO_BABELFY_LANG", "EN")
+# ``annRes``: empty = omit (same as official minimal samples / requests example). WIKI | WN | BABELNET if you must set it.
+MEMO_BABELFY_ANN_RES = os.getenv("MEMO_BABELFY_ANN_RES", "").strip()
+# Optional Babelfy GET parameters (empty = omit that knob; Babelfy uses API defaults).
+# match: EXACT_MATCHING | PARTIAL_MATCHING — default keeps previous pipeline behavior.
+MEMO_BABELFY_MATCH = os.getenv("MEMO_BABELFY_MATCH", "PARTIAL_MATCHING").strip()
+# th: cutting threshold (float, Babelfy ``th``).
+MEMO_BABELFY_TH = os.getenv("MEMO_BABELFY_TH", "").strip()
+# MCS: backoff (API-specific; often true / false).
+MEMO_BABELFY_MCS = os.getenv("MEMO_BABELFY_MCS", "").strip()
+# dens: densest-subgraph heuristic (true / false).
+MEMO_BABELFY_DENS = os.getenv("MEMO_BABELFY_DENS", "").strip()
+# cands: candidate list mode (e.g. TOP vs ALL — see Babelfy docs).
+MEMO_BABELFY_CANDS = os.getenv("MEMO_BABELFY_CANDS", "").strip()
+# posTag: tokenization / POS pipeline id.
+MEMO_BABELFY_POS_TAG = os.getenv("MEMO_BABELFY_POS_TAG", "").strip()
+# extAIDA: extend candidates with aida_means (true / false).
+MEMO_BABELFY_EXT_AIDA = os.getenv("MEMO_BABELFY_EXT_AIDA", "").strip()
+# Use Babelfy CONCEPTS pass to suggest Wikidata classes for E55 types (1 = on when BABELFY_API_KEY set)
+MEMO_BABELFY_E55 = os.getenv("MEMO_BABELFY_E55", "1")

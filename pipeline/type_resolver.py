@@ -5,7 +5,7 @@ import json
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, ClassVar, Dict, List, Optional, Set, Tuple
 
 import requests
 
@@ -937,12 +937,14 @@ def apply_entity_linking(
     el_results: Dict[str, Dict[str, Any]],
     user_name: str = "",
 ) -> Dict[str, Any]:
-    """Write validated Wikidata QIDs back into E53_Place/E21_Person/E74_Group node properties.
+    """Write BabelNet / Wikidata authority onto E53_Place / E21_Person / E74_Group nodes.
 
-    ``el_results`` must be a flat map: entity display name -> {wikidata_id, description?, ...}
-    (e.g. only the ``confirmed`` slice from ``TypeGroundingLLM.run_entity_linking``).
+    ``el_results`` maps entity display name -> fields such as ``wikidata_id``, ``babel_synset_id``,
+    ``wordnet_synset_id``, ``babelnet_sources_json``, ``babel_gloss``, ``babelnet_rdf_url``,
+    ``dbpedia_url``, ``wikidata_description``.
 
-    Validates each QID with wikidata_qid_exists() before storing — drops hallucinated IDs.
+    Wikidata IDs are checked with ``wikidata_qid_exists`` when present. BabelNet synset ids
+    may be stored without Wikidata when the synset has no mapped Q-item.
     """
     if not el_results:
         return spec
@@ -966,19 +968,38 @@ def apply_entity_linking(
         if not isinstance(result, dict):
             continue
         qid = str(result.get("wikidata_id") or "").strip()
-        if not qid or not qid.startswith("Q"):
+        bn = str(result.get("babel_synset_id") or "").strip()
+        if not qid.startswith("Q") and not bn:
             continue
-        # Validate: reject hallucinated QIDs
-        try:
-            if not wikidata_qid_exists(qid):
-                _log.info("entity_linking: QID %s for %r does not exist, dropping", qid, name)
-                continue
-        except Exception:
-            continue  # network error: skip rather than store bad data
+        if qid.startswith("Q"):
+            try:
+                if not wikidata_qid_exists(qid):
+                    _log.info("entity_linking: QID %s for %r does not exist, dropping WD only", qid, name)
+                    qid = ""
+            except Exception:
+                qid = ""
         props = node.get("properties", {})
         if not isinstance(props, dict):
             props = {}
-        props["wikidata_id"] = qid
+        if qid.startswith("Q"):
+            props["wikidata_id"] = qid
+        if bn:
+            props["babel_synset_id"] = bn
+        wn = str(result.get("wordnet_synset_id") or "").strip()
+        if wn:
+            props["wordnet_synset_id"] = wn
+        bjs = str(result.get("babelnet_sources_json") or "").strip()
+        if bjs:
+            props["babelnet_sources_json"] = bjs
+        bg = str(result.get("babel_gloss") or "").strip()
+        if bg:
+            props["babel_gloss"] = bg
+        bru = str(result.get("babelnet_rdf_url") or "").strip()
+        if bru:
+            props["babelnet_rdf_url"] = bru
+        dpu = str(result.get("dbpedia_url") or "").strip()
+        if dpu:
+            props["dbpedia_url"] = dpu
         desc = str(result.get("description") or "").strip()
         if desc:
             props["wikidata_description"] = desc
@@ -1321,9 +1342,37 @@ def _e55_aat_query_phrases(raw_type_name: str) -> List[str]:
 class TypeResolver:
     """Queries existing E55_Type nodes, normalizes names, and grounds types in Wikidata."""
 
+    _babel_synset_key_bootstrapped: ClassVar[bool] = False
+
     def __init__(self, driver):
         self.driver = driver
         self._wikidata_cache: Dict[str, Optional[Dict[str, str]]] = {}
+        self._maybe_register_babel_synset_property_key()
+
+    def _maybe_register_babel_synset_property_key(self) -> None:
+        """Prime Neo4j catalog with ``babel_synset_id`` so Cypher stops warning before first write."""
+        if TypeResolver._babel_synset_key_bootstrapped or self.driver is None:
+            return
+        try:
+            with self.driver.session() as s:
+                s.run(
+                    """
+                    CREATE (n:_MemoSchemaBootstrap {
+                        babel_synset_id: '',
+                        wordnet_synset_id: '',
+                        babelnet_sources_json: '',
+                        babel_gloss: '',
+                        babelnet_rdf_url: '',
+                        dbpedia_url: ''
+                    }) DELETE n
+                    """
+                )
+            TypeResolver._babel_synset_key_bootstrapped = True
+        except Exception:
+            _log.debug(
+                "Neo4j: could not prime Babel-related property keys (non-fatal)",
+                exc_info=True,
+            )
 
     def get_existing_types(self) -> List[str]:
         with self.driver.session() as s:
@@ -1331,17 +1380,23 @@ class TypeResolver:
             return [r["name"] for r in result if r["name"]]
 
     def get_grounded_types(self) -> Dict[str, Dict[str, Optional[str]]]:
-        """Return {name: {wikidata_id, aat_id, description}} for E55_Type nodes that already
-        have a KB identifier. Used to skip TypeGroundingLLM for types grounded in a prior entry."""
+        """Return E55_Type nodes that carry Wikidata, AAT, or BabelNet identifiers (+ Babel fields)."""
         with self.driver.session() as s:
             result = s.run(
                 """
                 MATCH (t:E55_Type)
                 WHERE t.wikidata_id IS NOT NULL OR t.aat_id IS NOT NULL
+                   OR t.babel_synset_id IS NOT NULL
                 RETURN t.name AS name,
                        t.wikidata_id AS wikidata_id,
                        t.aat_id AS aat_id,
-                       t.description AS description
+                       t.description AS description,
+                       t.babel_synset_id AS babel_synset_id,
+                       t.wordnet_synset_id AS wordnet_synset_id,
+                       t.babelnet_sources_json AS babelnet_sources_json,
+                       t.babel_gloss AS babel_gloss,
+                       t.babelnet_rdf_url AS babelnet_rdf_url,
+                       t.dbpedia_url AS dbpedia_url
                 """
             )
             out: Dict[str, Dict[str, Optional[str]]] = {}
@@ -1352,6 +1407,12 @@ class TypeResolver:
                         "wikidata_id": r.get("wikidata_id"),
                         "aat_id": r.get("aat_id"),
                         "description": r.get("description"),
+                        "babel_synset_id": r.get("babel_synset_id"),
+                        "wordnet_synset_id": r.get("wordnet_synset_id"),
+                        "babelnet_sources_json": r.get("babelnet_sources_json"),
+                        "babel_gloss": r.get("babel_gloss"),
+                        "babelnet_rdf_url": r.get("babelnet_rdf_url"),
+                        "dbpedia_url": r.get("dbpedia_url"),
                     }
             return out
 
@@ -1373,6 +1434,33 @@ class TypeResolver:
                 return str(row["name"])
             return None
 
+    def lookup_e55_by_babel_synset(
+        self, babel_synset_id: str
+    ) -> Optional[Tuple[str, Optional[str], str]]:
+        """Return ``(name, wikidata_id, description)`` for an existing E55 with this synset."""
+        sid = (babel_synset_id or "").strip()
+        if not sid.startswith("bn:"):
+            return None
+        with self.driver.session() as s:
+            row = s.run(
+                """
+                MATCH (t:E55_Type)
+                WHERE t.babel_synset_id = $sid
+                RETURN t.name AS name,
+                       t.wikidata_id AS wikidata_id,
+                       t.description AS description
+                LIMIT 1
+                """,
+                sid=sid,
+            ).single()
+            if not row or not row.get("name"):
+                return None
+            return (
+                str(row["name"]),
+                str(row["wikidata_id"]).strip() if row.get("wikidata_id") else None,
+                str(row["description"] or "").strip(),
+            )
+
     def get_wikidata_info(
         self,
         scoring_term: str,
@@ -1385,7 +1473,7 @@ class TypeResolver:
         wikidata_confidence: str = "medium",
     ) -> Optional[Dict[str, str]]:
         """
-        Default pipeline: pass `wikidata_candidates` from the batch TypeGroundingLLM row — embed rerank +
+        Default pipeline: pass `wikidata_candidates` from the Babelfy/BabelNet E55 row — embed rerank +
         qid exists + SPARQL only. With no candidates, returns None (no per-type LLM).
 
         Legacy (MEMO_WD_LEGACY_WBSEARCH=1): wbsearchentities + heuristics (+ optional tie-break LLM).
@@ -1760,6 +1848,12 @@ class TypeResolver:
         if llm_grounding and not block_ambiguous:
             row = llm_grounding.get(raw)
             if isinstance(row, dict):
+                bnid = str(row.get("babel_synset_id") or "").strip()
+                if bnid.startswith("bn:"):
+                    hit = self.lookup_e55_by_babel_synset(bnid)
+                    if hit:
+                        nm_hit, wid_hit, dsc_hit = hit
+                        return nm_hit, wid_hit, dsc_hit, None
                 if _modern:
                     conf = str(row.get("confidence") or "medium").strip().lower()
                     if conf not in ("high", "medium", "low"):
@@ -1797,6 +1891,21 @@ class TypeResolver:
                         raw,
                         conf,
                     )
+                    # Direct fallback: if the combined LLM resolver already validated a QID
+                    # (stored as wikidata_id in the row), accept it without re-running embeddings.
+                    # This covers types like "Visit" that don't appear literally in the journal
+                    # text so Babelfy can't span-match them, but the LLM resolved them from context.
+                    wid_llm = str(row.get("wikidata_id") or "").strip()
+                    if wid_llm and _safe_wikidata_qid(wid_llm):
+                        try:
+                            if wikidata_qid_exists(wid_llm):
+                                desc_llm = str(row.get("description") or "").strip()
+                                hit_name = self.find_e55_name_by_wikidata_id(wid_llm)
+                                if hit_name:
+                                    return hit_name, wid_llm, desc_llm, None
+                                return norm, wid_llm, desc_llm, None
+                        except Exception:
+                            pass
                     aat_t = validate_batch_aat(
                         raw,
                         str(row.get("aat_id") or ""),
@@ -1989,7 +2098,8 @@ class TypeResolver:
                 q = str(v.get("wikidata_id") or "").strip()
                 aid = str(v.get("aat_id") or "").strip()
                 desc_p = str(v.get("description") or "").strip()
-                if not q and not aid:
+                bn = str(v.get("babel_synset_id") or "").strip()
+                if not q and not aid and not bn.startswith("bn:"):
                     continue
                 row: Dict[str, str] = {}
                 if q:
@@ -1998,6 +2108,23 @@ class TypeResolver:
                     row["aat_id"] = aid
                 if desc_p:
                     row["description"] = desc_p
+                if bn.startswith("bn:"):
+                    row["babel_synset_id"] = bn
+                wn = str(v.get("wordnet_synset_id") or "").strip()
+                if wn:
+                    row["wordnet_synset_id"] = wn
+                bj = str(v.get("babelnet_sources_json") or "").strip()
+                if bj:
+                    row["babelnet_sources_json"] = bj
+                bg = str(v.get("babel_gloss") or "").strip()
+                if bg:
+                    row["babel_gloss"] = bg
+                bru = str(v.get("babelnet_rdf_url") or "").strip()
+                if bru:
+                    row["babelnet_rdf_url"] = bru
+                dpu = str(v.get("dbpedia_url") or "").strip()
+                if dpu:
+                    row["dbpedia_url"] = dpu
                 authority[str(k)] = row
         for canon, wid, desc, aid in resolved_map.values():
             if not wid and not aid and not desc:
@@ -2010,6 +2137,34 @@ class TypeResolver:
                 am["aat_id"] = aid
             if desc:
                 am["description"] = desc
+
+        for _raw_name, row_bn in eff_llm.items():
+            if not isinstance(row_bn, dict):
+                continue
+            bns = str(row_bn.get("babel_synset_id") or "").strip()
+            if not bns.startswith("bn:"):
+                continue
+            ckey = None
+            if _raw_name in resolved_map:
+                ckey = resolved_map[_raw_name][0]
+            if ckey:
+                am = authority.setdefault(ckey, {})
+                am["babel_synset_id"] = bns
+                wns = str(row_bn.get("wordnet_synset_id") or "").strip()
+                if wns:
+                    am["wordnet_synset_id"] = wns
+                bj = str(row_bn.get("babelnet_sources_json") or "").strip()
+                if bj:
+                    am["babelnet_sources_json"] = bj
+                bg = str(row_bn.get("babel_gloss") or "").strip()
+                if bg:
+                    am["babel_gloss"] = bg
+                bru = str(row_bn.get("babelnet_rdf_url") or "").strip()
+                if bru:
+                    am["babelnet_rdf_url"] = bru
+                dpu = str(row_bn.get("dbpedia_url") or "").strip()
+                if dpu:
+                    am["dbpedia_url"] = dpu
 
         for node in nodes:
             if not isinstance(node, dict):
@@ -2035,6 +2190,26 @@ class TypeResolver:
                         props["description"] = desc
                     elif not str(props.get("description") or "").strip():
                         props.pop("description", None)
+                    row_g = eff_llm.get(old)
+                    if isinstance(row_g, dict):
+                        bns = str(row_g.get("babel_synset_id") or "").strip()
+                        if bns.startswith("bn:"):
+                            props["babel_synset_id"] = bns
+                        wns = str(row_g.get("wordnet_synset_id") or "").strip()
+                        if wns:
+                            props["wordnet_synset_id"] = wns
+                        bjson = str(row_g.get("babelnet_sources_json") or "").strip()
+                        if bjson:
+                            props["babelnet_sources_json"] = bjson
+                        bgloss = str(row_g.get("babel_gloss") or "").strip()
+                        if bgloss:
+                            props["babel_gloss"] = bgloss
+                        brdf = str(row_g.get("babelnet_rdf_url") or "").strip()
+                        if brdf:
+                            props["babelnet_rdf_url"] = brdf
+                        dbp = str(row_g.get("dbpedia_url") or "").strip()
+                        if dbp:
+                            props["dbpedia_url"] = dbp
             types = node.get("types")
             if isinstance(types, list):
                 new_types: List[str] = []

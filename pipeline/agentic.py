@@ -1,6 +1,7 @@
 """Agentic orchestration (LangGraph) for the memory pipeline.
 
-Flow: Prep → WSD (LLM JSON) → Model → LLM type grounding + TypeResolve → WriteGraph → WriteVector
+Flow: Prep → WSD (LLM JSON) → Model → Babelfy/BabelNet E55 grounding + TypeResolve
+→ Babelfy/BabelNet instance linking → WriteGraph → WriteVector
 """
 from __future__ import annotations
 
@@ -19,29 +20,7 @@ from .vector_store import VectorStore
 from .llm_extractor import LLMExtractor
 from .pipeline import MemoryPipeline
 from .wsd_preprocess import WsdPreprocessor
-from .type_grounding_llm import TypeGroundingLLM
-from .type_resolver import (
-    collect_e55_grounding_requests,
-    collect_entity_linking_requests,
-    apply_entity_linking,
-    build_entity_linking_wikidata_tasks,
-)
-
-
-def _extract_user_profile(spec: Dict[str, Any], user_name: str) -> Dict[str, Any]:
-    """Pull the author's profile properties from the E21_Person node in the spec."""
-    for node in spec.get("nodes", []):
-        if not isinstance(node, dict):
-            continue
-        if str(node.get("label", "")) != "E21_Person":
-            continue
-        if user_name and str(node.get("name", "")).lower() != user_name.lower():
-            continue
-        props = node.get("properties", {})
-        if not isinstance(props, dict):
-            return {}
-        return {k: v for k, v in props.items() if v and not k.startswith("_")}
-    return {}
+from .type_resolver import collect_e55_grounding_requests
 
 
 class AgenticState(TypedDict, total=False):
@@ -68,7 +47,6 @@ class AgenticRunner:
     vector_store: Optional[VectorStore]
     extractor: Optional[LLMExtractor] = None
     wsd_preprocessor: Optional[WsdPreprocessor] = None
-    type_grounding_llm: Optional[TypeGroundingLLM] = None
     user_name: str = ""
 
     def build(self):
@@ -101,6 +79,8 @@ class AgenticRunner:
             if not self.modeling_agent or not prep.get("micro_events"):
                 return {**state, "graph_spec": {"nodes": [], "edges": []}}
             try:
+                from config import BABELFY_API_KEY
+
                 existing_types: List[str] = []
                 if self.type_resolver:
                     existing_types = self.type_resolver.get_existing_types()
@@ -110,85 +90,141 @@ class AgenticRunner:
                     existing_types=existing_types,
                     day_bucket=state.get("day_bucket", ""),
                 )
-                llm_ground: Optional[Dict[str, Any]] = None
-                if self.type_grounding_llm and self.type_resolver:
-                    reqs = collect_e55_grounding_requests(spec)
+
+                babelfy_key = (BABELFY_API_KEY or "").strip()
+                journal_text = state.get("text") or ""
+
+                # ── skip sets: types already grounded (seed w/ QID + Neo4j cache) ────
+                from .type_vocab import SEED_VOCAB
+                seeded_lower = {k.lower() for k, v in SEED_VOCAB.items() if v.get("wikidata_id")}
+                try:
+                    neo4j_grounded_lower = {
+                        n.lower() for n in (self.type_resolver.get_grounded_types() if self.type_resolver else {})
+                    }
+                except Exception:
+                    neo4j_grounded_lower = set()
+                skip_lower = seeded_lower | neo4j_grounded_lower
+
+                # ── step 1: Babelfy CONCEPTS + NAMED_ENTITIES ────────────────────────
+                # Run both annotation passes now (results are cached — same text reuses them below).
+                bf_e55: Dict[str, Any] = {}
+                bf_e55_stats: Dict[str, Any] = {}
+                concept_evidence: List[Dict[str, Any]] = []
+                ne_evidence: List[Dict[str, Any]] = []
+                reqs = collect_e55_grounding_requests(spec) if self.type_resolver else []
+
+                if babelfy_key:
+                    from .babelfy_e55_grounding import (
+                        DEFAULT_E55_LOW_ROW,
+                        collect_babelfy_evidence,
+                        run_babelfy_e55_grounding,
+                    )
+                    # Span-matched grounding (gives babel_synset_id + babelnet_sources_json)
                     if reqs:
-                        # Skip grounding for types already resolved: seed vocab entries
-                        # with known QIDs, and types cached in Neo4j from prior entries.
-                        from .type_vocab import SEED_VOCAB
-                        seeded_lower = {
-                            k.lower()
-                            for k, v in SEED_VOCAB.items()
-                            if v.get("wikidata_id")
-                        }
-                        try:
-                            neo4j_grounded_lower = {
-                                n.lower()
-                                for n in self.type_resolver.get_grounded_types()
-                            }
-                        except Exception:
-                            neo4j_grounded_lower = set()
-                        skip_lower = seeded_lower | neo4j_grounded_lower
-                        reqs_to_ground = [
-                            r for r in reqs
-                            if (r.get("name") or "").lower() not in skip_lower
-                        ]
-                        if reqs_to_ground:
-                            llm_ground = self.type_grounding_llm.run(
-                                state.get("text") or "",
-                                reqs_to_ground,
-                                state.get("wsd_profile"),
-                            )
+                        bf_e55, bf_e55_stats = run_babelfy_e55_grounding(
+                            journal_text, reqs, api_key=babelfy_key,
+                            wsd_profile=state.get("wsd_profile"),
+                        )
+                        if isinstance(bf_e55_stats, dict) and bf_e55_stats.get("ran"):
+                            spec["_babelfy_e55_grounding"] = bf_e55_stats
+                    # All concept/NE annotations as evidence context (cached API calls)
+                    concept_evidence = collect_babelfy_evidence(
+                        journal_text, api_key=babelfy_key, ann_type="CONCEPTS"
+                    )
+                    ne_evidence = collect_babelfy_evidence(
+                        journal_text, api_key=babelfy_key, ann_type="NAMED_ENTITIES"
+                    )
+
+                # ── step 2: combined Babelfy+LLM resolver ───────────────────────────
+                # Resolves ALL types AND entities in one LLM call using full Babelfy context.
+                # LLM can reason about types that don't appear literally in text (e.g. "Visit").
+                from .type_resolver import apply_entity_linking, collect_entity_linking_requests
+                entity_reqs = collect_entity_linking_requests(spec, user_name=self.user_name)
+
+                combined_e55_rows: Dict[str, Any] = {}
+                combined_el_rows: Dict[str, Any] = {}
+                try:
+                    from .llm_kb_fallback import llm_resolve_all_with_babelfy
+                    combined_e55_rows, combined_el_rows = llm_resolve_all_with_babelfy(
+                        type_requests=reqs,
+                        entity_requests=entity_reqs,
+                        journal_text=journal_text,
+                        concept_evidence=concept_evidence,
+                        ne_evidence=ne_evidence,
+                        babelfy_type_hits=bf_e55,
+                        skip_type_names=skip_lower,
+                    )
+                except Exception as _combined_exc:
+                    import logging as _lg
+                    _lg.getLogger(__name__).debug(
+                        "agentic: combined Babelfy+LLM resolver skipped: %s", _combined_exc
+                    )
+
+                # ── step 3: build merged_ground for TypeResolver ─────────────────────
+                # Priority: Babelfy hit (has synset data) wins for babel fields;
+                # combined LLM result (has validated QID from context reasoning) wins for wikidata_candidates.
+                llm_ground: Optional[Dict[str, Any]] = None
+                if reqs:
+                    merged_ground: Dict[str, Any] = {}
+                    for r in reqs:
+                        nm = str(r.get("name") or "").strip()
+                        if not nm or nm.lower() in skip_lower:
+                            continue
+                        bf_row = bf_e55.get(nm)
+                        llm_row = combined_e55_rows.get(nm)
+                        has_bf_synset = isinstance(bf_row, dict) and str(
+                            bf_row.get("babel_synset_id") or ""
+                        ).startswith("bn:")
+                        if has_bf_synset and llm_row:
+                            # Merge: keep Babelfy synset/babel fields + LLM wikidata_candidates
+                            merged = dict(bf_row)
+                            if llm_row.get("wikidata_candidates"):
+                                merged["wikidata_candidates"] = llm_row["wikidata_candidates"]
+                                merged["confidence"] = llm_row.get("confidence", merged.get("confidence", "medium"))
+                                merged["description"] = llm_row.get("description") or merged.get("description", "")
+                            merged_ground[nm] = merged
+                        elif has_bf_synset:
+                            merged_ground[nm] = bf_row
+                        elif llm_row:
+                            merged_ground[nm] = llm_row
+                        else:
+                            merged_ground[nm] = dict(DEFAULT_E55_LOW_ROW)
+                    llm_ground = merged_ground if merged_ground else None
+
                 if self.type_resolver:
                     spec = self.type_resolver.resolve_graph_spec(
                         spec,
                         existing_types,
-                        journal_text=state.get("text") or "",
+                        journal_text=journal_text,
                         wsd_profile=state.get("wsd_profile"),
                         llm_grounding=llm_ground,
                     )
 
-                # Entity linking: E53_Place / E21_Person / E74_Group → Wikidata instance QIDs
-                if self.type_grounding_llm:
-                    el_reqs = collect_entity_linking_requests(spec, user_name=self.user_name)
-                    if el_reqs:
-                        user_profile = _extract_user_profile(spec, self.user_name)
-                        # Spec nodes rarely carry profile_* properties (those come from onboarding,
-                        # not from the current journal entry).  Fall back to Neo4j when sparse.
-                        _PROFILE_KEYS = {"current_city", "home_country", "nationality", "timezone"}
-                        if self.graph_store and not (_PROFILE_KEYS & set(user_profile)):
-                            neo4j_profile = self.graph_store.get_user_profile(self.user_name)
-                            if neo4j_profile:
-                                user_profile = {**neo4j_profile, **user_profile}
-                        el_bundle = self.type_grounding_llm.run_entity_linking(
-                            state.get("text") or "",
-                            el_reqs,
-                            user_profile=user_profile,
-                        )
-                        # apply_entity_linking expects flat name -> {wikidata_id, description, ...}
-                        el_confirmed = (
-                            el_bundle.get("confirmed")
-                            if isinstance(el_bundle, dict)
-                            else None
-                        )
-                        if isinstance(el_confirmed, dict) and el_confirmed:
-                            spec = apply_entity_linking(
-                                spec, el_confirmed, user_name=self.user_name
-                            )
-                        el_pending = (
-                            el_bundle.get("pending")
-                            if isinstance(el_bundle, dict)
-                            else None
-                        )
-                        if isinstance(el_pending, dict) and el_pending:
-                            wtasks = build_entity_linking_wikidata_tasks(
-                                spec,
-                                str(state.get("entry_id") or ""),
-                                el_pending,
-                            )
-                            if wtasks:
-                                spec["_entity_linking_wikidata_tasks"] = wtasks
+                # ── step 4: Babelfy NAMED_ENTITIES instance linking ──────────────────
+                # Gives babel_synset_id on matched entities (span-based)
+                from .babelfy_entity_link import run_babelfy_entity_linking
+                spec, _bf_el_stats = run_babelfy_entity_linking(
+                    journal_text, spec,
+                    user_name=self.user_name,
+                    api_key=babelfy_key,
+                )
+                if isinstance(_bf_el_stats, dict) and _bf_el_stats.get("ran"):
+                    spec["_babelfy_entity_linking"] = _bf_el_stats
+
+                # ── step 5: apply combined LLM entity linking results ────────────────
+                # Fills wikidata_id on entities Babelfy span-matching missed.
+                # Only applies to nodes that are still unlinked after Babelfy pass.
+                if combined_el_rows:
+                    still_unlinked_names = {
+                        str(r.get("name") or "").strip()
+                        for r in collect_entity_linking_requests(spec, user_name=self.user_name)
+                    }
+                    el_to_apply = {
+                        nm: row for nm, row in combined_el_rows.items()
+                        if nm in still_unlinked_names
+                    }
+                    if el_to_apply:
+                        spec = apply_entity_linking(spec, el_to_apply, user_name=self.user_name)
 
                 return {**state, "graph_spec": spec}
             except Exception as e:

@@ -14,11 +14,11 @@ from .type_grounding_embed import (
     wikidata_filter_qids_by_geo_anchor,
     wikidata_label_search_in_place,
 )
-from .type_grounding_llm import (
-    _canonicalize_entity_link_candidates,
-    _cap_entity_link_candidates,
-    _entity_link_max_candidates,
-    _wikidata_coheres_with_mention,
+from .entity_link_candidates import (
+    canonicalize_entity_link_candidates,
+    cap_entity_link_candidates,
+    entity_link_max_candidates,
+    wikidata_coheres_with_mention,
 )
 
 logger = logging.getLogger(__name__)
@@ -252,7 +252,7 @@ def _accept_geo_proven_candidates(
         desc = str(pair[1] if pair else c.get("description") or "").strip()
         if not lab:
             continue
-        if not _wikidata_coheres_with_mention(mention, lab, desc):
+        if not wikidata_coheres_with_mention(mention, lab, desc):
             continue
         out.append({"wikidata_id": qid, "label": lab, "description": desc, "confidence": "high"})
     return out
@@ -275,7 +275,7 @@ def refresh_place_candidates_with_user_hint(
          that pass are geographically proven, so only the lighter _accept_geo_proven_candidates
          gate runs (P31 blocklist + mention coherence, no Q2221906 proof).
       5. If the geo-filter returns results, return them.  Otherwise fall back to the full
-         _canonicalize_entity_link_candidates gate on all raw candidates.
+         ``canonicalize_entity_link_candidates`` gate on all raw candidates.
     """
     m = (mention or "").strip()
     h = (hint or "").strip()
@@ -294,7 +294,7 @@ def refresh_place_candidates_with_user_hint(
         if jt
         else f"[Journal context unknown; user clarification for place \"{m}\"]: {h}"
     )
-    lim = max(16, _entity_link_max_candidates() * 5)
+    lim = max(16, entity_link_max_candidates() * 5)
 
     prepend: List[str] = []
     if location:
@@ -345,8 +345,8 @@ def refresh_place_candidates_with_user_hint(
             accepted = _accept_geo_proven_candidates(m, merged, elab)
             if accepted:
                 accepted = _order_geo_candidates_area_before_transit(accepted)
-                return _cap_entity_link_candidates(accepted)
+                return cap_entity_link_candidates(accepted)
 
     # --- Fallback: full strict gate on all raw candidates ---
-    canon = _canonicalize_entity_link_candidates(m, shaped, cidoc_label=elab)
-    return _cap_entity_link_candidates(canon)
+    canon = canonicalize_entity_link_candidates(m, shaped, cidoc_label=elab)
+    return cap_entity_link_candidates(canon)

@@ -1,6 +1,6 @@
-"""Stage 2–3 after batch LLM: embedding rerank + SPARQL validate. No per-type LLM here.
+"""Stage 2–3 after Babelfy/BabelNet E55 candidates: embedding rerank + SPARQL validate.
 
-Default pipeline: batch TypeGroundingLLM (stage 1) → this module → optional AAT from batch only.
+Default pipeline: Babelfy E55 grounding (candidates) → this module → optional AAT from batch only.
 
 Circuit breaker: MEMO_WD_LEGACY_WBSEARCH=1 restores wbsearchentities + heuristics in type_resolver.get_wikidata_info.
 

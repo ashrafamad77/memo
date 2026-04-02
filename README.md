@@ -34,9 +34,14 @@ WEAVIATE_URL=http://localhost:8081
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=password
+
+# Optionnel — entity linking instances (lieux / personnes / orgs) via Babelfy uniquement
+# BABELFY_API_KEY=
+# MEMO_BABELFY_LANG=EN
+# MEMO_BABELFY_E55=1   # Babelfy CONCEPTS → candidats Wikidata pour types E55 (0 = désactiver)
 ```
 
-→ Azure : **Keys and endpoint** pour la clé et l’URL, **Deployments** pour le nom du déploiement. Weaviate par défaut sur le port 8081 (voir `docker-compose.yml`).
+→ Azure : **Keys and endpoint** pour la clé et l’URL, **Deployments** pour le nom du déploiement. Weaviate par défaut sur le port 8081 (voir `docker-compose.yml`). Babelfy : `BABELFY_API_KEY` — instances E53/E21/E74 + (si `MEMO_BABELFY_E55` actif) types E55 via passage **CONCEPTS** ; le LLM de grounding E55 ne sert plus que pour les types que Babelfy ne couvre pas.
 
 ## Services (Neo4j + Weaviate)
 

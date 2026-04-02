@@ -3,7 +3,7 @@
 Two purposes:
 1. Prompt guidance — the ModelingAgent is shown these names as preferred choices,
    which prevents it from inventing ad-hoc compounds like "Urbanvisit" or "Deepwork".
-2. Zero-cost grounding — types with a wikidata_id skip the TypeGroundingLLM call entirely;
+2. Zero-cost grounding — types with a wikidata_id skip Babelfy E55 grounding entirely;
    the mapping is applied directly in _resolve_one (TypeResolver).
 
 For types without a wikidata_id the name is still canonical (the prompt uses it), and
@@ -146,5 +146,5 @@ def seed_type_names() -> List[str]:
 
 
 def grounded_seed_names() -> List[str]:
-    """Names that have a wikidata_id — these skip the TypeGroundingLLM call entirely."""
+    """Names that have a wikidata_id — these skip Babelfy E55 grounding entirely."""
     return [name for name, entry in SEED_VOCAB.items() if entry.get("wikidata_id")]

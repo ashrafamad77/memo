@@ -13,6 +13,7 @@ from config import (
     AZURE_OPENAI_ENDPOINT,
     AZURE_OPENAI_DEPLOYMENT,
     AZURE_OPENAI_API_VERSION,
+    BABELFY_API_KEY,
     USER_NAME,
 )
 
@@ -103,18 +104,11 @@ class MemoryPipeline:
         from .type_resolver import TypeResolver
         from .graph_writer import GraphWriter
         from .wsd_preprocess import WsdPreprocessor
-        from .type_grounding_llm import TypeGroundingLLM
 
         entry_id = entry_id or str(uuid.uuid4())
         deployment = (AZURE_OPENAI_DEPLOYMENT or "gpt-4o-mini").strip()
 
         wsd_preprocessor = WsdPreprocessor(
-            api_key=AZURE_OPENAI_API_KEY,
-            model=deployment,
-            azure_endpoint=AZURE_OPENAI_ENDPOINT.strip(),
-            api_version=AZURE_OPENAI_API_VERSION,
-        )
-        type_grounding_llm = TypeGroundingLLM(
             api_key=AZURE_OPENAI_API_KEY,
             model=deployment,
             azure_endpoint=AZURE_OPENAI_ENDPOINT.strip(),
@@ -145,7 +139,6 @@ class MemoryPipeline:
             vector_store=self.vector_store,
             extractor=self.extractor,
             wsd_preprocessor=wsd_preprocessor,
-            type_grounding_llm=type_grounding_llm,
             user_name=USER_NAME,
         )
         app = runner.build()
@@ -161,6 +154,17 @@ class MemoryPipeline:
             {"text": e.get("name", ""), "type": e.get("type", "")}
             for e in entities_raw if isinstance(e, dict)
         ]
+        gs = out.get("graph_spec") or {}
+        bf_stats = None
+        bf_e55_stats = None
+        if isinstance(gs, dict):
+            raw_bf = gs.get("_babelfy_entity_linking")
+            if isinstance(raw_bf, dict):
+                bf_stats = dict(raw_bf)
+            raw_e55 = gs.get("_babelfy_e55_grounding")
+            if isinstance(raw_e55, dict):
+                bf_e55_stats = dict(raw_e55)
+        el_mode = "babelfy" if (BABELFY_API_KEY or "").strip() else "off"
         return {
             "entry_id": entry_id,
             "entities": entities,
@@ -171,6 +175,9 @@ class MemoryPipeline:
             "prep": prep,
             "graph_spec": out.get("graph_spec", {}),
             "wsd_profile": out.get("wsd_profile") or {"entities": []},
+            "entity_linking_mode": el_mode,
+            "babelfy_entity_linking": bf_stats,
+            "babelfy_e55_grounding": bf_e55_stats,
         }
 
     def persist_extraction(self, text: str, extraction, entry_id: Optional[str] = None) -> dict:
