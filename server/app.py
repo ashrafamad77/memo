@@ -243,11 +243,52 @@ def create_app() -> FastAPI:
     repo = Neo4jRepo()
     pipeline: MemoryPipeline | None = None
     chat_state: dict = {
-        "mode": None,  # None | onboarding | clarifying
+        "mode": None,  # None | onboarding | clarifying | disambiguating
         "onboarding_step": 0,
         "onboarding_answers": {},
-        "pending": None,  # for clarifier payload
+        "pending": None,       # for clarifier payload
+        "pending_disambig": None,  # for LLM disambiguation flow
     }
+
+    def _disambig_question_text(item: dict, current: int, total: int) -> str:
+        name = item.get("name", "")
+        cidoc = item.get("cidoc_label", "")
+        reason = (item.get("reason") or "").strip()
+        candidates: list = item.get("candidates") or []
+        suggestion = (item.get("canonical_label") or "").strip()
+        # Don't show suggestion if it's the same as the surface form (no work done)
+        if suggestion.lower() == name.lower():
+            suggestion = ""
+        type_hint = {
+            "E53_Place": "place",
+            "E21_Person": "person",
+            "E74_Group": "organisation",
+        }.get(cidoc, cidoc or "entity")
+        lines = [f'({current}/{total}) What do you mean by "{name}"?  ({type_hint})']
+        if reason:
+            lines.append(f"Note: {reason}")
+        if candidates:
+            lines.append("\nTop candidates:")
+            for i, c in enumerate(candidates[:3], 1):
+                lines.append(f"  {i}. {c}")
+            if suggestion and suggestion not in candidates:
+                lines.append(f"\nSystem suggestion: \"{suggestion}\"")
+            lines.append("\nType 1 / 2 / 3 to pick, type your own, or \"skip\" to leave as-is.")
+        elif suggestion:
+            lines.append(f"\nSystem suggestion: \"{suggestion}\"")
+            lines.append("Confirm by typing the name, or type your own, or \"skip\" to leave as-is.")
+        else:
+            lines.append("\nType the canonical name (e.g. \"Victoria, London\") or \"skip\" to leave as-is.")
+        return "\n".join(lines)
+
+    def _pick_from_candidates(user_text: str, candidates: list) -> str:
+        """If user typed '1', '2', or '3', return the corresponding candidate; else return user_text."""
+        t = user_text.strip()
+        if t in ("1", "2", "3") and candidates:
+            idx = int(t) - 1
+            if idx < len(candidates):
+                return candidates[idx]
+        return t
 
     # CORS: allow localhost (dev) and VPS
     origins = [o.strip() for o in CORS_ORIGINS.split(",") if o.strip()]
@@ -590,7 +631,78 @@ def create_app() -> FastAPI:
                     "profile": profile,
                 }
 
-        # 2) Continue clarifier flow if waiting for one answer.
+        # 2a) Continue LLM disambiguation flow — collect answers one at a time.
+        if chat_state["mode"] == "disambiguating" and isinstance(chat_state.get("pending_disambig"), dict):
+            pd = chat_state["pending_disambig"]
+            clarifications: list = pd["clarifications"]
+            idx: int = pd["current_idx"]
+            answers: dict = pd["answers"]
+            journal_text_pd: str = pd["text"]
+
+            # Record answer for current item
+            current_item = clarifications[idx]
+            user_raw = text.strip()
+            if user_raw.lower() == "skip":
+                resolved_label = current_item["name"]
+            else:
+                resolved_label = _pick_from_candidates(user_raw, current_item.get("candidates") or [])
+            answers[current_item["id"]] = resolved_label
+            idx += 1
+            pd["current_idx"] = idx
+
+            # ── Context propagation ──────────────────────────────────────────────
+            # Build context_hints from all answers so far (surface name → resolved label).
+            # Re-run disambiguation for remaining items: some may now be auto-resolvable.
+            if idx < len(clarifications):
+                context_hints = {
+                    clarifications[i]["name"]: answers[clarifications[i]["id"]]
+                    for i in range(idx)
+                    if clarifications[i]["id"] in answers
+                }
+                remaining = clarifications[idx:]
+                try:
+                    from pipeline.llm_disambiguator import resolve_remaining_with_context
+                    refreshed = resolve_remaining_with_context(
+                        journal_text_pd, remaining, context_hints
+                    )
+                except Exception:
+                    refreshed = remaining
+
+                # Auto-accept items the LLM resolved via context
+                auto_accepted = [r for r in refreshed if not r.get("needs_clarification")]
+                still_pending = [r for r in refreshed if r.get("needs_clarification")]
+
+                for r in auto_accepted:
+                    answers[r["id"]] = r.get("canonical_label") or r["name"]
+
+                if still_pending:
+                    # Replace remaining clarifications with the refreshed pending list
+                    pd["clarifications"] = clarifications[:idx] + still_pending
+                    pd["current_idx"] = idx
+                    next_item = still_pending[0]
+                    total_remaining = len(still_pending)
+                    return {
+                        "type": "question",
+                        "mode": "clarification",
+                        "question": _disambig_question_text(next_item, 1, total_remaining),
+                    }
+                # All remaining resolved via context — fall through to pipeline run
+
+            # All answered (or resolved via context) — run the full pipeline
+            chat_state["mode"] = None
+            chat_state["pending_disambig"] = None
+            try:
+                result = pipeline.process_agentic(
+                    text=journal_text_pd,
+                    clarification_answers=answers,
+                )
+                eid = str(result.get("entry_id") or "").strip()
+                open_tasks = repo.inbox(status="open", limit=50, entry_id=eid) if eid else []
+                return {"type": "add_entry", "result": result, "open_tasks": open_tasks}
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=str(e)) from e
+
+        # 2b) Continue clarifier flow if waiting for one answer.
         if chat_state["mode"] == "clarifying" and isinstance(chat_state.get("pending"), dict):
             pending = chat_state["pending"]
             ans = text.strip().lower()
@@ -633,7 +745,28 @@ def create_app() -> FastAPI:
             }
 
         try:
-            # 4) Clarifier pre-check: extract first, ask one follow-up if ambiguous.
+            # 4) LLM disambiguation pre-flight: ask about ambiguous mentions before storing.
+            clarifications = pipeline.get_disambiguation_questions(text)
+            if clarifications:
+                chat_state["mode"] = "disambiguating"
+                chat_state["pending_disambig"] = {
+                    "text": text,
+                    "clarifications": clarifications,
+                    "answers": {},
+                    "current_idx": 0,
+                }
+                first = clarifications[0]
+                return {
+                    "type": "question",
+                    "mode": "clarification",
+                    "question": (
+                        f"Before I store this entry, I need to clarify "
+                        f"{len(clarifications)} mention{'s' if len(clarifications) > 1 else ''}.\n\n"
+                        + _disambig_question_text(first, 1, len(clarifications))
+                    ),
+                }
+
+            # 5) Clarifier pre-check: extract first, ask one follow-up if ambiguous.
             extraction = pipeline.extractor.extract(text)
             extraction = pipeline._resolve_relative_dates(extraction, input_dt=datetime.now())
             ambiguity = _detect_location_ambiguity(text=text, extraction=extraction, profile=profile)

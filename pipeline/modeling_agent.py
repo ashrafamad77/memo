@@ -61,6 +61,7 @@ You are a professional taxonomist. When choosing an E55_Type, follow this priori
 
 **E55_Type on an E7_Activity classifies the ACTIVITY TYPE, not the specific event.**
 The event's name (e.g. `MorningStayAtVictoria`) already describes the instance. Its *type* should be the abstract concept: `Visit`, `WorkSession`, `Programming`, etc.
+Never assign a geographic/place-category term (Neighbourhood, District, Station, Street, Building, Park, Area, Zone, Quarter, Borough) as the type of an E7_Activity. If the activity is going to or staying at a place, use `Visit`; if working there, use `WorkSession`.
 
 Never use an E55_Type **name** that only repeats a CIDOC role or generic class: avoid Place, Person, Activity, Event, Object, Concept, Organization, Project, Location, Group, Actor, State, Type, Other, Unknown, Misc. Those words describe **node labels**, not taxonomy.
 

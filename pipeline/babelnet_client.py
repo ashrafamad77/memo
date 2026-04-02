@@ -13,6 +13,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 BABELNET_GET_SYNSET = "https://babelnet.io/v9/getSynset"
+BABELNET_GET_SENSES = "https://babelnet.io/v9/getSenses"
 _DEFAULT_TIMEOUT = float(os.getenv("MEMO_BABELNET_TIMEOUT_SEC", "30"))
 _CACHE_MAX = max(64, min(int(os.getenv("MEMO_BABELNET_CACHE_MAX", "512")), 8192))
 
@@ -158,6 +159,158 @@ def enrich_babel_synset(
     if not raw:
         return synset_to_resource_bundle({})
     return synset_to_resource_bundle(raw)
+
+
+def get_senses(
+    lemma: str,
+    *,
+    api_key: str,
+    lang: str = "EN",
+    pos: Optional[str] = None,
+    timeout: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """GET getSenses for a lemma; returns list of sense objects (each has synsetID).
+
+    Parameters
+    ----------
+    lemma:
+        The canonical label to look up (e.g. "Computer programming", "Victoria, London").
+    pos:
+        Optional POS filter: "NOUN", "VERB", "ADJ", "ADV". When given, only senses
+        with matching POS are returned.
+    """
+    lm = (lemma or "").strip()
+    key = (api_key or "").strip()
+    if not lm or not key:
+        return []
+    tl = (lang or "EN").strip().upper() or "EN"
+    to = timeout if timeout is not None else _DEFAULT_TIMEOUT
+
+    params: Dict[str, str] = {"lemma": lm, "searchLang": tl, "key": key}
+    headers = {"User-Agent": "MemoPipeline/1.0 (BabelNet client)"}
+
+    try:
+        with httpx.Client(timeout=to, follow_redirects=True) as client:
+            r = client.get(BABELNET_GET_SENSES, params=params, headers=headers)
+            r.raise_for_status()
+            data = r.json()
+    except Exception as e:
+        logger.debug("babelnet_client: getSenses failed for %r: %s", lm, e)
+        return []
+
+    if not isinstance(data, list):
+        return []
+
+    if not pos:
+        return data
+
+    pos_upper = pos.strip().upper()
+    filtered = [
+        s for s in data
+        if isinstance(s, dict)
+        and str(
+            (s.get("synsetID") or {}).get("pos")
+            or (s.get("properties") or {}).get("synsetID", {}).get("pos")
+            or ""
+        ).upper() == pos_upper
+    ]
+    return filtered if filtered else data  # fall back to all if filter yields nothing
+
+
+def _synset_id_from_sense(sense: Dict[str, Any]) -> str:
+    """Extract bn:XXXXXXXX from a getSenses sense object (handles both response shapes)."""
+    # Shape 1: {"synsetID": {"id": "bn:00031883n", ...}, ...}
+    sid = sense.get("synsetID")
+    if isinstance(sid, dict):
+        v = str(sid.get("id") or "").strip()
+        if v.startswith("bn:"):
+            return v
+    # Shape 2: {"properties": {"synsetID": {"id": "bn:...", ...}, ...}}
+    props = sense.get("properties")
+    if isinstance(props, dict):
+        sid2 = props.get("synsetID")
+        if isinstance(sid2, dict):
+            v = str(sid2.get("id") or "").strip()
+            if v.startswith("bn:"):
+                return v
+        # Some versions store it flat
+        v = str(props.get("synsetID") or "").strip()
+        if v.startswith("bn:"):
+            return v
+    return ""
+
+
+def _dbpedia_url_from_bundle(bundle: Dict[str, Any]) -> str:
+    """Construct a DBpedia URL from the Wikipedia EN key in a resource bundle."""
+    keys = bundle.get("wikipedia_en_keys") or []
+    if not keys:
+        return ""
+    page = str(keys[0]).strip()
+    if not page:
+        return ""
+    return f"https://dbpedia.org/resource/{page.replace(' ', '_')}"
+
+
+def _babelnet_rdf_url_from_synset_id(synset_id: str) -> str:
+    """Construct the BabelNet RDF page URL from a bn: synset ID."""
+    sid = (synset_id or "").strip()
+    if not sid.startswith("bn:"):
+        return ""
+    return f"https://babelnet.io/rdf/page/{sid}"
+
+
+def lookup_by_label(
+    canonical_label: str,
+    *,
+    api_key: str,
+    lang: str = "EN",
+    pos: str = "NOUN",
+    timeout: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Resolve a canonical label to a BabelNet resource bundle.
+
+    Steps:
+    1. getSenses(canonical_label) → list of synsets
+    2. Pick the first synset (BabelNet ranks by relevance; NOUN preference applied)
+    3. enrich_babel_synset → Wikidata QIDs, WordNet IDs, Wikipedia keys, gloss
+
+    Returns the resource bundle from ``synset_to_resource_bundle`` (empty lists on failure),
+    extended with ``synset_id``, ``babelnet_rdf_url``, and ``dbpedia_url``.
+    """
+    empty: Dict[str, Any] = {
+        "synset_id": "",
+        "wikidata_qids": [],
+        "wordnet_ids": [],
+        "wikipedia_en_keys": [],
+        "wiki_other": [],
+        "gloss": "",
+        "babelnet_rdf_url": "",
+        "dbpedia_url": "",
+    }
+    lm = (canonical_label or "").strip()
+    key = (api_key or "").strip()
+    if not lm or not key:
+        return empty
+
+    senses = get_senses(lm, api_key=key, lang=lang, pos=pos, timeout=timeout)
+    if not senses:
+        return empty
+
+    synset_id = ""
+    for sense in senses:
+        sid = _synset_id_from_sense(sense)
+        if sid:
+            synset_id = sid
+            break
+
+    if not synset_id:
+        return empty
+
+    bundle = enrich_babel_synset(synset_id, api_key=key, target_lang=lang)
+    bundle["synset_id"] = synset_id
+    bundle["babelnet_rdf_url"] = _babelnet_rdf_url_from_synset_id(synset_id)
+    bundle["dbpedia_url"] = _dbpedia_url_from_bundle(bundle)
+    return bundle
 
 
 def babelfy_ann_sidecar(ann: Optional[Dict[str, Any]]) -> Dict[str, Any]:

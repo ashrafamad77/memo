@@ -31,7 +31,7 @@ SEED_VOCAB: Dict[str, _VocabEntry] = {
     "Breakfast":    {"wikidata_id": None,        "description": "morning meal"},
     "Commute":      {"wikidata_id": None,        "description": "regular travel between home and work"},
     "Travel":       {"wikidata_id": None,        "description": "movement between places"},
-    "Programming":  {"wikidata_id": "Q80006",    "description": "writing computer code"},
+    "Programming":  {"wikidata_id": "Q1205510",  "description": "writing computer code"},
     "Reading":      {"wikidata_id": None,        "description": "act of reading"},
     "Writing":      {"wikidata_id": None,        "description": "act of writing"},
     "Teaching":     {"wikidata_id": None,        "description": "instruction of others"},

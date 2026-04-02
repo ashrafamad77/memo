@@ -1,10 +1,24 @@
 """Agentic orchestration (LangGraph) for the memory pipeline.
 
-Flow: Prep → WSD (LLM JSON) → Model → Babelfy/BabelNet E55 grounding + TypeResolve
-→ Babelfy/BabelNet instance linking → WriteGraph → WriteVector
+Flow:
+  Prep → WSD → Model → LLM-Disambiguate → BabelNet-Lookup
+  → DisambiguatePersons → WriteGraph → WriteVector
+
+The key insight:
+  - LLM-Disambiguate: uses the full journal text to determine *what* each mention refers to
+    (e.g. "Victoria" → "Victoria, London"), producing canonical labels.
+  - BabelNet-Lookup: uses BabelNet getSenses on those canonical labels to get formal IDs
+    (synset, Wikidata QID, WordNet) — no QID hallucination risk.
+
+Multi-turn clarification:
+  When the LLM cannot confidently disambiguate a mention, it sets needs_clarification=True.
+  Those items are surfaced in ``state["clarifications_needed"]`` and returned from
+  process_agentic so the caller can ask the user.  The caller re-invokes process_agentic
+  with ``clarification_answers={"Victoria": "Victoria, London"}`` to override the LLM.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, TypedDict
@@ -22,6 +36,8 @@ from .pipeline import MemoryPipeline
 from .wsd_preprocess import WsdPreprocessor
 from .type_resolver import collect_e55_grounding_requests
 
+logger = logging.getLogger(__name__)
+
 
 class AgenticState(TypedDict, total=False):
     text: str
@@ -30,6 +46,10 @@ class AgenticState(TypedDict, total=False):
     prep: Dict[str, Any]
     wsd_profile: Dict[str, Any]
     graph_spec: Dict[str, Any]
+    # LLM disambiguation results
+    disambiguated_mentions: List[Dict[str, Any]]
+    clarifications_needed: List[Dict[str, Any]]
+    clarification_answers: Dict[str, str]   # name → user-confirmed canonical label
     person_resolution: Dict[str, Any]
     extraction: Any
     graph_status: str
@@ -75,12 +95,11 @@ class AgenticRunner:
                 return {**state, "wsd_profile": {"entities": []}}
 
         def model_node(state: AgenticState) -> AgenticState:
+            """Run ModelingAgent → raw graph spec. No grounding here (moved to later nodes)."""
             prep = state.get("prep") or {}
             if not self.modeling_agent or not prep.get("micro_events"):
                 return {**state, "graph_spec": {"nodes": [], "edges": []}}
             try:
-                from config import BABELFY_API_KEY
-
                 existing_types: List[str] = []
                 if self.type_resolver:
                     existing_types = self.type_resolver.get_existing_types()
@@ -90,145 +109,287 @@ class AgenticRunner:
                     existing_types=existing_types,
                     day_bucket=state.get("day_bucket", ""),
                 )
+                return {**state, "graph_spec": spec}
+            except Exception as e:
+                return {**state, "graph_spec": {"nodes": [], "edges": [], "_error": str(e)}}
 
-                babelfy_key = (BABELFY_API_KEY or "").strip()
-                journal_text = state.get("text") or ""
+        def llm_disambiguate_node(state: AgenticState) -> AgenticState:
+            """LLM reads the full journal text and assigns a canonical sense to each mention.
 
-                # ── skip sets: types already grounded (seed w/ QID + Neo4j cache) ────
-                from .type_vocab import SEED_VOCAB
-                seeded_lower = {k.lower() for k, v in SEED_VOCAB.items() if v.get("wikidata_id")}
-                try:
-                    neo4j_grounded_lower = {
-                        n.lower() for n in (self.type_resolver.get_grounded_types() if self.type_resolver else {})
-                    }
-                except Exception:
-                    neo4j_grounded_lower = set()
-                skip_lower = seeded_lower | neo4j_grounded_lower
+            Each mention gets a stable id (m0, m1, …) so callers can key
+            clarification_answers by id rather than by surface text, avoiding
+            collision bugs when the same name appears multiple times.
 
-                # ── step 1: Babelfy CONCEPTS + NAMED_ENTITIES ────────────────────────
-                # Run both annotation passes now (results are cached — same text reuses them below).
-                bf_e55: Dict[str, Any] = {}
-                bf_e55_stats: Dict[str, Any] = {}
-                concept_evidence: List[Dict[str, Any]] = []
-                ne_evidence: List[Dict[str, Any]] = []
-                reqs = collect_e55_grounding_requests(spec) if self.type_resolver else []
+            Produces state["disambiguated_mentions"] and state["clarifications_needed"].
+            """
+            spec = state.get("graph_spec") or {}
+            if not spec.get("nodes"):
+                return {**state, "disambiguated_mentions": [], "clarifications_needed": []}
 
-                if babelfy_key:
-                    from .babelfy_e55_grounding import (
-                        DEFAULT_E55_LOW_ROW,
-                        collect_babelfy_evidence,
-                        run_babelfy_e55_grounding,
-                    )
-                    # Span-matched grounding (gives babel_synset_id + babelnet_sources_json)
-                    if reqs:
-                        bf_e55, bf_e55_stats = run_babelfy_e55_grounding(
-                            journal_text, reqs, api_key=babelfy_key,
+            from .type_resolver import collect_e55_grounding_requests, collect_entity_linking_requests
+            from .llm_disambiguator import assign_mention_ids, disambiguate_mentions
+
+            journal_text = state.get("text") or ""
+            type_reqs = collect_e55_grounding_requests(spec)
+            entity_reqs = collect_entity_linking_requests(spec, user_name=self.user_name)
+
+            # Skip types already grounded (seed vocab with QID + Neo4j cache)
+            from .type_vocab import SEED_VOCAB
+            seeded_lower = {k.lower() for k, v in SEED_VOCAB.items() if v.get("wikidata_id")}
+            try:
+                neo4j_grounded_lower = {
+                    n.lower()
+                    for n in (self.type_resolver.get_grounded_types() if self.type_resolver else set())
+                }
+            except Exception:
+                neo4j_grounded_lower = set()
+            skip_lower = seeded_lower | neo4j_grounded_lower
+
+            raw_mentions: List[Dict[str, Any]] = []
+            for r in type_reqs:
+                nm = str(r.get("name") or "").strip()
+                if nm and nm.lower() not in skip_lower:
+                    raw_mentions.append({"name": nm, "cidoc_label": "E55_Type"})
+            for r in entity_reqs:
+                nm = str(r.get("name") or "").strip()
+                if nm:
+                    raw_mentions.append({"name": nm, "cidoc_label": str(r.get("cidoc_label") or "")})
+
+            if not raw_mentions:
+                return {**state, "disambiguated_mentions": [], "clarifications_needed": []}
+
+            # Assign stable ids before calling LLM and before checking clarification_answers
+            mentions = assign_mention_ids(raw_mentions)
+
+            try:
+                results = disambiguate_mentions(
+                    journal_text,
+                    mentions,
+                    # clarification_answers keyed by mention id ("m0", "m1", …)
+                    clarification_answers=state.get("clarification_answers") or {},
+                )
+            except Exception as exc:
+                logger.debug("agentic: llm_disambiguate_node failed: %s", exc)
+                results = []
+
+            clarifications_needed = [r for r in results if r.get("needs_clarification")]
+            return {
+                **state,
+                "disambiguated_mentions": results,
+                "clarifications_needed": clarifications_needed,
+            }
+
+        def babelnet_lookup_node(state: AgenticState) -> AgenticState:
+            """BabelNet getSenses on canonical labels → formal IDs → apply to spec.
+
+            For each disambiguated mention:
+            - getSenses(canonical_label) → best synset → Wikidata QID, WordNet ID, gloss
+            - E55_Type results feed into TypeResolver as llm_grounding rows
+            - Entity results feed into apply_entity_linking
+            """
+            spec = state.get("graph_spec") or {}
+            if not spec.get("nodes"):
+                return state
+
+            disambiguated = state.get("disambiguated_mentions") or []
+            if not disambiguated:
+                # No disambiguation ran — fall back to TypeResolver alone (seed vocab + Neo4j)
+                if self.type_resolver:
+                    try:
+                        existing_types: List[str] = self.type_resolver.get_existing_types()
+                        journal_text = state.get("text") or ""
+                        spec = self.type_resolver.resolve_graph_spec(
+                            spec,
+                            existing_types,
+                            journal_text=journal_text,
                             wsd_profile=state.get("wsd_profile"),
                         )
-                        if isinstance(bf_e55_stats, dict) and bf_e55_stats.get("ran"):
-                            spec["_babelfy_e55_grounding"] = bf_e55_stats
-                    # All concept/NE annotations as evidence context (cached API calls)
-                    concept_evidence = collect_babelfy_evidence(
+                    except Exception as exc:
+                        logger.debug("agentic: TypeResolver fallback failed: %s", exc)
+                return {**state, "graph_spec": spec}
+
+            try:
+                from config import BABELFY_API_KEY
+                babelfy_key = (BABELFY_API_KEY or "").strip()
+            except ImportError:
+                import os
+                babelfy_key = os.getenv("BABELFY_API_KEY", "").strip()
+
+            from .babelnet_client import (
+                bundle_to_sources_json,
+                lookup_by_label,
+                enrich_babel_synset,
+            )
+            from .babelfy_client import disambiguate as _babelfy_disambiguate
+            from .type_grounding_embed import wikidata_fetch_labels_descriptions
+            from .type_resolver import apply_entity_linking
+
+            journal_text = state.get("text") or ""
+
+            # ── Babelfy CONCEPTS prefetch (context-aware synset for E55_Type) ─────────
+            # Run once on the full text; maps each annotated span → babelSynsetID so
+            # that E55_Type grounding uses WSD context instead of context-free getSenses.
+            concepts_by_span: Dict[str, str] = {}  # span_text.lower() -> babelSynsetID
+            if babelfy_key and journal_text:
+                try:
+                    concept_anns = _babelfy_disambiguate(
                         journal_text, api_key=babelfy_key, ann_type="CONCEPTS"
                     )
-                    ne_evidence = collect_babelfy_evidence(
-                        journal_text, api_key=babelfy_key, ann_type="NAMED_ENTITIES"
-                    )
-
-                # ── step 2: combined Babelfy+LLM resolver ───────────────────────────
-                # Resolves ALL types AND entities in one LLM call using full Babelfy context.
-                # LLM can reason about types that don't appear literally in text (e.g. "Visit").
-                from .type_resolver import apply_entity_linking, collect_entity_linking_requests
-                entity_reqs = collect_entity_linking_requests(spec, user_name=self.user_name)
-
-                combined_e55_rows: Dict[str, Any] = {}
-                combined_el_rows: Dict[str, Any] = {}
-                try:
-                    from .llm_kb_fallback import llm_resolve_all_with_babelfy
-                    combined_e55_rows, combined_el_rows = llm_resolve_all_with_babelfy(
-                        type_requests=reqs,
-                        entity_requests=entity_reqs,
-                        journal_text=journal_text,
-                        concept_evidence=concept_evidence,
-                        ne_evidence=ne_evidence,
-                        babelfy_type_hits=bf_e55,
-                        skip_type_names=skip_lower,
-                    )
-                except Exception as _combined_exc:
-                    import logging as _lg
-                    _lg.getLogger(__name__).debug(
-                        "agentic: combined Babelfy+LLM resolver skipped: %s", _combined_exc
-                    )
-
-                # ── step 3: build merged_ground for TypeResolver ─────────────────────
-                # Priority: Babelfy hit (has synset data) wins for babel fields;
-                # combined LLM result (has validated QID from context reasoning) wins for wikidata_candidates.
-                llm_ground: Optional[Dict[str, Any]] = None
-                if reqs:
-                    merged_ground: Dict[str, Any] = {}
-                    for r in reqs:
-                        nm = str(r.get("name") or "").strip()
-                        if not nm or nm.lower() in skip_lower:
+                    for ann in concept_anns:
+                        if not isinstance(ann, dict):
                             continue
-                        bf_row = bf_e55.get(nm)
-                        llm_row = combined_e55_rows.get(nm)
-                        has_bf_synset = isinstance(bf_row, dict) and str(
-                            bf_row.get("babel_synset_id") or ""
-                        ).startswith("bn:")
-                        if has_bf_synset and llm_row:
-                            # Merge: keep Babelfy synset/babel fields + LLM wikidata_candidates
-                            merged = dict(bf_row)
-                            if llm_row.get("wikidata_candidates"):
-                                merged["wikidata_candidates"] = llm_row["wikidata_candidates"]
-                                merged["confidence"] = llm_row.get("confidence", merged.get("confidence", "medium"))
-                                merged["description"] = llm_row.get("description") or merged.get("description", "")
-                            merged_ground[nm] = merged
-                        elif has_bf_synset:
-                            merged_ground[nm] = bf_row
-                        elif llm_row:
-                            merged_ground[nm] = llm_row
-                        else:
-                            merged_ground[nm] = dict(DEFAULT_E55_LOW_ROW)
-                    llm_ground = merged_ground if merged_ground else None
+                        cf = ann.get("charFragment") or {}
+                        synset = str(ann.get("babelSynsetID") or "").strip()
+                        if not synset or not isinstance(cf, dict):
+                            continue
+                        start = cf.get("start")
+                        end = cf.get("end")
+                        if start is None or end is None:
+                            continue
+                        span = journal_text[int(start):int(end) + 1].strip().lower()
+                        if span:
+                            concepts_by_span[span] = synset
+                except Exception as _exc:
+                    logger.debug("agentic: Babelfy CONCEPTS prefetch failed: %s", _exc)
 
-                if self.type_resolver:
+            # ── Build grounding rows (E55_Type) and EL rows (entities) ──────────────
+            e55_grounding_rows: Dict[str, Any] = {}
+            el_rows: Dict[str, Any] = {}
+
+            for item in disambiguated:
+                name = str(item.get("name") or "").strip()
+                canonical = str(item.get("canonical_label") or name).strip() or name
+                cidoc = str(item.get("cidoc_label") or "")
+
+                if not name or not babelfy_key:
+                    continue
+
+                if cidoc == "E55_Type":
+                    # Bug 4: skip system-internal role types — no meaningful KB grounding
+                    if name.lower() == "user" or (
+                        self.user_name and name.lower() == self.user_name.lower()
+                    ):
+                        logger.debug("agentic: skipping BabelNet for role type %r", name)
+                        continue
+
+                    # Bug 2: prefer Babelfy CONCEPTS (context-aware WSD) over getSenses
+                    synset_from_concepts = ""
+                    if concepts_by_span:
+                        # Try exact match on the surface form (as it appears in the text)
+                        synset_from_concepts = concepts_by_span.get(name.lower(), "")
+                        if not synset_from_concepts:
+                            # Try each significant word from the canonical label
+                            for word in canonical.lower().split():
+                                if len(word) > 3 and word in concepts_by_span:
+                                    synset_from_concepts = concepts_by_span[word]
+                                    break
+
+                    if synset_from_concepts:
+                        logger.debug(
+                            "agentic: E55 %r → Babelfy CONCEPTS synset %s", name, synset_from_concepts
+                        )
+                        bundle = enrich_babel_synset(synset_from_concepts, api_key=babelfy_key)
+                        bundle["synset_id"] = synset_from_concepts
+                        sid = synset_from_concepts
+                        bundle["babelnet_rdf_url"] = (
+                            f"https://babelnet.io/rdf/page/{sid}" if sid.startswith("bn:") else ""
+                        )
+                        wiki_keys = bundle.get("wikipedia_en_keys") or []
+                        bundle["dbpedia_url"] = (
+                            f"https://dbpedia.org/resource/{wiki_keys[0].replace(' ', '_')}"
+                            if wiki_keys
+                            else ""
+                        )
+                    else:
+                        # Fallback: context-free getSenses on the LLM canonical label
+                        logger.debug(
+                            "agentic: E55 %r → getSenses fallback on canonical %r", name, canonical
+                        )
+                        bundle = lookup_by_label(canonical, api_key=babelfy_key)
+                else:
+                    # Entities: LLM already produced a specific canonical label
+                    # (e.g. "Victoria, London") so getSenses is accurate here
+                    bundle = lookup_by_label(canonical, api_key=babelfy_key)
+
+                synset_id = str(bundle.get("synset_id") or "").strip()
+                wd_qids = list(bundle.get("wikidata_qids") or [])
+                wn_ids = list(bundle.get("wordnet_ids") or [])
+                gloss = str(bundle.get("gloss") or "").strip()
+                babelnet_rdf = str(bundle.get("babelnet_rdf_url") or "").strip()
+                dbpedia = str(bundle.get("dbpedia_url") or "").strip()
+
+                # Enrich Wikidata candidates with labels/descriptions
+                wikidata_candidates: List[Dict[str, str]] = []
+                if wd_qids:
+                    fetched = wikidata_fetch_labels_descriptions(wd_qids[:6])
+                    for q in wd_qids[:6]:
+                        pair = fetched.get(q, ("", ""))
+                        wikidata_candidates.append({
+                            "qid": q,
+                            "label": str(pair[0] or "").strip(),
+                            "description": str(pair[1] or "").strip(),
+                        })
+
+                top_qid = wikidata_candidates[0]["qid"] if wikidata_candidates else ""
+                top_desc = (
+                    wikidata_candidates[0].get("description") or gloss
+                    if wikidata_candidates
+                    else gloss
+                )
+                conf = "high" if synset_id else "low"
+
+                sources_json = bundle_to_sources_json(bundle) if synset_id else ""
+
+                if cidoc == "E55_Type":
+                    e55_grounding_rows[name] = {
+                        "confidence": conf,
+                        "wikidata_id": top_qid,
+                        "wikidata_candidates": wikidata_candidates,
+                        "babel_synset_id": synset_id,
+                        "wordnet_synset_id": wn_ids[0] if wn_ids else "",
+                        "babel_gloss": gloss,
+                        "babelnet_rdf_url": babelnet_rdf,
+                        "dbpedia_url": dbpedia,
+                        "babelnet_sources_json": sources_json,
+                        "aat_id": "",
+                        "aat_label": "",
+                        "aat_confidence": "low",
+                        "description": top_desc,
+                    }
+                else:
+                    el_rows[name] = {
+                        "wikidata_id": top_qid,
+                        "description": top_desc,
+                        "babel_synset_id": synset_id,
+                        "wordnet_synset_id": wn_ids[0] if wn_ids else "",
+                        "babel_gloss": gloss,
+                        "babelnet_rdf_url": babelnet_rdf,
+                        "dbpedia_url": dbpedia,
+                        "babelnet_sources_json": sources_json,
+                    }
+
+            # ── TypeResolver: normalise types + apply E55 grounding ──────────────────
+            if self.type_resolver:
+                try:
+                    existing_types = self.type_resolver.get_existing_types()
                     spec = self.type_resolver.resolve_graph_spec(
                         spec,
                         existing_types,
                         journal_text=journal_text,
                         wsd_profile=state.get("wsd_profile"),
-                        llm_grounding=llm_ground,
+                        llm_grounding=e55_grounding_rows if e55_grounding_rows else None,
                     )
+                except Exception as exc:
+                    logger.warning("agentic: TypeResolver failed: %s", exc)
 
-                # ── step 4: Babelfy NAMED_ENTITIES instance linking ──────────────────
-                # Gives babel_synset_id on matched entities (span-based)
-                from .babelfy_entity_link import run_babelfy_entity_linking
-                spec, _bf_el_stats = run_babelfy_entity_linking(
-                    journal_text, spec,
-                    user_name=self.user_name,
-                    api_key=babelfy_key,
-                )
-                if isinstance(_bf_el_stats, dict) and _bf_el_stats.get("ran"):
-                    spec["_babelfy_entity_linking"] = _bf_el_stats
+            # ── Apply entity linking results ─────────────────────────────────────────
+            if el_rows:
+                try:
+                    spec = apply_entity_linking(spec, el_rows, user_name=self.user_name)
+                except Exception as exc:
+                    logger.warning("agentic: apply_entity_linking failed: %s", exc)
 
-                # ── step 5: apply combined LLM entity linking results ────────────────
-                # Fills wikidata_id on entities Babelfy span-matching missed.
-                # Only applies to nodes that are still unlinked after Babelfy pass.
-                if combined_el_rows:
-                    still_unlinked_names = {
-                        str(r.get("name") or "").strip()
-                        for r in collect_entity_linking_requests(spec, user_name=self.user_name)
-                    }
-                    el_to_apply = {
-                        nm: row for nm, row in combined_el_rows.items()
-                        if nm in still_unlinked_names
-                    }
-                    if el_to_apply:
-                        spec = apply_entity_linking(spec, el_to_apply, user_name=self.user_name)
-
-                return {**state, "graph_spec": spec}
-            except Exception as e:
-                return {**state, "graph_spec": {"nodes": [], "edges": [], "_error": str(e)}}
+            return {**state, "graph_spec": spec}
 
         def persist_graph_node(state: AgenticState) -> AgenticState:
             spec = state.get("graph_spec") or {}
@@ -334,6 +495,8 @@ class AgenticRunner:
         g.add_node("prep", prep_node)
         g.add_node("wsd", wsd_node)
         g.add_node("model", model_node)
+        g.add_node("llm_disambiguate", llm_disambiguate_node)
+        g.add_node("babelnet_lookup", babelnet_lookup_node)
         g.add_node("disambiguate_persons", disambiguate_persons_node)
         g.add_node("persist_graph", persist_graph_node)
         g.add_node("persist_vector", persist_vector_node)
@@ -341,7 +504,9 @@ class AgenticRunner:
         g.set_entry_point("prep")
         g.add_edge("prep", "wsd")
         g.add_edge("wsd", "model")
-        g.add_edge("model", "disambiguate_persons")
+        g.add_edge("model", "llm_disambiguate")
+        g.add_edge("llm_disambiguate", "babelnet_lookup")
+        g.add_edge("babelnet_lookup", "disambiguate_persons")
         g.add_edge("disambiguate_persons", "persist_graph")
         g.add_edge("persist_graph", "persist_vector")
         g.add_edge("persist_vector", END)

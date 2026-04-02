@@ -97,7 +97,136 @@ class MemoryPipeline:
 
         return self.persist_extraction(text=text, extraction=extraction, entry_id=entry_id)
 
-    def process_agentic(self, text: str, entry_id: Optional[str] = None) -> dict:
+    def get_disambiguation_questions(self, text: str) -> list:
+        """Dry-run prep → model → LLM disambiguation without persisting anything.
+
+        Returns the ``clarifications_needed`` list (may be empty).  Call this before
+        ``process_agentic`` so the caller can ask the user for clarifications first,
+        then pass ``clarification_answers`` to ``process_agentic``.
+        """
+        from .modeling_agent import ModelingAgent
+        from .type_resolver import TypeResolver, collect_e55_grounding_requests, collect_entity_linking_requests
+        from .type_vocab import SEED_VOCAB
+        from .llm_disambiguator import assign_mention_ids, disambiguate_mentions
+
+        deployment = (AZURE_OPENAI_DEPLOYMENT or "gpt-4o-mini").strip()
+        modeling_agent = ModelingAgent(
+            api_key=AZURE_OPENAI_API_KEY,
+            model=deployment,
+            azure_endpoint=AZURE_OPENAI_ENDPOINT.strip(),
+            api_version=AZURE_OPENAI_API_VERSION,
+        )
+
+        prep = {}
+        try:
+            prep = self.prep_agent.run(text)
+        except Exception:
+            return []
+
+        if not prep.get("micro_events"):
+            return []
+
+        existing_types: list = []
+        type_resolver = None
+        if self.graph_store and self.graph_store.driver:
+            try:
+                type_resolver = TypeResolver(self.graph_store.driver)
+                existing_types = type_resolver.get_existing_types()
+            except Exception:
+                pass
+
+        try:
+            spec = modeling_agent.run(
+                prep=prep,
+                user_name=USER_NAME,
+                existing_types=existing_types,
+                day_bucket=datetime.now().strftime("%Y-%m-%d"),
+            )
+        except Exception:
+            return []
+
+        if not spec.get("nodes"):
+            return []
+
+        type_reqs = collect_e55_grounding_requests(spec)
+        entity_reqs = collect_entity_linking_requests(spec, user_name=USER_NAME)
+
+        seeded_lower = {k.lower() for k, v in SEED_VOCAB.items() if v.get("wikidata_id")}
+        neo4j_grounded_lower: set = set()
+        if type_resolver:
+            try:
+                neo4j_grounded_lower = {n.lower() for n in type_resolver.get_grounded_types()}
+            except Exception:
+                pass
+        skip_lower = seeded_lower | neo4j_grounded_lower
+
+        raw_mentions: list = []
+        for r in type_reqs:
+            nm = str(r.get("name") or "").strip()
+            if nm and nm.lower() not in skip_lower:
+                raw_mentions.append({"name": nm, "cidoc_label": "E55_Type"})
+        for r in entity_reqs:
+            nm = str(r.get("name") or "").strip()
+            if nm:
+                raw_mentions.append({"name": nm, "cidoc_label": str(r.get("cidoc_label") or "")})
+
+        if not raw_mentions:
+            return []
+
+        mentions = assign_mention_ids(raw_mentions)
+        try:
+            results = disambiguate_mentions(text, mentions)
+        except Exception:
+            return []
+
+        # E55_Type: always auto-resolved, never ask the user.
+        # Entities: use the LLM flag as a hint, BUT also apply a deterministic backup:
+        # if the LLM had to change the surface form to produce a canonical label
+        # (i.e., it did disambiguation work) AND didn't mark it as needing clarification,
+        # force it — the LLM is overconfident and must not silently pick a sense.
+        out = []
+        for r in results:
+            if r.get("cidoc_label") == "E55_Type":
+                continue
+            if r.get("needs_clarification"):
+                out.append(r)
+                continue
+            # Backup: canonical_label differs from surface name → LLM resolved silently.
+            # Treat as needing clarification so the user can confirm or correct.
+            name = (r.get("name") or "").strip().lower()
+            canonical = (r.get("canonical_label") or "").strip().lower()
+            if canonical and canonical != name:
+                r = dict(r)
+                r["needs_clarification"] = True
+                r["reason"] = (
+                    r.get("reason")
+                    or "Resolved automatically — please confirm this is correct."
+                )
+                out.append(r)
+        return out
+
+    def process_agentic(
+        self,
+        text: str,
+        entry_id: Optional[str] = None,
+        *,
+        clarification_answers: Optional[dict] = None,
+    ) -> dict:
+        """Run the v2 agentic pipeline.
+
+        Multi-turn clarification
+        ------------------------
+        If the result contains a non-empty ``clarifications_needed`` list, the caller
+        should ask the user to resolve each item and then re-call with::
+
+            clarification_answers = {
+                "m0": "Victoria, London",   # keyed by mention id, NOT surface text
+                "m3": "Victoria station",
+            }
+
+        Keying by mention id (not surface text) is required because the same surface
+        form can appear multiple times in a single entry with different referents.
+        """
         """Run the v2 pipeline: Prep → Model → TypeResolve → WriteGraph → WriteVector."""
         from .agentic import AgenticRunner
         from .modeling_agent import ModelingAgent
@@ -142,11 +271,14 @@ class MemoryPipeline:
             user_name=USER_NAME,
         )
         app = runner.build()
-        out = app.invoke({
+        initial_state: dict = {
             "text": text,
             "entry_id": entry_id,
             "day_bucket": day_bucket,
-        })
+        }
+        if clarification_answers:
+            initial_state["clarification_answers"] = clarification_answers
+        out = app.invoke(initial_state)
 
         prep = out.get("prep") or {}
         entities_raw = prep.get("entities", [])
@@ -164,7 +296,7 @@ class MemoryPipeline:
             raw_e55 = gs.get("_babelfy_e55_grounding")
             if isinstance(raw_e55, dict):
                 bf_e55_stats = dict(raw_e55)
-        el_mode = "babelfy" if (BABELFY_API_KEY or "").strip() else "off"
+        el_mode = "llm+babelnet" if (BABELFY_API_KEY or "").strip() else "off"
         return {
             "entry_id": entry_id,
             "entities": entities,
@@ -178,6 +310,11 @@ class MemoryPipeline:
             "entity_linking_mode": el_mode,
             "babelfy_entity_linking": bf_stats,
             "babelfy_e55_grounding": bf_e55_stats,
+            # Multi-turn clarification support:
+            # If non-empty, the caller should ask the user to resolve these,
+            # then re-call process_agentic(..., clarification_answers={name: sense, ...})
+            "clarifications_needed": out.get("clarifications_needed") or [],
+            "disambiguated_mentions": out.get("disambiguated_mentions") or [],
         }
 
     def persist_extraction(self, text: str, extraction, entry_id: Optional[str] = None) -> dict:
