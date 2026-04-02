@@ -18,6 +18,7 @@ _SPARQL_FORBIDDEN_CACHE: Dict[str, Optional[bool]] = {}
 _SPARQL_CLASS_LABELS_CACHE: Dict[str, List[str]] = {}
 _SPARQL_P31_ROOT_CACHE: Dict[str, Optional[bool]] = {}
 _SPARQL_E53_FORBIDDEN_CACHE: Dict[str, Optional[bool]] = {}
+_SPARQL_E53_ELIGIBLE_CACHE: Dict[str, Optional[bool]] = {}
 _SPARQL_CHART_MEDIA_CACHE: Dict[str, Optional[bool]] = {}
 
 # E53_Place guard: P31/P279* must reach this class. Default Q2221906 = geographic location.
@@ -229,6 +230,42 @@ ASK {{
     out = bool(data["boolean"])
     _SPARQL_P31_ROOT_CACHE[cache_key] = out
     return out
+
+
+def wikidata_qid_eligible_for_e53_entity_linking(qid: str, *, timeout: int = 12) -> Optional[bool]:
+    """
+    True  => P31/P279* reaches a place-like root (geographic, built structure, or library).
+    False => Wikidata proved the item is not under those roots (reject for E53).
+    None  => WDQS error — caller may keep the link to avoid over-pruning offline.
+    """
+    q = _safe_wikidata_qid(qid)
+    if not q:
+        return None
+    if q in _SPARQL_E53_ELIGIBLE_CACHE:
+        return _SPARQL_E53_ELIGIBLE_CACHE[q]
+    bad = wikidata_e53_must_not_reach_forbidden(q, timeout=timeout)
+    if bad is True:
+        _SPARQL_E53_ELIGIBLE_CACHE[q] = False
+        return False
+    ask = f"""
+PREFIX wd: <http://www.wikidata.org/entity/>
+PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+ASK {{
+  {{
+    wd:{q} wdt:P31/wdt:P279* wd:Q2221906 .
+  }} UNION {{
+    wd:{q} wdt:P31/wdt:P279* wd:Q811979 .
+  }} UNION {{
+    wd:{q} wdt:P31/wdt:P279* wd:Q7075 .
+  }}
+}}
+"""
+    data = _sparql_wdqs(ask, timeout=timeout)
+    if not data or "boolean" not in data:
+        return None
+    ok = bool(data["boolean"])
+    _SPARQL_E53_ELIGIBLE_CACHE[q] = ok
+    return ok
 
 
 def wikidata_e53_must_not_reach_forbidden(qid: str, *, timeout: int = 10) -> Optional[bool]:
@@ -978,6 +1015,21 @@ def apply_entity_linking(
                     qid = ""
             except Exception:
                 qid = ""
+        if label == "E53_Place" and qid.startswith("Q"):
+            try:
+                elig = wikidata_qid_eligible_for_e53_entity_linking(qid)
+                if elig is False:
+                    _log.info(
+                        "entity_linking: QID %s for %r is not a place/building/library in Wikidata, dropping authority",
+                        qid,
+                        name,
+                    )
+                    qid = ""
+                    bn = ""
+            except Exception:
+                pass
+        if not qid.startswith("Q") and not bn:
+            continue
         props = node.get("properties", {})
         if not isinstance(props, dict):
             props = {}

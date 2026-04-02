@@ -19,7 +19,8 @@ a noun ("coding session"), or even implicitly.  The job here is to:
   3. Never ask the user — the LLM should always be able to infer the concept
      from the journal text; if truly unclear it falls back to the surface form.
 
-The canonical label is then handed to BabelNet getSenses for formal linking
+The canonical label and optional ``wd_search_query`` are handed to Wikidata Vector
+search (when configured) or to BabelNet getSenses for formal linking
 (synset → Wikidata QID, WordNet ID, etc.).
 
 Mention IDs
@@ -89,6 +90,9 @@ Your job is DIFFERENT here:
             "went for a run" → "Running"
             "had a meeting" → "Meeting"
             "reading" → "Reading"  (already canonical)
+- Also set wd_search_query: a rich phrase for Wikidata vector retrieval (include the
+  activity, domain, and disambiguation hints), e.g. "Computer programming software development activity".
+  For entities, include type and context, e.g. "Victoria London UK place".
 - NEVER set needs_clarification = true for E55_Type — always infer from context.
   If the text is genuinely unclear, return the surface form as-is.
 - Do not provide candidates[] for E55_Type items.
@@ -101,6 +105,7 @@ Return ONLY valid JSON:
       "id": "m0",
       "name": "...",
       "canonical_label": "...",
+      "wd_search_query": "...",
       "candidates": [],            // up to 3 strings; required & non-empty when needs_clarification=true for entities
       "confidence": 0.95,
       "needs_clarification": false,
@@ -180,11 +185,14 @@ def disambiguate_mentions(
             "confidence": 0.6,
             "needs_clarification": True,
             "reason": "...",
+            "wd_search_query": "...",
         }
 
     ``candidates`` is non-empty only for entity mentions where
     ``needs_clarification=True``.  E55_Type items never set
     ``needs_clarification=True`` and never carry candidates.
+
+    ``wd_search_query`` falls back to ``canonical_label`` or surface ``name`` when absent.
     """
     if not mentions:
         return []
@@ -215,11 +223,13 @@ def disambiguate_mentions(
         if not name:
             continue
         if mid in answers:
+            cl = answers[mid]
             results.append({
                 "id": mid,
                 "name": name,
                 "cidoc_label": cidoc,
-                "canonical_label": answers[mid],
+                "canonical_label": cl,
+                "wd_search_query": f"{cl} Wikidata",
                 "candidates": [],
                 "confidence": 1.0,
                 "needs_clarification": False,
@@ -240,6 +250,7 @@ def disambiguate_mentions(
                 "name": name,
                 "cidoc_label": str(m.get("cidoc_label") or ""),
                 "canonical_label": name,
+                "wd_search_query": name,
                 "candidates": [],
                 "confidence": 0.0,
                 "needs_clarification": False,
@@ -320,6 +331,9 @@ def disambiguate_mentions(
                 conf = 0.5
             conf = max(0.0, min(1.0, conf))
             canonical = str(item.get("canonical_label") or name).strip() or name
+            wd_q = str(item.get("wd_search_query") or "").strip()
+            if not wd_q:
+                wd_q = canonical if canonical else name
             raw_cands = item.get("candidates") or []
             candidates = [str(c).strip() for c in raw_cands if str(c).strip()] if isinstance(raw_cands, list) else []
             needs = bool(item.get("needs_clarification", False))
@@ -332,6 +346,7 @@ def disambiguate_mentions(
                 "name": name,
                 "cidoc_label": cidoc,
                 "canonical_label": canonical,
+                "wd_search_query": wd_q,
                 "candidates": candidates[:3],
                 "confidence": conf,
                 "needs_clarification": needs,
@@ -343,6 +358,7 @@ def disambiguate_mentions(
                 "name": name,
                 "cidoc_label": cidoc,
                 "canonical_label": name,
+                "wd_search_query": name,
                 "candidates": [],
                 "confidence": 0.0,
                 "needs_clarification": False,

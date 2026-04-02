@@ -96,6 +96,47 @@ SEED_VOCAB: Dict[str, _VocabEntry] = {
 }
 
 
+def infer_place_type_name_from_mention(pname: str) -> str:
+    """Map a free-text place name to a canonical E55_Type seed key for P7 venues.
+
+    Used when the model did not supply a place type: avoids defaulting every unknown
+    venue to ``Neighbourhood`` (e.g. names containing "library" → ``Library``).
+    """
+    p = (pname or "").strip()
+    if not p:
+        return "Neighbourhood"
+    if get_seed_entry(p):
+        return p
+    pl = p.lower()
+    if "library" in pl or "bibliothèque" in pl:
+        return "Library"
+    if "museum" in pl:
+        return "Museum"
+    if "restaurant" in pl:
+        return "Restaurant"
+    if "café" in pl or "cafe" in pl:
+        return "Cafe"
+    if "station" in pl:
+        return "TrainStation"
+    if "airport" in pl:
+        return "Airport"
+    if "hospital" in pl or "clinic" in pl:
+        return "Hospital"
+    if "park" in pl and "parking" not in pl:
+        return "Park"
+    if "hotel" in pl:
+        return "Hotel"
+    if "supermarket" in pl or "grocery" in pl:
+        return "Supermarket"
+    if "university" in pl or "college" in pl:
+        return "University"
+    if "office" in pl:
+        return "Office"
+    if "gym" in pl or "fitness" in pl:
+        return "Gym"
+    return "Neighbourhood"
+
+
 def get_seed_entry(type_name: str) -> Optional[_VocabEntry]:
     """Return the seed entry for *type_name*, or None if not found.
 

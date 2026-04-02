@@ -550,10 +550,10 @@ class GraphWriter:
                 continue
             # If the place name matches a seed vocab entry, use that canonical type.
             # Otherwise fall back to Neighbourhood (generic urban venue).
-            from .type_vocab import get_seed_entry
+            from .type_vocab import infer_place_type_name_from_mention
+
             pname = _get_node_name(nid)
-            seed = get_seed_entry(pname)
-            place_type = pname if seed else "Neighbourhood"
+            place_type = infer_place_type_name_from_mention(pname)
             tid = f"auto_place_type_{nid}"
             _add_node_once(tid, "E55_Type", place_type)
             normalized_edges.append((nid, tid, "P2_has_type", {}))

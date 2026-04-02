@@ -7,8 +7,8 @@ Flow:
 The key insight:
   - LLM-Disambiguate: uses the full journal text to determine *what* each mention refers to
     (e.g. "Victoria" → "Victoria, London"), producing canonical labels.
-  - BabelNet-Lookup: uses BabelNet getSenses on those canonical labels to get formal IDs
-    (synset, Wikidata QID, WordNet) — no QID hallucination risk.
+  - BabelNet-Lookup: Wikidata Vector + BabelNet pivot when configured, else BabelNet getSenses
+    on canonical labels for formal IDs (synset, Wikidata QID, WordNet).
 
 Multi-turn clarification:
   When the LLM cannot confidently disambiguate a mention, it sets needs_clarification=True.
@@ -37,6 +37,39 @@ from .wsd_preprocess import WsdPreprocessor
 from .type_resolver import collect_e55_grounding_requests
 
 logger = logging.getLogger(__name__)
+
+
+def _agentic_use_vector_grounding(
+    mode: str,
+    vector_secret: str,
+    *,
+    allow_public: bool = False,
+) -> bool:
+    m = (mode or "auto").strip().lower() or "auto"
+    secret = (vector_secret or "").strip()
+    enabled = bool(secret) or allow_public
+    if m == "legacy":
+        return False
+    if m == "vector":
+        if not enabled:
+            logger.debug(
+                "agentic: MEMO_GROUNDING_MODE=vector but no secret and MEMO_WD_VECTOR_ALLOW_PUBLIC off; using legacy"
+            )
+        return enabled
+    return enabled
+
+
+def _agentic_instanceof_for_cidoc(cidoc: str, cfg: Dict[str, str]) -> Optional[str]:
+    key = {
+        "E55_Type": "e55",
+        "E53_Place": "e53",
+        "E21_Person": "e21",
+        "E74_Group": "e74",
+    }.get(cidoc)
+    if not key:
+        return None
+    v = (cfg.get(key) or "").strip()
+    return v or None
 
 
 class AgenticState(TypedDict, total=False):
@@ -180,12 +213,13 @@ class AgenticRunner:
             }
 
         def babelnet_lookup_node(state: AgenticState) -> AgenticState:
-            """BabelNet getSenses on canonical labels → formal IDs → apply to spec.
+            """Ground mentions: Wikidata Vector + BabelNet pivot (when configured), else Babelfy/getSenses.
 
-            For each disambiguated mention:
-            - getSenses(canonical_label) → best synset → Wikidata QID, WordNet ID, gloss
-            - E55_Type results feed into TypeResolver as llm_grounding rows
-            - Entity results feed into apply_entity_linking
+            Vector path (``MEMO_GROUNDING_MODE`` + ``MEMO_WD_VECTOR_API_SECRET``):
+            ``wd_search_query`` → ``/item/query/`` (rerank) → ambiguity gate / LLM verify
+            → ``bundle_from_wikidata_qid`` → same ``e55_grounding_rows`` / ``el_rows`` shape.
+
+            Legacy path: Babelfy CONCEPTS for E55 + ``lookup_by_label`` (getSenses).
             """
             spec = state.get("graph_spec") or {}
             if not spec.get("nodes"):
@@ -209,27 +243,87 @@ class AgenticRunner:
                 return {**state, "graph_spec": spec}
 
             try:
-                from config import BABELFY_API_KEY
+                from config import (
+                    BABELFY_API_KEY,
+                    MEMO_GROUNDING_MODE,
+                    MEMO_WD_VECTOR_API_SECRET,
+                    MEMO_WD_VECTOR_BASE_URL,
+                    MEMO_WD_VECTOR_K,
+                    MEMO_WD_VECTOR_LANG,
+                    MEMO_WD_VECTOR_LLM_VERIFY_TOP,
+                    MEMO_WD_VECTOR_MIN_SCORE,
+                    MEMO_WD_VECTOR_RERANK,
+                    MEMO_WD_VECTOR_SCORE_MARGIN,
+                    MEMO_WD_VECTOR_TIMEOUT_SEC,
+                    MEMO_WD_VECTOR_VERIFY_TOP_N,
+                    MEMO_WD_VECTOR_INSTANCEOF_E21,
+                    MEMO_WD_VECTOR_INSTANCEOF_E53,
+                    MEMO_WD_VECTOR_INSTANCEOF_E55,
+                    MEMO_WD_VECTOR_INSTANCEOF_E74,
+                    MEMO_WD_VECTOR_ALLOW_PUBLIC,
+                )
                 babelfy_key = (BABELFY_API_KEY or "").strip()
+                wd_secret = (MEMO_WD_VECTOR_API_SECRET or "").strip()
+                wd_allow_public = bool(MEMO_WD_VECTOR_ALLOW_PUBLIC)
             except ImportError:
                 import os
+
                 babelfy_key = os.getenv("BABELFY_API_KEY", "").strip()
+                wd_secret = os.getenv("MEMO_WD_VECTOR_API_SECRET", "").strip()
+                MEMO_GROUNDING_MODE = os.getenv("MEMO_GROUNDING_MODE", "auto").strip().lower() or "auto"
+                MEMO_WD_VECTOR_BASE_URL = os.getenv(
+                    "MEMO_WD_VECTOR_BASE_URL", "https://wd-vectordb.wmcloud.org"
+                ).rstrip("/")
+                MEMO_WD_VECTOR_K = int(os.getenv("MEMO_WD_VECTOR_K", "10"))
+                MEMO_WD_VECTOR_LANG = os.getenv("MEMO_WD_VECTOR_LANG", "en").strip() or "en"
+                MEMO_WD_VECTOR_RERANK = os.getenv("MEMO_WD_VECTOR_RERANK", "true").strip().lower() in (
+                    "1",
+                    "true",
+                    "yes",
+                )
+                MEMO_WD_VECTOR_TIMEOUT_SEC = float(os.getenv("MEMO_WD_VECTOR_TIMEOUT_SEC", "45"))
+                MEMO_WD_VECTOR_SCORE_MARGIN = float(os.getenv("MEMO_WD_VECTOR_SCORE_MARGIN", "0.05"))
+                MEMO_WD_VECTOR_MIN_SCORE = float(os.getenv("MEMO_WD_VECTOR_MIN_SCORE", "0.0"))
+                MEMO_WD_VECTOR_VERIFY_TOP_N = int(os.getenv("MEMO_WD_VECTOR_VERIFY_TOP_N", "5"))
+                MEMO_WD_VECTOR_LLM_VERIFY_TOP = int(os.getenv("MEMO_WD_VECTOR_LLM_VERIFY_TOP", "3"))
+                MEMO_WD_VECTOR_INSTANCEOF_E55 = os.getenv("MEMO_WD_VECTOR_INSTANCEOF_E55", "").strip()
+                MEMO_WD_VECTOR_INSTANCEOF_E53 = os.getenv("MEMO_WD_VECTOR_INSTANCEOF_E53", "").strip()
+                MEMO_WD_VECTOR_INSTANCEOF_E21 = os.getenv("MEMO_WD_VECTOR_INSTANCEOF_E21", "").strip()
+                MEMO_WD_VECTOR_INSTANCEOF_E74 = os.getenv("MEMO_WD_VECTOR_INSTANCEOF_E74", "").strip()
+                MEMO_WD_VECTOR_ALLOW_PUBLIC = os.getenv("MEMO_WD_VECTOR_ALLOW_PUBLIC", "0").strip().lower() in (
+                    "1",
+                    "true",
+                    "yes",
+                )
+                wd_allow_public = bool(MEMO_WD_VECTOR_ALLOW_PUBLIC)
 
             from .babelnet_client import (
+                bundle_from_wikidata_qid,
                 bundle_to_sources_json,
-                lookup_by_label,
                 enrich_babel_synset,
+                lookup_by_label,
             )
             from .babelfy_client import disambiguate as _babelfy_disambiguate
             from .type_grounding_embed import wikidata_fetch_labels_descriptions
             from .type_resolver import apply_entity_linking
+            from .wikidata_vector_client import search_items as wd_vector_search
+            from .wd_vector_verify import pick_wikidata_qid_from_hits
 
             journal_text = state.get("text") or ""
+            use_vector = _agentic_use_vector_grounding(
+                MEMO_GROUNDING_MODE,
+                wd_secret,
+                allow_public=wd_allow_public,
+            )
+            instanceof_cfg = {
+                "e55": MEMO_WD_VECTOR_INSTANCEOF_E55,
+                "e53": MEMO_WD_VECTOR_INSTANCEOF_E53,
+                "e21": MEMO_WD_VECTOR_INSTANCEOF_E21,
+                "e74": MEMO_WD_VECTOR_INSTANCEOF_E74,
+            }
 
-            # ── Babelfy CONCEPTS prefetch (context-aware synset for E55_Type) ─────────
-            # Run once on the full text; maps each annotated span → babelSynsetID so
-            # that E55_Type grounding uses WSD context instead of context-free getSenses.
-            concepts_by_span: Dict[str, str] = {}  # span_text.lower() -> babelSynsetID
+            # ── Babelfy CONCEPTS prefetch (legacy E55 + vector fallback) ────────────
+            concepts_by_span: Dict[str, str] = {}
             if babelfy_key and journal_text:
                 try:
                     concept_anns = _babelfy_disambiguate(
@@ -252,6 +346,71 @@ class AgenticRunner:
                 except Exception as _exc:
                     logger.debug("agentic: Babelfy CONCEPTS prefetch failed: %s", _exc)
 
+            def legacy_bundle(name_lc: str, canonical_lc: str, cidoc_lc: str) -> Dict[str, Any]:
+                if not babelfy_key:
+                    return {
+                        "synset_id": "",
+                        "wikidata_qids": [],
+                        "wordnet_ids": [],
+                        "wikipedia_en_keys": [],
+                        "wiki_other": [],
+                        "gloss": "",
+                        "babelnet_rdf_url": "",
+                        "dbpedia_url": "",
+                    }
+                if cidoc_lc == "E55_Type":
+                    synset_from_concepts = ""
+                    if concepts_by_span:
+                        synset_from_concepts = concepts_by_span.get(name_lc, "")
+                        if not synset_from_concepts:
+                            for word in canonical_lc.lower().split():
+                                if len(word) > 3 and word in concepts_by_span:
+                                    synset_from_concepts = concepts_by_span[word]
+                                    break
+                    if synset_from_concepts:
+                        b = enrich_babel_synset(synset_from_concepts, api_key=babelfy_key)
+                        b["synset_id"] = synset_from_concepts
+                        sid = synset_from_concepts
+                        b["babelnet_rdf_url"] = (
+                            f"https://babelnet.io/rdf/page/{sid}" if sid.startswith("bn:") else ""
+                        )
+                        wiki_keys = b.get("wikipedia_en_keys") or []
+                        b["dbpedia_url"] = (
+                            f"https://dbpedia.org/resource/{wiki_keys[0].replace(' ', '_')}"
+                            if wiki_keys
+                            else ""
+                        )
+                        return b
+                    return lookup_by_label(canonical_lc, api_key=babelfy_key)
+                return lookup_by_label(canonical_lc, api_key=babelfy_key)
+
+            def candidates_for_row(
+                vector_hits: List[Dict[str, Any]],
+                bundle_qids: List[str],
+            ) -> List[Dict[str, str]]:
+                order: List[str] = []
+                for h in vector_hits[:6]:
+                    q = str(h.get("qid") or "").strip().upper()
+                    if q.startswith("Q") and q not in order:
+                        order.append(q)
+                for q in bundle_qids[:6]:
+                    qq = str(q).strip().upper()
+                    if qq.startswith("Q") and qq not in order:
+                        order.append(qq)
+                order = order[:6]
+                if not order:
+                    return []
+                fetched = wikidata_fetch_labels_descriptions(order)
+                rows: List[Dict[str, str]] = []
+                for q in order:
+                    pair = fetched.get(q, ("", ""))
+                    rows.append({
+                        "qid": q,
+                        "label": str(pair[0] or "").strip(),
+                        "description": str(pair[1] or "").strip(),
+                    })
+                return rows
+
             # ── Build grounding rows (E55_Type) and EL rows (entities) ──────────────
             e55_grounding_rows: Dict[str, Any] = {}
             el_rows: Dict[str, Any] = {}
@@ -260,56 +419,117 @@ class AgenticRunner:
                 name = str(item.get("name") or "").strip()
                 canonical = str(item.get("canonical_label") or name).strip() or name
                 cidoc = str(item.get("cidoc_label") or "")
+                wd_query = str(item.get("wd_search_query") or canonical or name).strip()
 
-                if not name or not babelfy_key:
+                if not name:
                     continue
 
                 if cidoc == "E55_Type":
-                    # Bug 4: skip system-internal role types — no meaningful KB grounding
                     if name.lower() == "user" or (
                         self.user_name and name.lower() == self.user_name.lower()
                     ):
                         logger.debug("agentic: skipping BabelNet for role type %r", name)
                         continue
 
-                    # Bug 2: prefer Babelfy CONCEPTS (context-aware WSD) over getSenses
-                    synset_from_concepts = ""
-                    if concepts_by_span:
-                        # Try exact match on the surface form (as it appears in the text)
-                        synset_from_concepts = concepts_by_span.get(name.lower(), "")
-                        if not synset_from_concepts:
-                            # Try each significant word from the canonical label
-                            for word in canonical.lower().split():
-                                if len(word) > 3 and word in concepts_by_span:
-                                    synset_from_concepts = concepts_by_span[word]
-                                    break
+                vector_hits: List[Dict[str, Any]] = []
+                chosen_qid: Optional[str] = None
+                bundle: Dict[str, Any] = {
+                    "synset_id": "",
+                    "wikidata_qids": [],
+                    "wordnet_ids": [],
+                    "wikipedia_en_keys": [],
+                    "wiki_other": [],
+                    "gloss": "",
+                    "babelnet_rdf_url": "",
+                    "dbpedia_url": "",
+                }
+                vector_resolved_qid = False
 
-                    if synset_from_concepts:
-                        logger.debug(
-                            "agentic: E55 %r → Babelfy CONCEPTS synset %s", name, synset_from_concepts
+                if use_vector:
+                    try:
+                        io = _agentic_instanceof_for_cidoc(cidoc, instanceof_cfg)
+                        vector_hits = wd_vector_search(
+                            wd_query,
+                            base_url=MEMO_WD_VECTOR_BASE_URL,
+                            api_secret=wd_secret,
+                            k=MEMO_WD_VECTOR_K,
+                            lang=MEMO_WD_VECTOR_LANG,
+                            instance_of=io,
+                            rerank=MEMO_WD_VECTOR_RERANK,
+                            timeout_sec=MEMO_WD_VECTOR_TIMEOUT_SEC,
                         )
-                        bundle = enrich_babel_synset(synset_from_concepts, api_key=babelfy_key)
-                        bundle["synset_id"] = synset_from_concepts
-                        sid = synset_from_concepts
-                        bundle["babelnet_rdf_url"] = (
-                            f"https://babelnet.io/rdf/page/{sid}" if sid.startswith("bn:") else ""
+                        chosen_qid = pick_wikidata_qid_from_hits(
+                            vector_hits,
+                            journal_text=journal_text,
+                            mention_name=name,
+                            canonical_label=canonical,
+                            margin=MEMO_WD_VECTOR_SCORE_MARGIN,
+                            min_score=MEMO_WD_VECTOR_MIN_SCORE,
+                            llm_verify_top=MEMO_WD_VECTOR_LLM_VERIFY_TOP,
+                            verify_pool_top_n=MEMO_WD_VECTOR_VERIFY_TOP_N,
+                            label_fetcher=wikidata_fetch_labels_descriptions,
                         )
-                        wiki_keys = bundle.get("wikipedia_en_keys") or []
-                        bundle["dbpedia_url"] = (
-                            f"https://dbpedia.org/resource/{wiki_keys[0].replace(' ', '_')}"
-                            if wiki_keys
-                            else ""
-                        )
-                    else:
-                        # Fallback: context-free getSenses on the LLM canonical label
-                        logger.debug(
-                            "agentic: E55 %r → getSenses fallback on canonical %r", name, canonical
-                        )
-                        bundle = lookup_by_label(canonical, api_key=babelfy_key)
-                else:
-                    # Entities: LLM already produced a specific canonical label
-                    # (e.g. "Victoria, London") so getSenses is accurate here
-                    bundle = lookup_by_label(canonical, api_key=babelfy_key)
+                    except Exception as exc:
+                        logger.debug("agentic: Wikidata vector grounding failed: %s", exc)
+                        vector_hits = []
+                        chosen_qid = None
+
+                    if chosen_qid:
+                        vector_resolved_qid = True
+                        if babelfy_key:
+                            bundle = bundle_from_wikidata_qid(chosen_qid, api_key=babelfy_key)
+                        else:
+                            bundle = {
+                                "synset_id": "",
+                                "wikidata_qids": [chosen_qid],
+                                "wordnet_ids": [],
+                                "wikipedia_en_keys": [],
+                                "wiki_other": [],
+                                "gloss": "",
+                                "babelnet_rdf_url": "",
+                                "dbpedia_url": "",
+                            }
+
+                need_legacy = (not use_vector) or (not chosen_qid)
+                if need_legacy:
+                    if not babelfy_key:
+                        if use_vector and vector_hits:
+                            wikidata_candidates = candidates_for_row(vector_hits, [])
+                            top_qid = wikidata_candidates[0]["qid"] if wikidata_candidates else ""
+                            top_desc = (
+                                wikidata_candidates[0].get("description") or ""
+                                if wikidata_candidates
+                                else ""
+                            )
+                            if cidoc == "E55_Type":
+                                e55_grounding_rows[name] = {
+                                    "confidence": "low",
+                                    "wikidata_id": "",
+                                    "wikidata_candidates": wikidata_candidates,
+                                    "babel_synset_id": "",
+                                    "wordnet_synset_id": "",
+                                    "babel_gloss": "",
+                                    "babelnet_rdf_url": "",
+                                    "dbpedia_url": "",
+                                    "babelnet_sources_json": "",
+                                    "aat_id": "",
+                                    "aat_label": "",
+                                    "aat_confidence": "low",
+                                    "description": top_desc,
+                                }
+                            elif not item.get("needs_clarification"):
+                                el_rows[name] = {
+                                    "wikidata_id": "",
+                                    "description": top_desc,
+                                    "babel_synset_id": "",
+                                    "wordnet_synset_id": "",
+                                    "babel_gloss": "",
+                                    "babelnet_rdf_url": "",
+                                    "dbpedia_url": "",
+                                    "babelnet_sources_json": "",
+                                }
+                        continue
+                    bundle = legacy_bundle(name.lower(), canonical, cidoc)
 
                 synset_id = str(bundle.get("synset_id") or "").strip()
                 wd_qids = list(bundle.get("wikidata_qids") or [])
@@ -318,9 +538,8 @@ class AgenticRunner:
                 babelnet_rdf = str(bundle.get("babelnet_rdf_url") or "").strip()
                 dbpedia = str(bundle.get("dbpedia_url") or "").strip()
 
-                # Enrich Wikidata candidates with labels/descriptions
-                wikidata_candidates: List[Dict[str, str]] = []
-                if wd_qids:
+                wikidata_candidates = candidates_for_row(vector_hits, wd_qids)
+                if not wikidata_candidates and wd_qids:
                     fetched = wikidata_fetch_labels_descriptions(wd_qids[:6])
                     for q in wd_qids[:6]:
                         pair = fetched.get(q, ("", ""))
@@ -330,15 +549,30 @@ class AgenticRunner:
                             "description": str(pair[1] or "").strip(),
                         })
 
-                top_qid = wikidata_candidates[0]["qid"] if wikidata_candidates else ""
-                top_desc = (
-                    wikidata_candidates[0].get("description") or gloss
-                    if wikidata_candidates
-                    else gloss
+                primary_q = str(wd_qids[0]).strip().upper() if wd_qids else ""
+                top_qid = primary_q or (
+                    wikidata_candidates[0]["qid"] if wikidata_candidates else ""
                 )
-                conf = "high" if synset_id else "low"
+                top_desc = gloss
+                if wikidata_candidates:
+                    for row in wikidata_candidates:
+                        if row.get("qid") == top_qid:
+                            top_desc = str(row.get("description") or "").strip() or gloss
+                            break
+                    if top_desc == gloss and wikidata_candidates:
+                        top_desc = (
+                            str(wikidata_candidates[0].get("description") or "").strip() or gloss
+                        )
+                if vector_resolved_qid and synset_id:
+                    conf = "high"
+                elif vector_resolved_qid and top_qid:
+                    conf = "medium"
+                elif synset_id:
+                    conf = "high"
+                else:
+                    conf = "low"
 
-                sources_json = bundle_to_sources_json(bundle) if synset_id else ""
+                sources_json = bundle_to_sources_json(bundle) if (synset_id or wd_qids) else ""
 
                 if cidoc == "E55_Type":
                     e55_grounding_rows[name] = {
@@ -357,6 +591,8 @@ class AgenticRunner:
                         "description": top_desc,
                     }
                 else:
+                    if item.get("needs_clarification"):
+                        continue
                     el_rows[name] = {
                         "wikidata_id": top_qid,
                         "description": top_desc,

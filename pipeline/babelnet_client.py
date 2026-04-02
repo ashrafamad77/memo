@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 BABELNET_GET_SYNSET = "https://babelnet.io/v9/getSynset"
 BABELNET_GET_SENSES = "https://babelnet.io/v9/getSenses"
+BABELNET_GET_SYNSET_IDS_FROM_RESOURCE = "https://babelnet.io/v9/getSynsetIdsFromResourceID"
 _DEFAULT_TIMEOUT = float(os.getenv("MEMO_BABELNET_TIMEOUT_SEC", "30"))
 _CACHE_MAX = max(64, min(int(os.getenv("MEMO_BABELNET_CACHE_MAX", "512")), 8192))
 
@@ -159,6 +161,117 @@ def enrich_babel_synset(
     if not raw:
         return synset_to_resource_bundle({})
     return synset_to_resource_bundle(raw)
+
+
+def get_synset_ids_from_resource(
+    resource_id: str,
+    *,
+    source: str,
+    api_key: str,
+    target_lang: str = "EN",
+    timeout: Optional[float] = None,
+) -> List[str]:
+    """GET getSynsetIdsFromResourceID; returns ``bn:…`` synset ids (see BabelNet v9 guide)."""
+    rid = (resource_id or "").strip()
+    src = (source or "").strip().upper()
+    key = (api_key or "").strip()
+    if not rid or not src or not key:
+        return []
+    tl = (target_lang or "EN").strip().upper() or "EN"
+    to = timeout if timeout is not None else _DEFAULT_TIMEOUT
+    params: Dict[str, str] = {"id": rid, "source": src, "key": key, "targetLang": tl}
+    headers = {"User-Agent": "MemoPipeline/1.0 (BabelNet client)"}
+
+    try:
+        with httpx.Client(timeout=to, follow_redirects=True) as client:
+            r = client.get(BABELNET_GET_SYNSET_IDS_FROM_RESOURCE, params=params, headers=headers)
+            r.raise_for_status()
+            data = r.json()
+    except Exception as e:
+        logger.debug(
+            "babelnet_client: getSynsetIdsFromResourceID failed for %r source=%s: %s",
+            rid,
+            src,
+            e,
+        )
+        return []
+
+    if not isinstance(data, list):
+        return []
+
+    out: List[str] = []
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        sid = str(row.get("id") or "").strip()
+        if sid.startswith("bn:"):
+            out.append(sid)
+    return out
+
+
+def get_synset_ids_from_wikidata(
+    qid: str,
+    *,
+    api_key: str,
+    target_lang: str = "EN",
+    timeout: Optional[float] = None,
+) -> List[str]:
+    """Map a Wikidata QID to BabelNet synset ids via ``source=WIKIDATA``."""
+    q = (qid or "").strip().upper()
+    if not re.match(r"^Q\d+$", q):
+        return []
+    return get_synset_ids_from_resource(
+        q,
+        source="WIKIDATA",
+        api_key=api_key,
+        target_lang=target_lang,
+        timeout=timeout,
+    )
+
+
+def bundle_from_wikidata_qid(
+    qid: str,
+    *,
+    api_key: str,
+    target_lang: str = "EN",
+    timeout: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Build the same resource bundle shape as ``lookup_by_label``, pivoting from a QID."""
+    empty: Dict[str, Any] = {
+        "synset_id": "",
+        "wikidata_qids": [],
+        "wordnet_ids": [],
+        "wikipedia_en_keys": [],
+        "wiki_other": [],
+        "gloss": "",
+        "babelnet_rdf_url": "",
+        "dbpedia_url": "",
+    }
+    q = (qid or "").strip().upper()
+    if not re.match(r"^Q\d+$", q):
+        return empty
+
+    key = (api_key or "").strip()
+    if not key:
+        empty["wikidata_qids"] = [q]
+        return empty
+
+    synset_ids = get_synset_ids_from_wikidata(q, api_key=key, target_lang=target_lang, timeout=timeout)
+    if not synset_ids:
+        empty["wikidata_qids"] = [q]
+        return empty
+
+    synset_id = synset_ids[0]
+    bundle = enrich_babel_synset(synset_id, api_key=key, target_lang=target_lang)
+    bundle["synset_id"] = synset_id
+    bundle["babelnet_rdf_url"] = _babelnet_rdf_url_from_synset_id(synset_id)
+    bundle["dbpedia_url"] = _dbpedia_url_from_bundle(bundle)
+    wd = [x for x in (bundle.get("wikidata_qids") or []) if isinstance(x, str)]
+    if q in wd:
+        wd.remove(q)
+    wd.insert(0, q)
+    bundle["wikidata_qids"] = wd
+    return bundle
 
 
 def get_senses(

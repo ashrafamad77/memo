@@ -39,9 +39,21 @@ NEO4J_PASSWORD=password
 # BABELFY_API_KEY=
 # MEMO_BABELFY_LANG=EN
 # MEMO_BABELFY_E55=1   # Babelfy CONCEPTS → candidats Wikidata pour types E55 (0 = désactiver)
+
+# Optionnel — grounding agentique via Wikidata Vector + pivot BabelNet (voir https://wd-vectordb.wmcloud.org/docs )
+# MEMO_GROUNDING_MODE=auto   # auto | vector | legacy
+# MEMO_WD_VECTOR_ALLOW_PUBLIC=1   # 1 = activer le chemin vector sans X-API-SECRET (API publique alpha)
+# MEMO_WD_VECTOR_API_SECRET=
+# MEMO_WD_VECTOR_BASE_URL=https://wd-vectordb.wmcloud.org
+# MEMO_WD_VECTOR_K=10
+# MEMO_WD_VECTOR_LANG=en
+# MEMO_WD_VECTOR_RERANK=true
+# MEMO_WD_VECTOR_SCORE_MARGIN=0.05
+# MEMO_WD_VECTOR_MIN_SCORE=0.0
+# MEMO_WD_VECTOR_INSTANCEOF_E55=   # QIDs séparés par des virgules (filtre instance of), idem E53 / E21 / E74
 ```
 
-→ Azure : **Keys and endpoint** pour la clé et l’URL, **Deployments** pour le nom du déploiement. Weaviate par défaut sur le port 8081 (voir `docker-compose.yml`). Babelfy : `BABELFY_API_KEY` — instances E53/E21/E74 + (si `MEMO_BABELFY_E55` actif) types E55 via passage **CONCEPTS** ; le LLM de grounding E55 ne sert plus que pour les types que Babelfy ne couvre pas.
+→ Azure : **Keys and endpoint** pour la clé et l’URL, **Deployments** pour le nom du déploiement. Weaviate par défaut sur le port 8081 (voir `docker-compose.yml`). **Grounding** : avec `MEMO_WD_VECTOR_API_SECRET` *ou* `MEMO_WD_VECTOR_ALLOW_PUBLIC=1`, et `MEMO_GROUNDING_MODE=auto` (défaut), le graphe agentique interroge l’API **Wikidata Vector** puis BabelNet ; en `legacy` ou sans ces options, Babelfy **CONCEPTS** + `getSenses`.
 
 ## Services (Neo4j + Weaviate)
 
