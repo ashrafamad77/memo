@@ -37,6 +37,14 @@ type HintContext = {
   mention: string;
 };
 
+/** LLM mention disambiguation (pre-store); drives inline buttons in the chat bubble. */
+type ClarificationPayload = {
+  id: string;
+  name: string;
+  candidates: string[];
+  suggestion: string | null;
+};
+
 type ChatMsg = {
   id: string;
   role: "user" | "assistant";
@@ -49,6 +57,8 @@ type ChatMsg = {
   frozenOpenTasks?: InboxTask[];
   /** New assistant row after a hint (visual “continuation”). */
   hintFollowUp?: boolean;
+  /** Structured picks for clarification mode (server `/chat` → `clarification`). */
+  clarification?: ClarificationPayload;
 };
 
 const BUSY_HINTS = [
@@ -107,6 +117,13 @@ export function ChatPanel() {
   const autoScrollRef = useRef<boolean>(true);
 
   const canSend = useMemo(() => text.trim().length > 0, [text]);
+
+  const lastClarificationIndex = useMemo(() => {
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role === "assistant" && msgs[i].clarification) return i;
+    }
+    return -1;
+  }, [msgs]);
 
   function clearHintContext() {
     setHintContext(null);
@@ -227,11 +244,13 @@ export function ChatPanel() {
     }
   }
 
-  async function send() {
-    const t = text.trim();
+  async function postChatMessage(userLine: string, opts?: { fromTextarea?: boolean }) {
+    const t = userLine.trim();
     if (!t) return;
-    setMsgs((prev) => [...prev, { id: uid(), role: "user", text: t }]);
-    setText("");
+    const fromTa = opts?.fromTextarea ?? false;
+    if (fromTa) {
+      setText("");
+    }
     setBusy(true);
     const hint = hintContext;
     if (hint) {
@@ -320,7 +339,30 @@ export function ChatPanel() {
             : mode === "clarification"
               ? "Clarification needed"
               : undefined;
-        setMsgs((prev) => [...prev, { id: uid(), role: "assistant", text: String(out.question), badge }]);
+        const rawClar = out?.clarification;
+        let clarification: ClarificationPayload | undefined;
+        if (
+          mode === "clarification" &&
+          rawClar &&
+          typeof rawClar === "object" &&
+          typeof rawClar.id === "string"
+        ) {
+          const cands = Array.isArray(rawClar.candidates)
+            ? rawClar.candidates.map((x: unknown) => String(x)).filter(Boolean)
+            : [];
+          clarification = {
+            id: String(rawClar.id),
+            name: String(rawClar.name || ""),
+            candidates: cands.slice(0, 3),
+            suggestion: rawClar.suggestion != null && String(rawClar.suggestion).trim()
+              ? String(rawClar.suggestion).trim()
+              : null,
+          };
+        }
+        setMsgs((prev) => [
+          ...prev,
+          { id: uid(), role: "assistant", text: String(out.question), badge, clarification },
+        ]);
       } else if (out?.type === "profile_saved") {
         setMsgs((prev) => [
           ...prev,
@@ -362,6 +404,20 @@ export function ChatPanel() {
     }
   }
 
+  async function send() {
+    const t = text.trim();
+    if (!t) return;
+    setMsgs((prev) => [...prev, { id: uid(), role: "user", text: t }]);
+    await postChatMessage(t, { fromTextarea: true });
+  }
+
+  async function sendClarificationPick(answer: string) {
+    const a = answer.trim();
+    if (!a) return;
+    setMsgs((prev) => [...prev, { id: uid(), role: "user", text: a }]);
+    await postChatMessage(a, { fromTextarea: false });
+  }
+
   return (
     <div className="flex h-full flex-col min-h-0">
       <div className="flex items-center justify-between gap-3 border-b border-zinc-200 dark:border-zinc-800 px-4 py-3">
@@ -382,7 +438,7 @@ export function ChatPanel() {
         className="flex-1 min-h-0 overflow-y-scroll px-4 py-4 overflow-x-hidden overscroll-contain"
       >
         <div className="space-y-3">
-          {msgs.map((m) => (
+          {msgs.map((m, msgIdx) => (
             <div
               key={m.id}
               className={
@@ -407,6 +463,56 @@ export function ChatPanel() {
                 </div>
               ) : null}
               <div className="whitespace-pre-wrap">{m.text}</div>
+              {m.role === "assistant" &&
+              m.clarification &&
+              msgIdx === lastClarificationIndex ? (
+                <div className="mt-3 space-y-2 rounded-xl border border-amber-200/70 bg-amber-50/80 p-3 dark:border-amber-900/50 dark:bg-amber-950/30">
+                  <div className="text-[11px] font-semibold uppercase tracking-wide text-amber-900 dark:text-amber-200">
+                    Your answer
+                  </div>
+                  {m.clarification.candidates.length > 0 ? (
+                    <div className="flex flex-col gap-2">
+                      {m.clarification.candidates.map((c) => (
+                        <button
+                          key={c}
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void sendClarificationPick(c)}
+                          className="rounded-lg border border-amber-300/80 bg-white px-3 py-2 text-left text-sm font-medium text-amber-950 shadow-sm hover:bg-amber-100 disabled:opacity-50 dark:border-amber-800 dark:bg-zinc-900 dark:text-amber-50 dark:hover:bg-zinc-800"
+                        >
+                          {c}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                  {m.clarification.suggestion &&
+                  !m.clarification.candidates.some(
+                    (c) => c.toLowerCase() === m.clarification!.suggestion!.toLowerCase(),
+                  ) ? (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void sendClarificationPick(m.clarification!.suggestion!)}
+                      className="w-full rounded-lg border border-emerald-400/70 bg-emerald-700 px-3 py-2 text-left text-sm font-semibold text-white shadow-sm hover:bg-emerald-600 disabled:opacity-50 dark:bg-emerald-800 dark:hover:bg-emerald-700"
+                    >
+                      Use suggestion: {m.clarification.suggestion}
+                    </button>
+                  ) : null}
+                  <p className="text-[11px] text-amber-900/80 dark:text-amber-200/90">
+                    Or type a different answer in the box below and press <span className="font-semibold">Send</span>
+                    {" — or "}
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void sendClarificationPick("skip")}
+                      className="font-semibold text-amber-950 underline decoration-amber-600/60 underline-offset-2 dark:text-amber-100"
+                    >
+                      skip
+                    </button>
+                    .
+                  </p>
+                </div>
+              ) : null}
               {m.role === "assistant" && m.frozenOpenTasks && m.frozenOpenTasks.length > 0 ? (
                 <details className="mt-3 rounded-xl border border-zinc-300/60 bg-zinc-100/50 dark:border-zinc-700 dark:bg-black/20">
                   <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium text-zinc-600 dark:text-zinc-400">

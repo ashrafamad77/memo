@@ -48,6 +48,7 @@ NEO4J_PASSWORD=password
 # MEMO_WD_VECTOR_K=10
 # MEMO_WD_VECTOR_LANG=en
 # MEMO_WD_VECTOR_RERANK=true
+# MEMO_WD_VECTOR_RERANK_E53=false   # E53 : désactive le rerank par défaut (ordre proche du Vector Search web)
 # MEMO_WD_VECTOR_SCORE_MARGIN=0.05
 # MEMO_WD_VECTOR_MIN_SCORE=0.0
 # MEMO_WD_VECTOR_INSTANCEOF_E55=   # QIDs séparés par des virgules (filtre instance of), idem E53 / E21 / E74

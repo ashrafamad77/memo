@@ -39,6 +39,27 @@ from .type_resolver import collect_e55_grounding_requests
 logger = logging.getLogger(__name__)
 
 
+def _vector_pick_extra_context(
+    disambiguated: List[Dict[str, Any]], current_name: str
+) -> str:
+    """Other mentions' surface → canonical lines for Wikidata vector LLM verify."""
+    lines: List[str] = []
+    cur = (current_name or "").strip()
+    for it in disambiguated:
+        n = str(it.get("name") or "").strip()
+        if not n or n == cur:
+            continue
+        canon = str(it.get("canonical_label") or "").strip()
+        if canon and canon.lower() != n.lower():
+            lines.append(f'- "{n}" → "{canon}"')
+    if not lines:
+        return ""
+    return (
+        "Resolved mentions in this entry (use for geography and coreference):\n"
+        + "\n".join(lines)
+    )
+
+
 def _agentic_use_vector_grounding(
     mode: str,
     vector_secret: str,
@@ -215,9 +236,11 @@ class AgenticRunner:
         def babelnet_lookup_node(state: AgenticState) -> AgenticState:
             """Ground mentions: Wikidata Vector + BabelNet pivot (when configured), else Babelfy/getSenses.
 
-            Vector path (``MEMO_GROUNDING_MODE`` + ``MEMO_WD_VECTOR_API_SECRET``):
-            ``wd_search_query`` → ``/item/query/`` (rerank) → ambiguity gate / LLM verify
-            → ``bundle_from_wikidata_qid`` → same ``e55_grounding_rows`` / ``el_rows`` shape.
+            Vector path (``MEMO_GROUNDING_MODE`` + secret or ``MEMO_WD_VECTOR_ALLOW_PUBLIC``):
+            ``wd_search_query`` → ``/item/query/`` (rerank on by default; E53 uses
+            ``MEMO_WD_VECTOR_RERANK_E53``, default false) → ambiguity gate / LLM verify
+            → for E53, first WDQS-eligible QID in hit order → ``bundle_from_wikidata_qid``
+            → same ``e55_grounding_rows`` / ``el_rows`` shape.
 
             Legacy path: Babelfy CONCEPTS for E55 + ``lookup_by_label`` (getSenses).
             """
@@ -253,6 +276,7 @@ class AgenticRunner:
                     MEMO_WD_VECTOR_LLM_VERIFY_TOP,
                     MEMO_WD_VECTOR_MIN_SCORE,
                     MEMO_WD_VECTOR_RERANK,
+                    MEMO_WD_VECTOR_RERANK_E53,
                     MEMO_WD_VECTOR_SCORE_MARGIN,
                     MEMO_WD_VECTOR_TIMEOUT_SEC,
                     MEMO_WD_VECTOR_VERIFY_TOP_N,
@@ -281,6 +305,9 @@ class AgenticRunner:
                     "true",
                     "yes",
                 )
+                MEMO_WD_VECTOR_RERANK_E53 = os.getenv(
+                    "MEMO_WD_VECTOR_RERANK_E53", "false"
+                ).strip().lower() in ("1", "true", "yes")
                 MEMO_WD_VECTOR_TIMEOUT_SEC = float(os.getenv("MEMO_WD_VECTOR_TIMEOUT_SEC", "45"))
                 MEMO_WD_VECTOR_SCORE_MARGIN = float(os.getenv("MEMO_WD_VECTOR_SCORE_MARGIN", "0.05"))
                 MEMO_WD_VECTOR_MIN_SCORE = float(os.getenv("MEMO_WD_VECTOR_MIN_SCORE", "0.0"))
@@ -305,7 +332,7 @@ class AgenticRunner:
             )
             from .babelfy_client import disambiguate as _babelfy_disambiguate
             from .type_grounding_embed import wikidata_fetch_labels_descriptions
-            from .type_resolver import apply_entity_linking
+            from .type_resolver import apply_entity_linking, resolve_e53_qid_from_vector_hits
             from .wikidata_vector_client import search_items as wd_vector_search
             from .wd_vector_verify import pick_wikidata_qid_from_hits
 
@@ -448,6 +475,11 @@ class AgenticRunner:
                 if use_vector:
                     try:
                         io = _agentic_instanceof_for_cidoc(cidoc, instanceof_cfg)
+                        vector_rerank = (
+                            MEMO_WD_VECTOR_RERANK_E53
+                            if cidoc == "E53_Place"
+                            else MEMO_WD_VECTOR_RERANK
+                        )
                         vector_hits = wd_vector_search(
                             wd_query,
                             base_url=MEMO_WD_VECTOR_BASE_URL,
@@ -455,9 +487,10 @@ class AgenticRunner:
                             k=MEMO_WD_VECTOR_K,
                             lang=MEMO_WD_VECTOR_LANG,
                             instance_of=io,
-                            rerank=MEMO_WD_VECTOR_RERANK,
+                            rerank=vector_rerank,
                             timeout_sec=MEMO_WD_VECTOR_TIMEOUT_SEC,
                         )
+                        extra_ctx = _vector_pick_extra_context(disambiguated, name)
                         chosen_qid = pick_wikidata_qid_from_hits(
                             vector_hits,
                             journal_text=journal_text,
@@ -468,7 +501,14 @@ class AgenticRunner:
                             llm_verify_top=MEMO_WD_VECTOR_LLM_VERIFY_TOP,
                             verify_pool_top_n=MEMO_WD_VECTOR_VERIFY_TOP_N,
                             label_fetcher=wikidata_fetch_labels_descriptions,
+                            extra_llm_context=extra_ctx,
+                            skip_clear_winner_if_context=(cidoc == "E53_Place"),
                         )
+                        if chosen_qid and cidoc == "E53_Place":
+                            resolved = resolve_e53_qid_from_vector_hits(
+                                chosen_qid, vector_hits
+                            )
+                            chosen_qid = resolved
                     except Exception as exc:
                         logger.debug("agentic: Wikidata vector grounding failed: %s", exc)
                         vector_hits = []

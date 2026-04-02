@@ -78,6 +78,8 @@ def llm_pick_qid(
     mention_name: str,
     canonical_label: str,
     candidates: List[Dict[str, str]],
+    *,
+    extra_context: str = "",
 ) -> Optional[str]:
     """Ask the LLM to pick one QID from labeled candidates, or null."""
     if not candidates:
@@ -87,8 +89,11 @@ def llm_pick_qid(
         return None
 
     cand_json = json.dumps(candidates, ensure_ascii=False)
+    block = (extra_context or "").strip()
+    mid = f"{block}\n\n" if block else ""
     user = (
-        f'Journal entry:\n"""\n{(journal_text or "").strip()}\n"""\n'
+        f'Journal entry:\n"""\n{(journal_text or "").strip()}\n"""\n\n'
+        f"{mid}"
         f"Mention surface: {mention_name!r}\n"
         f"Canonical label (hint): {canonical_label!r}\n"
         f"Wikidata candidates (pick at most one QID, or null if none fit):\n{cand_json}\n"
@@ -104,6 +109,8 @@ def llm_pick_qid(
                         "You choose which Wikidata item best matches a journal mention. "
                         "The mention is a real-world place, building, or library when the context says so — "
                         "reject catalog entries, software projects, abstract concepts, or unrelated homonyms. "
+                        "When a block lists resolved mentions (surface → canonical), treat it as authoritative "
+                        "for geography and coreference (e.g. a library in London vs Australia). "
                         "Return JSON only: {\"chosen_qid\": \"Q...\" or null}. "
                         "If none of the candidates are correct, return null."
                     ),
@@ -140,13 +147,17 @@ def pick_wikidata_qid_from_hits(
     llm_verify_top: int,
     verify_pool_top_n: int,
     label_fetcher: Callable[[List[str]], Dict[str, Tuple[str, str]]],
+    extra_llm_context: str = "",
+    skip_clear_winner_if_context: bool = False,
 ) -> Optional[str]:
     """Resolve vector hits to a single QID (clear winner, else LLM on top-N)."""
     if not hits:
         return None
 
     pool = _sort_hits_by_score(hits[: max(1, verify_pool_top_n)])
-    if is_clear_vector_winner(pool, margin=margin, min_score=min_score):
+    ec = (extra_llm_context or "").strip()
+    bypass_clear = bool(skip_clear_winner_if_context and ec)
+    if is_clear_vector_winner(pool, margin=margin, min_score=min_score) and not bypass_clear:
         return str(pool[0].get("qid") or "").strip().upper() or None
 
     top_k = max(1, min(llm_verify_top, len(pool)))
@@ -164,4 +175,15 @@ def pick_wikidata_qid_from_hits(
             "description": str(desc or "").strip(),
         })
 
-    return llm_pick_qid(journal_text, mention_name, canonical_label, candidates)
+    picked = llm_pick_qid(
+        journal_text,
+        mention_name,
+        canonical_label,
+        candidates,
+        extra_context=extra_llm_context,
+    )
+    if picked is not None:
+        return picked
+    if bypass_clear:
+        return str(pool[0].get("qid") or "").strip().upper() or None
+    return None

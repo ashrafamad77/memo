@@ -229,7 +229,7 @@ def disambiguate_mentions(
                 "name": name,
                 "cidoc_label": cidoc,
                 "canonical_label": cl,
-                "wd_search_query": f"{cl} Wikidata",
+                "wd_search_query": cl,
                 "candidates": [],
                 "confidence": 1.0,
                 "needs_clarification": False,

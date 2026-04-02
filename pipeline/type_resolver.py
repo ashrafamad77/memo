@@ -268,6 +268,40 @@ ASK {{
     return ok
 
 
+def resolve_e53_qid_from_vector_hits(
+    preferred: Optional[str],
+    hits: List[Dict[str, Any]],
+    *,
+    max_hits: int = 24,
+) -> Optional[str]:
+    """Return the first QID that passes E53 ontology checks.
+
+    ``preferred`` (from vector pick / LLM) is tried first, then each hit in API order.
+    Proven-ineligible QIDs are skipped so a strong vector match (e.g. Q27087104) can win
+    when rerank/LLM preferred a different item first.
+    """
+    seq: List[str] = []
+    pq = _safe_wikidata_qid(preferred or "")
+    if pq:
+        seq.append(pq)
+    seen = set(seq)
+    for h in hits[:max_hits]:
+        if not isinstance(h, dict):
+            continue
+        q = _safe_wikidata_qid(str(h.get("qid") or ""))
+        if q and q not in seen:
+            seen.add(q)
+            seq.append(q)
+    unknown: List[str] = []
+    for q in seq:
+        el = wikidata_qid_eligible_for_e53_entity_linking(q)
+        if el is True:
+            return q
+        if el is None:
+            unknown.append(q)
+    return unknown[0] if unknown else None
+
+
 def wikidata_e53_must_not_reach_forbidden(qid: str, *, timeout: int = 10) -> Optional[bool]:
     """True => P31/P279* reaches a clearly non-place class (reject). False => safe. None => WDQS error.
 

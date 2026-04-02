@@ -273,13 +273,27 @@ def create_app() -> FastAPI:
                 lines.append(f"  {i}. {c}")
             if suggestion and suggestion not in candidates:
                 lines.append(f"\nSystem suggestion: \"{suggestion}\"")
-            lines.append("\nType 1 / 2 / 3 to pick, type your own, or \"skip\" to leave as-is.")
+            lines.append('\nUse the buttons in the chat panel if available, or type a candidate name, or "skip".')
         elif suggestion:
             lines.append(f"\nSystem suggestion: \"{suggestion}\"")
-            lines.append("Confirm by typing the name, or type your own, or \"skip\" to leave as-is.")
+            lines.append('Use the suggestion button in the panel if available, or type the name, or "skip".')
         else:
-            lines.append("\nType the canonical name (e.g. \"Victoria, London\") or \"skip\" to leave as-is.")
+            lines.append('\nType the canonical name (e.g. "Victoria, London") or "skip" to leave as-is.')
         return "\n".join(lines)
+
+    def _clarification_ui_payload(item: dict) -> dict:
+        """Structured payload for chat UIs (inline picks). Text-only clients can ignore it."""
+        name = str(item.get("name") or "")
+        cands = [str(c).strip() for c in (item.get("candidates") or []) if str(c).strip()][:3]
+        sug = str(item.get("canonical_label") or "").strip()
+        if sug.lower() == name.lower():
+            sug = ""
+        return {
+            "id": str(item.get("id") or ""),
+            "name": name,
+            "candidates": cands,
+            "suggestion": sug or None,
+        }
 
     def _pick_from_candidates(user_text: str, candidates: list) -> str:
         """If user typed '1', '2', or '3', return the corresponding candidate; else return user_text."""
@@ -685,6 +699,7 @@ def create_app() -> FastAPI:
                         "type": "question",
                         "mode": "clarification",
                         "question": _disambig_question_text(next_item, 1, total_remaining),
+                        "clarification": _clarification_ui_payload(next_item),
                     }
                 # All remaining resolved via context — fall through to pipeline run
 
@@ -764,6 +779,7 @@ def create_app() -> FastAPI:
                         f"{len(clarifications)} mention{'s' if len(clarifications) > 1 else ''}.\n\n"
                         + _disambig_question_text(first, 1, len(clarifications))
                     ),
+                    "clarification": _clarification_ui_payload(first),
                 }
 
             # 5) Clarifier pre-check: extract first, ask one follow-up if ambiguous.

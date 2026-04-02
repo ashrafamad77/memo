@@ -90,6 +90,12 @@ MEMO_WD_VECTOR_RERANK = os.getenv("MEMO_WD_VECTOR_RERANK", "true").strip().lower
     "true",
     "yes",
 )
+# E53 places: default false so hit order stays closer to raw vector similarity (wd-vectordb web UI).
+MEMO_WD_VECTOR_RERANK_E53 = os.getenv("MEMO_WD_VECTOR_RERANK_E53", "false").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
 MEMO_WD_VECTOR_TIMEOUT_SEC = float(os.getenv("MEMO_WD_VECTOR_TIMEOUT_SEC", "45"))
 # Ambiguity gate: clear winner if top - second >= margin (uses reranker_score, else similarity_score)
 MEMO_WD_VECTOR_SCORE_MARGIN = float(os.getenv("MEMO_WD_VECTOR_SCORE_MARGIN", "0.05"))
