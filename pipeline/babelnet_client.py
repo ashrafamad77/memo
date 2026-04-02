@@ -4,10 +4,11 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 from collections import OrderedDict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import httpx
 
@@ -370,6 +371,133 @@ def _babelnet_rdf_url_from_synset_id(synset_id: str) -> str:
     if not sid.startswith("bn:"):
         return ""
     return f"https://babelnet.io/rdf/page/{sid}"
+
+
+def _word_tokens(text: str) -> Set[str]:
+    return {m.group(0) for m in re.finditer(r"[a-z0-9]{3,}", (text or "").lower())}
+
+
+def _cosine_vec(a: List[float], b: List[float]) -> float:
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    if na == 0 or nb == 0:
+        return 0.0
+    return dot / (na * nb)
+
+
+def lookup_by_label_contextual(
+    lemma: str,
+    *,
+    api_key: str,
+    journal_text: str = "",
+    type_label: str = "",
+    lang: str = "EN",
+    max_candidates: int = 8,
+    timeout: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Pick a BabelNet synset using journal + type wording, not only getSenses order.
+
+    Tries embedding similarity when ``embedding_service`` is available; otherwise scores
+    candidates by token overlap between context and gloss / WordNet ids.
+    """
+    empty: Dict[str, Any] = {
+        "synset_id": "",
+        "wikidata_qids": [],
+        "wordnet_ids": [],
+        "wikipedia_en_keys": [],
+        "wiki_other": [],
+        "gloss": "",
+        "babelnet_rdf_url": "",
+        "dbpedia_url": "",
+    }
+    lm = (lemma or "").strip()
+    key = (api_key or "").strip()
+    if not lm or not key:
+        return empty
+
+    senses = get_senses(lm, api_key=key, lang=lang, pos=None, timeout=timeout)
+    if not senses:
+        return empty
+
+    seen: Set[str] = set()
+    synset_ids: List[str] = []
+    for sense in senses:
+        if not isinstance(sense, dict):
+            continue
+        sid = _synset_id_from_sense(sense)
+        if not sid or sid in seen:
+            continue
+        seen.add(sid)
+        synset_ids.append(sid)
+        if len(synset_ids) >= max(1, max_candidates):
+            break
+
+    if not synset_ids:
+        return empty
+
+    bundles: List[Tuple[str, Dict[str, Any]]] = []
+    for sid in synset_ids:
+        b = enrich_babel_synset(sid, api_key=key, target_lang=lang)
+        bundles.append((sid, b))
+
+    tl = (type_label or lemma or "").strip()
+    query_text = f"E55 type {tl}: {lm}. {journal_text or ''}".strip()[:2000]
+
+    best_sid: str = ""
+    best_bundle: Optional[Dict[str, Any]] = None
+    best_score = float("-inf")
+
+    embed_ok = False
+    try:
+        from .embedding_service import embed_text
+
+        q_vec = embed_text(query_text)
+        embed_ok = True
+        for idx, (sid, b) in enumerate(bundles):
+            gloss = str(b.get("gloss") or "")
+            wn = " ".join(str(x) for x in (b.get("wordnet_ids") or []) if x)
+            doc = f"{gloss} {wn}".strip()[:500]
+            if not doc:
+                doc = gloss or sid
+            try:
+                d_vec = embed_text(doc)
+                sim = _cosine_vec(q_vec, d_vec)
+            except Exception as exc:
+                logger.debug("babelnet_client: embed candidate %s: %s", sid, exc)
+                sim = 0.0
+            order_bias = 0.015 * (len(bundles) - idx) / max(len(bundles), 1)
+            total = sim + order_bias
+            if total > best_score:
+                best_score, best_sid, best_bundle = total, sid, b
+    except Exception as exc:
+        logger.debug("babelnet_client: contextual embed unavailable: %s", exc)
+
+    if not embed_ok or best_bundle is None:
+        anchor = _word_tokens(journal_text) | _word_tokens(type_label) | _word_tokens(lm)
+        lemma_l = lm.lower()
+        for idx, (sid, b) in enumerate(bundles):
+            gloss = str(b.get("gloss") or "").lower()
+            wn = " ".join(str(x) for x in (b.get("wordnet_ids") or []) if x).lower()
+            doc_tokens = _word_tokens(gloss) | _word_tokens(wn)
+            overlap = len(anchor & doc_tokens)
+            if lemma_l and lemma_l in gloss:
+                overlap += 1
+            order_prior = 0.02 * (len(bundles) - idx) / max(len(bundles), 1)
+            total = float(overlap) + order_prior
+            if total > best_score:
+                best_score, best_sid, best_bundle = total, sid, b
+
+    if not best_bundle or not best_sid:
+        return lookup_by_label(lm, api_key=key, lang=lang, pos="NOUN", timeout=timeout)
+
+    out = dict(best_bundle)
+    out["synset_id"] = best_sid
+    out["babelnet_rdf_url"] = _babelnet_rdf_url_from_synset_id(best_sid)
+    out["dbpedia_url"] = _dbpedia_url_from_bundle(out)
+    return out
 
 
 def lookup_by_label(

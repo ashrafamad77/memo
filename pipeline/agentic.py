@@ -335,6 +335,7 @@ class AgenticRunner:
             from .type_resolver import apply_entity_linking, resolve_e53_qid_from_vector_hits
             from .wikidata_vector_client import search_items as wd_vector_search
             from .wd_vector_verify import pick_wikidata_qid_from_hits
+            from .type_vocab import get_seed_entry
 
             journal_text = state.get("text") or ""
             use_vector = _agentic_use_vector_grounding(
@@ -408,7 +409,14 @@ class AgenticRunner:
                             else ""
                         )
                         return b
-                    return lookup_by_label(canonical_lc, api_key=babelfy_key)
+                    from .babelnet_client import lookup_by_label_contextual
+
+                    return lookup_by_label_contextual(
+                        canonical_lc,
+                        api_key=babelfy_key,
+                        journal_text=journal_text,
+                        type_label=name,
+                    )
                 return lookup_by_label(canonical_lc, api_key=babelfy_key)
 
             def candidates_for_row(
@@ -472,7 +480,16 @@ class AgenticRunner:
                 }
                 vector_resolved_qid = False
 
-                if use_vector:
+                # Seed E55 names without a fixed Wikidata QID (Visit, Meeting, …) are extreme
+                # homonyms in wd-vectordb; vector "clear winner" often picks the wrong sense
+                # (e.g. Visit → Q202030 apostolic visitation). Prefer Babelfy/label path.
+                skip_wd_vector = False
+                if cidoc == "E55_Type":
+                    seed_e = get_seed_entry(name)
+                    if seed_e is not None and not str(seed_e.get("wikidata_id") or "").strip():
+                        skip_wd_vector = True
+
+                if use_vector and not skip_wd_vector:
                     try:
                         io = _agentic_instanceof_for_cidoc(cidoc, instanceof_cfg)
                         vector_rerank = (

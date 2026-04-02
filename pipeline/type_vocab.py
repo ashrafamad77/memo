@@ -22,7 +22,8 @@ _VocabEntry = Dict[str, Optional[str]]
 
 SEED_VOCAB: Dict[str, _VocabEntry] = {
     # ── Activities (E7_Activity types) ────────────────────────────────────────
-    # Was Q1137809 — that is "courthouse" on Wikidata, not this sense; no solid seed QID for "visit".
+    # No seed QID: Wikidata Vector is noisy for one-word activity lemmas; legacy BabelNet uses
+    # journal-aware sense ranking (see ``lookup_by_label_contextual``).
     "Visit":        {"wikidata_id": None,         "description": "act of going to see a person or place"},
     "Meeting":      {"wikidata_id": None,        "description": "encounter between people for a purpose"},
     "Meal":         {"wikidata_id": None,        "description": "eating occasion"},

@@ -12,6 +12,36 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Activity node names (CamelCase) that suggest focused work / coding, not a generic place visit.
+_WORK_SESSION_NAME_FRAGMENTS = (
+    "coding",
+    "programming",
+    "program",
+    "debug",
+    "develop",
+    "developer",
+    "hacking",
+    "hackathon",
+    "compile",
+    "deploy",
+    "scripting",
+    "lecture",
+    "teaching",
+    "lesson",
+    "studying",
+    "workshop",
+    "seminar",
+    "webinar",
+    "worksession",
+    "worksess",
+    "brainstorm",
+)
+
+
+def _activity_name_implies_work_session(aname: str) -> bool:
+    n = (aname or "").replace("_", " ").lower()
+    return any(h in n for h in _WORK_SESSION_NAME_FRAGMENTS)
+
 
 def _merge_babelfy_e55_into_spec_grounding(
     spec: Dict[str, Any],
@@ -116,6 +146,7 @@ def _merge_babelfy_e55_into_spec_grounding(
         elif llm_row and llm_row.get("wikidata_candidates"):
             eff[nm] = llm_row
             changed = True
+
     if changed:
         spec["_type_llm_grounding"] = eff
 
@@ -565,8 +596,12 @@ class GraphWriter:
                 continue
             if nid in activities_with_p2:
                 continue
-            # Activity at a place → Visit; everything else → WorkSession
-            fallback_type = "Visit" if nid in activities_with_place else "WorkSession"
+            # Activity at a place → Visit unless the name clearly denotes work/coding/etc.
+            aname = _get_node_name(nid)
+            if nid in activities_with_place and not _activity_name_implies_work_session(aname):
+                fallback_type = "Visit"
+            else:
+                fallback_type = "WorkSession"
             tid = f"auto_type_{nid}"
             _add_node_once(tid, "E55_Type", fallback_type)
             normalized_edges.append((nid, tid, "P2_has_type", {}))

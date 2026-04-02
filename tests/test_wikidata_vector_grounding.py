@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import unittest
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 try:
@@ -17,6 +18,55 @@ except ImportError:
     bn = None  # type: ignore[misc, assignment]
 
 _DEPS_OK = httpx is not None and search_items is not None
+
+
+class TestLookupByLabelContextual(unittest.TestCase):
+    @patch(
+        "pipeline.embedding_service.embed_text",
+        side_effect=RuntimeError("no embed in test"),
+    )
+    @patch("pipeline.babelnet_client.enrich_babel_synset")
+    @patch("pipeline.babelnet_client.get_senses")
+    def test_lexical_prefers_gloss_aligned_with_type_and_journal(
+        self,
+        mock_senses: MagicMock,
+        mock_enrich: MagicMock,
+        _mock_embed: MagicMock,
+    ) -> None:
+        from pipeline.babelnet_client import lookup_by_label_contextual
+
+        mock_senses.return_value = [
+            {"synsetID": {"id": "bn:sojourn"}},
+            {"synsetID": {"id": "bn:social_visit"}},
+        ]
+
+        def enrich_side(sid: str, **kwargs: Any) -> dict:
+            if "sojourn" in sid:
+                return {
+                    "wikidata_qids": [],
+                    "wordnet_ids": ["sojourn%1:04:00::"],
+                    "gloss": "sojourn",
+                    "wikipedia_en_keys": [],
+                    "wiki_other": [],
+                }
+            return {
+                "wikidata_qids": [],
+                "wordnet_ids": ["visit%1:04:03::"],
+                "gloss": "pay a visit",
+                "wikipedia_en_keys": [],
+                "wiki_other": [],
+            }
+
+        mock_enrich.side_effect = enrich_side
+
+        out = lookup_by_label_contextual(
+            "visit",
+            api_key="k",
+            journal_text="I spent the morning at Victoria then coded at the library",
+            type_label="Visit",
+            max_candidates=4,
+        )
+        self.assertEqual(out["synset_id"], "bn:social_visit")
 
 
 @unittest.skipUnless(_DEPS_OK, "Install project requirements (httpx) for vector grounding tests")
