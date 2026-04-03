@@ -4,10 +4,13 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
 
+import json
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Iterator, Optional
 
 from .neo4j_repo import Neo4jRepo
 from pipeline import MemoryPipeline
@@ -249,6 +252,14 @@ def create_app() -> FastAPI:
         "pending": None,       # for clarifier payload
         "pending_disambig": None,  # for LLM disambiguation flow
     }
+
+    def _add_entry_bundle(result: dict) -> dict:
+        eid = str(result.get("entry_id") or "").strip()
+        open_tasks = repo.inbox(status="open", limit=50, entry_id=eid) if eid else []
+        return {"type": "add_entry", "result": result, "open_tasks": open_tasks}
+
+    def _sse_line(obj: dict) -> str:
+        return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
 
     def _disambig_question_text(item: dict, current: int, total: int) -> str:
         name = item.get("name", "")
@@ -713,9 +724,7 @@ def create_app() -> FastAPI:
                     text=journal_text_pd,
                     clarification_answers=answers,
                 )
-                eid = str(result.get("entry_id") or "").strip()
-                open_tasks = repo.inbox(status="open", limit=50, entry_id=eid) if eid else []
-                return {"type": "add_entry", "result": result, "open_tasks": open_tasks}
+                return _add_entry_bundle(result)
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e)) from e
 
@@ -743,9 +752,7 @@ def create_app() -> FastAPI:
             result = pipeline.process_agentic(text=original_text)
             chat_state["mode"] = None
             chat_state["pending"] = None
-            eid = str(result.get("entry_id") or "").strip()
-            open_tasks = repo.inbox(status="open", limit=50, entry_id=eid) if eid else []
-            return {"type": "add_entry", "result": result, "open_tasks": open_tasks}
+            return _add_entry_bundle(result)
 
         # 3) New user onboarding trigger (cold start).
         profile = repo.get_user_profile(user_name=user_name)
@@ -800,11 +807,368 @@ def create_app() -> FastAPI:
                 return {"type": "question", "mode": "clarification", "question": ambiguity["question"]}
 
             result = pipeline.process_agentic(text=text)
-            eid = str(result.get("entry_id") or "").strip()
-            open_tasks = repo.inbox(status="open", limit=50, entry_id=eid) if eid else []
-            return {"type": "add_entry", "result": result, "open_tasks": open_tasks}
+            return _add_entry_bundle(result)
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e)) from e
+
+    @app.post("/chat/stream")
+    def chat_stream(_in: ChatIn):
+        """Same routing as ``/chat``, but streams agentic progress via Server-Sent Events.
+
+        Events:
+        - ``{"type": "stage", "stage", "label", "pct", "detail", "preview"}`` — pipeline checkpoint
+        - ``{"type": "done", "payload": ...}`` — same JSON shape as a normal ``/chat`` response
+        - ``{"type": "error", "detail": "..."}`` — pipeline failure (HTTP 200; client should fall back)
+        """
+        nonlocal pipeline
+        text = _in.message.strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="empty message")
+        if pipeline is None:
+            pipeline = MemoryPipeline(use_graph=True, use_vector=True)
+
+        user_name = (USER_NAME or "").strip() or "User"
+
+        hint_tid = (_in.disambiguation_hint_task_id or "").strip()
+        if hint_tid:
+            row = repo.get_disambiguation_task(hint_tid)
+            if not row:
+                raise HTTPException(status_code=404, detail="disambiguation task not found")
+            if str(row.get("status") or "") != "open":
+                raise HTTPException(status_code=400, detail="task is already resolved")
+            if str(row.get("type") or "") != "place_wikidata":
+                raise HTTPException(
+                    status_code=400,
+                    detail="free-text hints are only supported for place Wikidata tasks",
+                )
+            eid = str(row.get("entry_id") or "").strip()
+            if not eid:
+                raise HTTPException(status_code=400, detail="task has no entry_id")
+            detail = repo.entry_detail(eid)
+            journal = str((detail or {}).get("text") or "")
+            profile = repo.get_user_profile(user_name=user_name) or {}
+            from pipeline.disambiguation_hint import (
+                refresh_place_candidates_with_user_hint,
+                sibling_enrichment_anchor_qid_from_hint,
+            )
+
+            cands = refresh_place_candidates_with_user_hint(
+                mention=str(row.get("mention") or ""),
+                entity_label=str(row.get("entity_label") or "E53_Place"),
+                journal_text=journal,
+                hint=text,
+                user_profile=profile,
+            )
+            if not cands:
+
+                def _hint_fail():
+                    yield _sse_line(
+                        {
+                            "type": "done",
+                            "payload": {
+                                "type": "disambiguation_hint",
+                                "ok": False,
+                                "message": "I could not find new Wikidata matches from that hint. Try naming a city, country, or landmark (e.g. “central London”, “BC Canada”).",
+                                "task_id": hint_tid,
+                                "entry_id": eid,
+                                "mention": str(row.get("mention") or ""),
+                                "candidates": [],
+                            },
+                        }
+                    )
+
+                return StreamingResponse(_hint_fail(), media_type="text/event-stream")
+            repo.update_task_candidates(hint_tid, cands)
+            anchor_q = sibling_enrichment_anchor_qid_from_hint(text, journal)
+            if anchor_q:
+                from pipeline.entity_enrichment import enrich_sibling_tasks
+
+                enrich_sibling_tasks(
+                    eid,
+                    hint_tid,
+                    anchor_q,
+                    "E53_Place",
+                    repo,
+                )
+
+            def _hint_ok():
+                yield _sse_line(
+                    {
+                        "type": "done",
+                        "payload": {
+                            "type": "disambiguation_hint",
+                            "ok": True,
+                            "message": f'Updated options for “{row.get("mention") or "this place"}” using your note.',
+                            "task_id": hint_tid,
+                            "entry_id": eid,
+                            "mention": str(row.get("mention") or ""),
+                            "candidates": cands,
+                        },
+                    }
+                )
+
+            return StreamingResponse(_hint_ok(), media_type="text/event-stream")
+
+        def gen() -> Iterator[str]:
+            # 1) Continue onboarding flow if in progress.
+            if chat_state["mode"] == "onboarding":
+                idx = int(chat_state.get("onboarding_step", 0))
+                if idx >= len(ONBOARDING_STEPS):
+                    chat_state["mode"] = None
+                else:
+                    field, _ = ONBOARDING_STEPS[idx]
+                    if _is_user_asking_clarification(text):
+                        help_text = _onboarding_field_help(field)
+                        _, q = ONBOARDING_STEPS[idx]
+                        yield _sse_line(
+                            {
+                                "type": "done",
+                                "payload": {
+                                    "type": "question",
+                                    "mode": "onboarding",
+                                    "question": f"{help_text}\n\n{q}",
+                                },
+                            }
+                        )
+                        return
+                    val = text.strip()
+                    ok, err, norm_val = _validate_onboarding_answer(field, val)
+                    if not ok:
+                        _, q = ONBOARDING_STEPS[idx]
+                        yield _sse_line(
+                            {
+                                "type": "done",
+                                "payload": {
+                                    "type": "question",
+                                    "mode": "onboarding",
+                                    "question": f"{err}\n\n{q}",
+                                },
+                            }
+                        )
+                        return
+                    val = norm_val
+                    chat_state["onboarding_answers"][field] = val
+                    idx += 1
+                    chat_state["onboarding_step"] = idx
+                    if idx < len(ONBOARDING_STEPS):
+                        _, q = ONBOARDING_STEPS[idx]
+                        yield _sse_line(
+                            {
+                                "type": "done",
+                                "payload": {"type": "question", "mode": "onboarding", "question": q},
+                            }
+                        )
+                        return
+
+                    profile = repo.upsert_user_profile(user_name=user_name, fields=chat_state["onboarding_answers"])
+                    chat_state["mode"] = None
+                    chat_state["onboarding_step"] = 0
+                    chat_state["onboarding_answers"] = {}
+                    yield _sse_line(
+                        {
+                            "type": "done",
+                            "payload": {
+                                "type": "profile_saved",
+                                "message": "Profile saved. You can now send journal entries.",
+                                "profile": profile,
+                            },
+                        }
+                    )
+                    return
+
+            # 2a) Continue LLM disambiguation flow — collect answers one at a time.
+            if chat_state["mode"] == "disambiguating" and isinstance(chat_state.get("pending_disambig"), dict):
+                pd = chat_state["pending_disambig"]
+                clarifications: list = pd["clarifications"]
+                idx: int = pd["current_idx"]
+                answers: dict = pd["answers"]
+                journal_text_pd: str = pd["text"]
+
+                current_item = clarifications[idx]
+                user_raw = text.strip()
+                if user_raw.lower() == "skip":
+                    resolved_label = current_item["name"]
+                else:
+                    resolved_label = _pick_from_candidates(user_raw, current_item.get("candidates") or [])
+                answers[current_item["id"]] = resolved_label
+                idx += 1
+                pd["current_idx"] = idx
+
+                if idx < len(clarifications):
+                    context_hints = {
+                        clarifications[i]["name"]: answers[clarifications[i]["id"]]
+                        for i in range(idx)
+                        if clarifications[i]["id"] in answers
+                    }
+                    remaining = clarifications[idx:]
+                    try:
+                        from pipeline.llm_disambiguator import resolve_remaining_with_context
+
+                        refreshed = resolve_remaining_with_context(
+                            journal_text_pd, remaining, context_hints
+                        )
+                    except Exception:
+                        refreshed = remaining
+
+                    auto_accepted = [r for r in refreshed if not r.get("needs_clarification")]
+                    still_pending = [r for r in refreshed if r.get("needs_clarification")]
+
+                    for r in auto_accepted:
+                        answers[r["id"]] = r.get("canonical_label") or r["name"]
+
+                    if still_pending:
+                        pd["clarifications"] = clarifications[:idx] + still_pending
+                        pd["current_idx"] = idx
+                        next_item = still_pending[0]
+                        total_remaining = len(still_pending)
+                        yield _sse_line(
+                            {
+                                "type": "done",
+                                "payload": {
+                                    "type": "question",
+                                    "mode": "clarification",
+                                    "question": _disambig_question_text(next_item, 1, total_remaining),
+                                    "clarification": _clarification_ui_payload(next_item),
+                                },
+                            }
+                        )
+                        return
+
+                chat_state["mode"] = None
+                chat_state["pending_disambig"] = None
+                try:
+                    for ev in pipeline.iter_process_agentic(
+                        text=journal_text_pd,
+                        clarification_answers=answers,
+                    ):
+                        if ev["type"] == "stage":
+                            yield _sse_line(ev)
+                        elif ev["type"] == "complete":
+                            yield _sse_line({"type": "done", "payload": _add_entry_bundle(ev["result"])})
+                except Exception as e:
+                    yield _sse_line({"type": "error", "detail": str(e)})
+                return
+
+            # 2b) Continue clarifier flow if waiting for one answer.
+            if chat_state["mode"] == "clarifying" and isinstance(chat_state.get("pending"), dict):
+                pending = chat_state["pending"]
+                ans = text.strip().lower()
+                is_yes = ans in {"yes", "y", "oui", "o", "true"}
+                is_no = ans in {"no", "n", "non", "false"}
+                if not (is_yes or is_no):
+                    yield _sse_line(
+                        {
+                            "type": "done",
+                            "payload": {
+                                "type": "question",
+                                "question": "Please reply with 'yes' or 'no' so I can store this correctly.",
+                            },
+                        }
+                    )
+                    return
+                extraction = pending["extraction"]
+                original_text = pending["text"]
+                if is_yes:
+                    extraction = _apply_location_clarification(
+                        extraction=extraction,
+                        current_city=pending["current_city"],
+                        remote_place=pending["remote_place"],
+                        is_remote_context=True,
+                        non_local_places=pending.get("non_local_places", []),
+                    )
+                try:
+                    for ev in pipeline.iter_process_agentic(text=original_text):
+                        if ev["type"] == "stage":
+                            yield _sse_line(ev)
+                        elif ev["type"] == "complete":
+                            yield _sse_line({"type": "done", "payload": _add_entry_bundle(ev["result"])})
+                    chat_state["mode"] = None
+                    chat_state["pending"] = None
+                except Exception as e:
+                    yield _sse_line({"type": "error", "detail": str(e)})
+                return
+
+            # 3) New user onboarding trigger (cold start).
+            profile = repo.get_user_profile(user_name=user_name)
+            entry_count = repo.entry_count()
+            if _needs_onboarding(profile=profile, entry_count=entry_count):
+                chat_state["mode"] = "onboarding"
+                chat_state["onboarding_step"] = 0
+                chat_state["onboarding_answers"] = {}
+                _, q = ONBOARDING_STEPS[0]
+                yield _sse_line(
+                    {
+                        "type": "done",
+                        "payload": {
+                            "type": "question",
+                            "mode": "onboarding",
+                            "question": "Quick onboarding (5 short questions) to improve accuracy.\n" + q,
+                        },
+                    }
+                )
+                return
+
+            try:
+                clarifications = pipeline.get_disambiguation_questions(text)
+                if clarifications:
+                    chat_state["mode"] = "disambiguating"
+                    chat_state["pending_disambig"] = {
+                        "text": text,
+                        "clarifications": clarifications,
+                        "answers": {},
+                        "current_idx": 0,
+                    }
+                    first = clarifications[0]
+                    yield _sse_line(
+                        {
+                            "type": "done",
+                            "payload": {
+                                "type": "question",
+                                "mode": "clarification",
+                                "question": (
+                                    f"Before I store this entry, I need to clarify "
+                                    f"{len(clarifications)} mention{'s' if len(clarifications) > 1 else ''}.\n\n"
+                                    + _disambig_question_text(first, 1, len(clarifications))
+                                ),
+                                "clarification": _clarification_ui_payload(first),
+                            },
+                        }
+                    )
+                    return
+
+                extraction = pipeline.extractor.extract(text)
+                extraction = pipeline._resolve_relative_dates(extraction, input_dt=datetime.now())
+                ambiguity = _detect_location_ambiguity(text=text, extraction=extraction, profile=profile)
+                if ambiguity:
+                    chat_state["mode"] = "clarifying"
+                    chat_state["pending"] = {
+                        "text": text,
+                        "extraction": extraction,
+                        "current_city": ambiguity["current_city"],
+                        "remote_place": ambiguity["remote_place"],
+                        "non_local_places": ambiguity.get("non_local_places", []),
+                    }
+                    yield _sse_line(
+                        {
+                            "type": "done",
+                            "payload": {
+                                "type": "question",
+                                "mode": "clarification",
+                                "question": ambiguity["question"],
+                            },
+                        }
+                    )
+                    return
+
+                for ev in pipeline.iter_process_agentic(text=text):
+                    if ev["type"] == "stage":
+                        yield _sse_line(ev)
+                    elif ev["type"] == "complete":
+                        yield _sse_line({"type": "done", "payload": _add_entry_bundle(ev["result"])})
+            except Exception as e:
+                yield _sse_line({"type": "error", "detail": str(e)})
+
+        return StreamingResponse(gen(), media_type="text/event-stream")
 
     return app
 

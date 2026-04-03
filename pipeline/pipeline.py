@@ -1,7 +1,7 @@
 """Main pipeline: text -> extract -> graph + vector store."""
 from datetime import datetime, timedelta
 import unicodedata
-from typing import List, Optional
+from typing import Any, Dict, Generator, List, Optional
 import uuid
 
 
@@ -217,36 +217,19 @@ class MemoryPipeline:
                 out.append(r)
         return out
 
-    def process_agentic(
+    def _build_agentic_app(
         self,
         text: str,
-        entry_id: Optional[str] = None,
-        *,
-        clarification_answers: Optional[dict] = None,
-    ) -> dict:
-        """Run the v2 agentic pipeline.
-
-        Multi-turn clarification
-        ------------------------
-        If the result contains a non-empty ``clarifications_needed`` list, the caller
-        should ask the user to resolve each item and then re-call with::
-
-            clarification_answers = {
-                "m0": "Victoria, London",   # keyed by mention id, NOT surface text
-                "m3": "Victoria station",
-            }
-
-        Keying by mention id (not surface text) is required because the same surface
-        form can appear multiple times in a single entry with different referents.
-        """
-        """Run the v2 pipeline: Prep → Model → TypeResolve → WriteGraph → WriteVector."""
+        entry_id: str,
+        clarification_answers: Optional[dict],
+    ):
+        """Compile LangGraph app + initial state for the agentic pipeline."""
         from .agentic import AgenticRunner
         from .modeling_agent import ModelingAgent
         from .type_resolver import TypeResolver
         from .graph_writer import GraphWriter
         from .wsd_preprocess import WsdPreprocessor
 
-        entry_id = entry_id or str(uuid.uuid4())
         deployment = (AZURE_OPENAI_DEPLOYMENT or "gpt-4o-mini").strip()
 
         wsd_preprocessor = WsdPreprocessor(
@@ -283,15 +266,17 @@ class MemoryPipeline:
             user_name=USER_NAME,
         )
         app = runner.build()
-        initial_state: dict = {
+        initial_state: Dict[str, Any] = {
             "text": text,
             "entry_id": entry_id,
             "day_bucket": day_bucket,
         }
         if clarification_answers:
             initial_state["clarification_answers"] = clarification_answers
-        out = app.invoke(initial_state)
+        return app, initial_state
 
+    def _finalize_agentic_result(self, out: dict, entry_id: str) -> dict:
+        """Shape LangGraph output into the public ``process_agentic`` result dict."""
         prep = out.get("prep") or {}
         entities_raw = prep.get("entities", [])
         entities = [
@@ -322,12 +307,69 @@ class MemoryPipeline:
             "entity_linking_mode": el_mode,
             "babelfy_entity_linking": bf_stats,
             "babelfy_e55_grounding": bf_e55_stats,
-            # Multi-turn clarification support:
-            # If non-empty, the caller should ask the user to resolve these,
-            # then re-call process_agentic(..., clarification_answers={name: sense, ...})
             "clarifications_needed": out.get("clarifications_needed") or [],
             "disambiguated_mentions": out.get("disambiguated_mentions") or [],
         }
+
+    def process_agentic(
+        self,
+        text: str,
+        entry_id: Optional[str] = None,
+        *,
+        clarification_answers: Optional[dict] = None,
+    ) -> dict:
+        """Run the v2 agentic pipeline.
+
+        Multi-turn clarification
+        ------------------------
+        If the result contains a non-empty ``clarifications_needed`` list, the caller
+        should ask the user to resolve each item and then re-call with::
+
+            clarification_answers = {
+                "m0": "Victoria, London",   # keyed by mention id, NOT surface text
+                "m3": "Victoria station",
+            }
+
+        Keying by mention id (not surface text) is required because the same surface
+        form can appear multiple times in a single entry with different referents.
+
+        Flow: Prep → Model → type resolve → graph write → vector index.
+        """
+        entry_id = entry_id or str(uuid.uuid4())
+        app, initial_state = self._build_agentic_app(text, entry_id, clarification_answers)
+        out = app.invoke(initial_state)
+        return self._finalize_agentic_result(out, entry_id)
+
+    def iter_process_agentic(
+        self,
+        text: str,
+        entry_id: Optional[str] = None,
+        *,
+        clarification_answers: Optional[dict] = None,
+    ) -> Generator[Dict[str, Any], None, None]:
+        """Stream progress events (``type: stage``) then a final ``complete`` event.
+
+        Uses LangGraph ``stream_mode=\"updates\"`` so each node's output is merged into
+        accumulated state for honest stage labels and previews.
+        """
+        from .journal_progress import (
+            connection_stage_event,
+            pipeline_boot_stage_event,
+            stage_event_for_node,
+        )
+
+        entry_id = entry_id or str(uuid.uuid4())
+        yield connection_stage_event(text, entry_id)
+        app, initial_state = self._build_agentic_app(text, entry_id, clarification_answers)
+        yield pipeline_boot_stage_event()
+        acc: Dict[str, Any] = dict(initial_state)
+        for step in app.stream(initial_state, stream_mode="updates"):
+            for node_name, upd in step.items():
+                if not isinstance(upd, dict):
+                    continue
+                acc.update(upd)
+                yield stage_event_for_node(str(node_name), acc)
+        yield {"type": "complete", "result": self._finalize_agentic_result(acc, entry_id)}
 
     def persist_extraction(self, text: str, extraction, entry_id: Optional[str] = None) -> dict:
         """
