@@ -3,6 +3,19 @@
 import { useLayoutEffect, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 
+const CHAT_SIZE_KEY = "memo-chat-panel-size";
+
+function readSavedChatSize(): number | null {
+  try {
+    const raw = localStorage.getItem(CHAT_SIZE_KEY);
+    if (raw !== null) {
+      const v = parseFloat(raw);
+      if (Number.isFinite(v) && v >= 18 && v <= 55) return v;
+    }
+  } catch {}
+  return null;
+}
+
 import { ChatPanel } from "@/components/ChatPanel";
 import { DashboardTabs } from "@/components/DashboardTabs";
 
@@ -27,7 +40,7 @@ function useMdUp() {
   return mdUp;
 }
 
-function MobileBottomNav({
+function MobileTopBanner({
   section,
   onSection,
 }: {
@@ -42,16 +55,16 @@ function MobileBottomNav({
         onClick={() => onSection(id)}
         aria-current={active ? "page" : undefined}
         className={[
-          "flex flex-1 flex-col items-center justify-center gap-0.5 py-2.5 text-xs font-semibold transition-colors",
+          "flex flex-1 flex-row items-center justify-center gap-2 rounded-xl py-2.5 text-xs font-semibold transition-colors outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/50 dark:focus-visible:ring-indigo-400/40",
           active
-            ? "text-indigo-600 dark:text-indigo-400"
-            : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200",
+            ? "bg-indigo-100 text-indigo-900 dark:bg-indigo-950/50 dark:text-indigo-100"
+            : "text-zinc-600 hover:bg-zinc-200/80 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100",
         ].join(" ")}
       >
         {id === "journal" ? (
           <svg
             aria-hidden
-            className="h-5 w-5"
+            className="h-5 w-5 shrink-0"
             fill="none"
             viewBox="0 0 24 24"
             stroke="currentColor"
@@ -66,7 +79,7 @@ function MobileBottomNav({
         ) : (
           <svg
             aria-hidden
-            className="h-5 w-5"
+            className="h-5 w-5 shrink-0"
             fill="none"
             viewBox="0 0 24 24"
             stroke="currentColor"
@@ -86,7 +99,7 @@ function MobileBottomNav({
 
   return (
     <nav
-      className="flex shrink-0 border-t border-zinc-200 bg-zinc-50/95 pb-[max(0.25rem,env(safe-area-inset-bottom))] pt-0.5 backdrop-blur-sm dark:border-zinc-800 dark:bg-zinc-950/95"
+      className="flex shrink-0 gap-1.5 border-b border-zinc-200 bg-zinc-50/95 px-2 pb-2 pt-[max(0.5rem,env(safe-area-inset-top))] backdrop-blur-sm dark:border-zinc-800 dark:bg-zinc-950/95"
       aria-label="Primary"
     >
       {item("journal", "Journal")}
@@ -98,10 +111,17 @@ function MobileBottomNav({
 export function AppSplitLayout() {
   const mdUp = useMdUp();
   const [mobileSection, setMobileSection] = useState<MobileSection>("journal");
+  // null = not yet read from localStorage; useLayoutEffect resolves before paint
+  const [chatSize, setChatSize] = useState<number | null>(null);
+
+  useLayoutEffect(() => {
+    setChatSize(readSavedChatSize() ?? 50);
+  }, []);
 
   if (!mdUp) {
     return (
       <div className="flex h-full min-h-0 flex-col">
+        <MobileTopBanner section={mobileSection} onSection={setMobileSection} />
         <div className="min-h-0 flex-1 overflow-hidden">
           {mobileSection === "journal" ? (
             <section className="flex h-full min-h-0 min-w-0 flex-col">
@@ -113,19 +133,24 @@ export function AppSplitLayout() {
             </section>
           )}
         </div>
-        <MobileBottomNav section={mobileSection} onSection={setMobileSection} />
       </div>
     );
   }
 
+  // chatSize is null until useLayoutEffect reads localStorage (runs before paint).
+  // Returning null here is never visible to the user.
+  if (chatSize === null) return null;
+
   return (
     <PanelGroup
-      autoSaveId="memo-chat-dashboard"
       direction="horizontal"
       className="h-full min-h-0"
+      onLayout={(sizes: number[]) => {
+        try { localStorage.setItem(CHAT_SIZE_KEY, String(sizes[0])); } catch {}
+      }}
     >
       <Panel
-        defaultSize={30}
+        defaultSize={chatSize}
         minSize={18}
         maxSize={55}
         className="min-h-0 min-w-0"
@@ -143,7 +168,7 @@ export function AppSplitLayout() {
           className="pointer-events-none my-auto h-12 w-1 rounded-full bg-zinc-400/90 group-hover:bg-indigo-500/80 dark:bg-zinc-500 dark:group-hover:bg-indigo-400/70"
         />
       </PanelResizeHandle>
-      <Panel defaultSize={70} minSize={40} className="min-h-0 min-w-0">
+      <Panel defaultSize={100 - chatSize} minSize={40} className="min-h-0 min-w-0">
         <section className="flex h-full min-h-0 flex-col">
           <DashboardTabs />
         </section>
