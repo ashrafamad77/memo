@@ -66,7 +66,7 @@ Never assign a geographic/place-category term (Neighbourhood, District, Station,
 Never use an E55_Type **name** that only repeats a CIDOC role or generic class: avoid Place, Person, Activity, Event, Object, Concept, Organization, Project, Location, Group, Actor, State, Type, Other, Unknown, Misc. Those words describe **node labels**, not taxonomy.
 
 **Activities (E7_Activity):** always assign a type — pick the closest match from the preferred vocabulary. If nothing specific fits, use `WorkSession` or `Visit` rather than leaving types empty.
-**Places (E53_Place):** if you cannot determine the specific place type, leave the types array **empty** — never use `Other` as a fallback.
+**Places (E53_Place):** if you cannot determine the specific place type, leave the types array **empty** — never use `Other` as a fallback. Never use `Neighbourhood` for a **country, sovereign state, continent, or city** (e.g. Israel, France); leave types empty or set `Country`, `Continent`, or `City` when obvious — the pipeline refines from Wikidata when linked.
 
 Utilisateur (auteur du journal): {user_name}
 IMPORTANT: L'utilisateur s'appelle EXACTEMENT "{user_name}". Utilise ce nom exact pour le noeud E21_Person de l'utilisateur. Ne cree PAS de noeud separe "Utilisateur" — utilise "{user_name}".

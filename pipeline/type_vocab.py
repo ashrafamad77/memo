@@ -17,7 +17,8 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
-# Each entry: wikidata_id (str or None), description (str).
+# Each entry: wikidata_id (str or None), description (str), optional wikidata_label (English label
+# of that WD item — may differ from our CamelCase ``name``).
 # aat_id is not seeded here — too easy to hallucinate; AAT comes from the grounding pipeline.
 _VocabEntry = Dict[str, Optional[str]]
 
@@ -46,7 +47,11 @@ SEED_VOCAB: Dict[str, _VocabEntry] = {
     "Shopping":     {"wikidata_id": None,        "description": "browsing and purchasing goods"},
     "Reflection":   {"wikidata_id": None,        "description": "introspective thought"},
     # Approx. "work session" / focused work block (Wikidata has no dedicated everyday lemma).
-    "WorkSession":  {"wikidata_id": "Q31194416", "description": "period of work; focused work session"},
+    "WorkSession":  {
+        "wikidata_id": "Q31194416",
+        "wikidata_label": "period of work",
+        "description": "period of work; focused work session",
+    },
     "Lecture":      {"wikidata_id": None,        "description": "oral presentation for teaching"},
     "Walk":         {"wikidata_id": None,        "description": "act of walking"},
     "PhoneCall":    {"wikidata_id": None,        "description": "telephone conversation"},
@@ -62,6 +67,27 @@ SEED_VOCAB: Dict[str, _VocabEntry] = {
     "Park":          {"wikidata_id": "Q22698",   "description": "public outdoor green space"},
     "Cafe":          {"wikidata_id": "Q30022",   "description": "coffeehouse or small eatery"},
     "Neighbourhood": {"wikidata_id": None,       "description": "district within a city"},
+    "Country":       {"wikidata_id": "Q6256",    "description": "sovereign state or nation"},
+    "City":          {"wikidata_id": "Q515",     "description": "city"},
+    "Town":          {"wikidata_id": "Q3957",    "description": "town"},
+    "Village":       {"wikidata_id": "Q532",     "description": "village"},
+    "Continent":     {"wikidata_id": "Q5107",    "description": "continent"},
+    "HumanSettlement": {"wikidata_id": "Q486972", "description": "human settlement (generic)"},
+    "NationalPark":  {"wikidata_id": "Q46169",   "description": "national park or protected area"},
+    "MountainRange": {"wikidata_id": "Q46831",   "description": "mountain range"},
+    "Mountain":      {"wikidata_id": "Q8502",    "description": "mountain"},
+    "Hill":          {"wikidata_id": "Q54050",   "description": "hill"},
+    "Lake":          {"wikidata_id": "Q23397",   "description": "lake"},
+    "River":         {"wikidata_id": "Q4022",    "description": "river"},
+    "Island":        {"wikidata_id": "Q23442",   "description": "island"},
+    "Archipelago":   {"wikidata_id": "Q25243",   "description": "archipelago"},
+    "Ocean":         {"wikidata_id": "Q9430",    "description": "ocean"},
+    "Sea":           {"wikidata_id": "Q165",     "description": "sea"},
+    "Desert":        {"wikidata_id": "Q8514",    "description": "desert"},
+    "Forest":        {"wikidata_id": "Q4421",    "description": "forest"},
+    "Valley":        {"wikidata_id": "Q39816",   "description": "valley"},
+    "Strait":        {"wikidata_id": "Q37901",   "description": "strait"},
+    "Peninsula":     {"wikidata_id": "Q34763",   "description": "peninsula"},
     "Office":        {"wikidata_id": None,       "description": "room or building for professional work"},
     "Home":          {"wikidata_id": None,       "description": "one's place of residence"},
     "Airport":       {"wikidata_id": "Q1248784", "description": "aviation terminal facility"},
@@ -139,6 +165,35 @@ def infer_place_type_name_from_mention(pname: str) -> str:
     if "gym" in pl or "fitness" in pl:
         return "Gym"
     return "Neighbourhood"
+
+
+def canonical_seed_name_for_qid(qid: str) -> Optional[str]:
+    """Return the SEED_VOCAB key for *qid*, if any (stable canonical E55 name).
+
+    Used so Wikidata-backed types always merge under the vocabulary key (e.g. ``HumanSettlement``
+    for Q486972), not a legacy Neo4j typo such as ``Humansettlement`` from single-token labels.
+
+    Also consults ``e53_wd_place_taxonomy`` so roots whose label maps to a seed key (e.g.
+    Q2755753 → ``Neighbourhood``) resolve even when ``Neighbourhood`` has no ``wikidata_id`` row.
+    """
+    q = (qid or "").strip()
+    if not q:
+        return None
+    for name, entry in SEED_VOCAB.items():
+        wid = str(entry.get("wikidata_id") or "").strip()
+        if wid == q:
+            return name
+    try:
+        from .e53_wd_place_taxonomy import merged_e53_wd_place_checks
+
+        for root, label in merged_e53_wd_place_checks():
+            if root != q:
+                continue
+            if label in SEED_VOCAB:
+                return label
+    except ImportError:
+        pass
+    return None
 
 
 def get_seed_entry(type_name: str) -> Optional[_VocabEntry]:

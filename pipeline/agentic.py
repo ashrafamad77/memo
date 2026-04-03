@@ -637,10 +637,19 @@ class AgenticRunner:
 
                 sources_json = bundle_to_sources_json(bundle) if (synset_id or wd_qids) else ""
 
+                wd_label = ""
+                if wikidata_candidates and top_qid:
+                    tq = str(top_qid).strip().upper()
+                    for row in wikidata_candidates:
+                        if str(row.get("qid") or "").strip().upper() == tq:
+                            wd_label = str(row.get("label") or "").strip()
+                            break
+
                 if cidoc == "E55_Type":
                     e55_grounding_rows[name] = {
                         "confidence": conf,
                         "wikidata_id": top_qid,
+                        "wikidata_label": wd_label,
                         "wikidata_candidates": wikidata_candidates,
                         "babel_synset_id": synset_id,
                         "wordnet_synset_id": wn_ids[0] if wn_ids else "",
@@ -698,21 +707,55 @@ class AgenticRunner:
                 except Exception as exc:
                     logger.warning("agentic: apply_entity_linking failed: %s", exc)
 
+            try:
+                from .type_resolver import refine_e53_place_types_from_wikidata
+
+                nlist = spec.get("nodes")
+                if isinstance(nlist, list):
+                    refine_e53_place_types_from_wikidata(nlist)
+            except Exception as exc:
+                logger.debug("agentic: refine_e53_place_types_from_wikidata skipped: %s", exc)
+
             return {**state, "graph_spec": spec}
 
         def persist_graph_node(state: AgenticState) -> AgenticState:
-            spec = state.get("graph_spec") or {}
-            if not self.graph_writer or not spec.get("nodes"):
-                return {**state, "graph_status": "skipped", "graph_audit": {"status": "skipped"}}
+            if not self.graph_writer:
+                return {
+                    **state,
+                    "graph_status": "skipped",
+                    "graph_audit": {"status": "skipped", "reason": "no_graph_writer"},
+                }
+            if not state.get("entry_id"):
+                return {
+                    **state,
+                    "graph_status": "skipped",
+                    "graph_audit": {"status": "skipped", "reason": "missing_entry_id"},
+                }
+            spec = state.get("graph_spec")
+            if spec is None or not isinstance(spec, dict):
+                spec = {}
+            else:
+                spec = dict(spec)
+            nodes = spec.get("nodes")
+            edges = spec.get("edges")
+            if not isinstance(nodes, list):
+                nodes = []
+            if not isinstance(edges, list):
+                edges = []
+            spec["nodes"] = nodes
+            spec["edges"] = edges
             try:
                 audit = self.graph_writer.write(
                     spec=spec,
                     entry_id=state["entry_id"],
-                    raw_text=state["text"],
+                    raw_text=state.get("text") or "",
                     user_name=self.user_name,
                     day_bucket=state.get("day_bucket", ""),
                     wsd_profile=state.get("wsd_profile"),
                 )
+                st = audit.get("status") if isinstance(audit, dict) else None
+                if st == "skipped":
+                    return {**state, "graph_status": "skipped", "graph_audit": audit}
                 return {**state, "graph_status": "ok", "graph_audit": audit}
             except Exception as e:
                 return {**state, "graph_status": f"error: {e}", "graph_audit": {"status": "error", "detail": str(e)}}

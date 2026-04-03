@@ -121,3 +121,8 @@ MEMO_E55_BABEL_FROM_WIKIDATA = os.getenv("MEMO_E55_BABEL_FROM_WIKIDATA", "1").st
     "true",
     "yes",
 )
+# Infer E53 P2 E55_Type from linked Wikidata QID (country/city/…) instead of default Neighbourhood.
+MEMO_E53_WD_PLACE_TYPE = os.getenv("MEMO_E53_WD_PLACE_TYPE", "1").strip().lower() in ("1", "true", "yes")
+# Append ``QID:CamelCaseName`` pairs (comma-separated) to the default taxonomy in ``e53_wd_place_taxonomy``.
+# ``CamelCaseName`` must exist in ``type_vocab.SEED_VOCAB``.
+MEMO_E53_WD_PLACE_TAXONOMY_EXTRA = os.getenv("MEMO_E53_WD_PLACE_TAXONOMY_EXTRA", "").strip()

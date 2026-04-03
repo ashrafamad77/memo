@@ -20,6 +20,7 @@ _SPARQL_P31_ROOT_CACHE: Dict[str, Optional[bool]] = {}
 _SPARQL_E53_FORBIDDEN_CACHE: Dict[str, Optional[bool]] = {}
 _SPARQL_E53_ELIGIBLE_CACHE: Dict[str, Optional[bool]] = {}
 _SPARQL_CHART_MEDIA_CACHE: Dict[str, Optional[bool]] = {}
+_E53_PLACE_E55_TYPE_CACHE: Dict[str, Optional[str]] = {}
 
 # E53_Place guard: P31/P279* must reach this class. Default Q2221906 = geographic location.
 _WD_DEFAULT_PLACE_TAXONOMY_ROOT = (
@@ -300,6 +301,83 @@ ASK {{
     ok = bool(data["boolean"])
     _SPARQL_E53_ELIGIBLE_CACHE[q] = ok
     return ok
+
+
+def e53_place_e55_type_from_wikidata(qid: str, *, timeout: int = 10) -> Optional[str]:
+    """Map a linked E53 Wikidata QID to an E55_Type name using ``P31``/``P279*`` class roots.
+
+    Taxonomy is **ordered**: first matching root wins (see ``e53_wd_place_taxonomy``). Extend via
+    ``MEMO_E53_WD_PLACE_TAXONOMY_EXTRA`` as ``Q46831:MountainRange,...``.
+    """
+    try:
+        from config import MEMO_E53_WD_PLACE_TYPE
+    except ImportError:
+        MEMO_E53_WD_PLACE_TYPE = os.getenv("MEMO_E53_WD_PLACE_TYPE", "1").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+    if not MEMO_E53_WD_PLACE_TYPE:
+        return None
+    q = _safe_wikidata_qid(qid)
+    if not q:
+        return None
+    if q in _E53_PLACE_E55_TYPE_CACHE:
+        return _E53_PLACE_E55_TYPE_CACHE[q]
+    from .type_vocab import get_seed_entry
+
+    try:
+        from .e53_wd_place_taxonomy import merged_e53_wd_place_checks
+
+        checks = merged_e53_wd_place_checks()
+    except ImportError:
+        checks = (
+            ("Q5107", "Continent"),
+            ("Q6256", "Country"),
+            ("Q3624078", "Country"),
+            ("Q515", "City"),
+            ("Q3957", "Town"),
+            ("Q532", "Village"),
+            ("Q2755753", "Neighbourhood"),
+            ("Q123705", "Neighbourhood"),
+            ("Q486972", "HumanSettlement"),
+        )
+    for root, label in checks:
+        if not get_seed_entry(label):
+            continue
+        reach = wikidata_entity_p31_reaches_root(q, root, instance_only=True, timeout=timeout)
+        if reach is True:
+            _E53_PLACE_E55_TYPE_CACHE[q] = label
+            return label
+    _E53_PLACE_E55_TYPE_CACHE[q] = None
+    return None
+
+
+def refine_e53_place_types_from_wikidata(nodes: List[Dict[str, Any]]) -> None:
+    """Replace generic ``Neighbourhood`` (or empty types) when ``wikidata_id`` implies a macro place."""
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("label", "")) != "E53_Place":
+            continue
+        props = node.get("properties")
+        if not isinstance(props, dict):
+            continue
+        wid = str(props.get("wikidata_id") or "").strip()
+        hint = e53_place_e55_type_from_wikidata(wid)
+        if not hint:
+            continue
+        raw_types = node.get("types")
+        names: List[str] = []
+        if isinstance(raw_types, list):
+            for t in raw_types:
+                if isinstance(t, dict):
+                    names.append(str(t.get("name") or "").strip())
+                else:
+                    names.append(str(t).strip())
+        names = [x for x in names if x]
+        if not names or (len(names) == 1 and names[0] == "Neighbourhood"):
+            node["types"] = [hint]
 
 
 def resolve_e53_qid_from_vector_hits(
@@ -1483,7 +1561,8 @@ class TypeResolver:
                         babelnet_sources_json: '',
                         babel_gloss: '',
                         babelnet_rdf_url: '',
-                        dbpedia_url: ''
+                        dbpedia_url: '',
+                        wikidata_label: ''
                     }) DELETE n
                     """
                 )
@@ -1540,6 +1619,11 @@ class TypeResolver:
         qid = (wikidata_id or "").strip()
         if not qid:
             return None
+        from .type_vocab import canonical_seed_name_for_qid
+
+        seed_name = canonical_seed_name_for_qid(qid)
+        if seed_name:
+            return seed_name
         with self.driver.session() as s:
             row = s.run(
                 """
@@ -2251,6 +2335,9 @@ class TypeResolver:
                 wrd = str(v.get("wikidata_related_description") or "").strip()
                 if wrd:
                     row["wikidata_related_description"] = wrd
+                wl = str(v.get("wikidata_label") or "").strip()
+                if wl:
+                    row["wikidata_label"] = wl
                 authority[str(k)] = row
         for canon, wid, desc, aid in resolved_map.values():
             if not wid and not aid and not desc:
@@ -2263,6 +2350,19 @@ class TypeResolver:
                 am["aat_id"] = aid
             if desc:
                 am["description"] = desc
+
+        from .type_vocab import get_seed_entry
+
+        for raw_s, tup in resolved_map.items():
+            canon, wid, desc, aid = tup
+            if not wid:
+                continue
+            seed = get_seed_entry(canon) or get_seed_entry(raw_s)
+            if not seed:
+                continue
+            wl = str(seed.get("wikidata_label") or "").strip()
+            if wl:
+                authority.setdefault(canon, {})["wikidata_label"] = wl
 
         for _raw_name, row_bn in eff_llm.items():
             if not isinstance(row_bn, dict):
@@ -2298,6 +2398,16 @@ class TypeResolver:
                 if wrdsc:
                     am["wikidata_related_description"] = wrdsc
 
+        for _raw_name, row_w in eff_llm.items():
+            if not isinstance(row_w, dict):
+                continue
+            ckey = resolved_map[_raw_name][0] if _raw_name in resolved_map else None
+            if not ckey:
+                continue
+            wl = str(row_w.get("wikidata_label") or "").strip()
+            if wl and not str(authority.get(ckey, {}).get("wikidata_label") or "").strip():
+                authority.setdefault(ckey, {})["wikidata_label"] = wl
+
         for node in nodes:
             if not isinstance(node, dict):
                 continue
@@ -2322,6 +2432,11 @@ class TypeResolver:
                         props["description"] = desc
                     elif not str(props.get("description") or "").strip():
                         props.pop("description", None)
+                    am_c = authority.get(canon)
+                    if isinstance(am_c, dict):
+                        wlc = str(am_c.get("wikidata_label") or "").strip()
+                        if wlc:
+                            props["wikidata_label"] = wlc
                     row_g = eff_llm.get(old)
                     if isinstance(row_g, dict):
                         bns = str(row_g.get("babel_synset_id") or "").strip()
@@ -2376,10 +2491,14 @@ class TypeResolver:
                 nm not in authority
                 or not str(authority[nm].get("wikidata_id") or "").strip()
             ):
-                authority[nm] = {
+                row_q: Dict[str, str] = {
                     "wikidata_id": qw,
                     "description": str(props.get("description") or ""),
                 }
+                wlq = str(props.get("wikidata_label") or "").strip()
+                if wlq:
+                    row_q["wikidata_label"] = wlq
+                authority[nm] = row_q
             elif qa and (
                 nm not in authority
                 or not str(authority[nm].get("aat_id") or "").strip()
@@ -2421,6 +2540,9 @@ class TypeResolver:
             dpu_am = str(am.get("dbpedia_url") or "").strip()
             if dpu_am and not str(props.get("dbpedia_url") or "").strip():
                 props["dbpedia_url"] = dpu_am
+            wl_am = str(am.get("wikidata_label") or "").strip()
+            if wl_am and not str(props.get("wikidata_label") or "").strip():
+                props["wikidata_label"] = wl_am
 
         spec["_e55_authority_meta"] = authority
         _strip_resolver_fields_from_spec(spec)

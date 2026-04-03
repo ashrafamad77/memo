@@ -275,8 +275,10 @@ def create_app() -> FastAPI:
                 lines.append(f"\nSystem suggestion: \"{suggestion}\"")
             lines.append('\nUse the buttons in the chat panel if available, or type a candidate name, or "skip".')
         elif suggestion:
-            lines.append(f"\nSystem suggestion: \"{suggestion}\"")
-            lines.append('Use the suggestion button in the panel if available, or type the name, or "skip".')
+            # ChatPanel already shows "Use suggestion: …" — avoid duplicating it in the prose.
+            lines.append(
+                "Use the green suggestion button in the panel, type a different name below, or \"skip\"."
+            )
         else:
             lines.append('\nType the canonical name (e.g. "Victoria, London") or "skip" to leave as-is.')
         return "\n".join(lines)

@@ -246,12 +246,27 @@ class GraphWriter:
         input_ts: Optional[str] = None,
         wsd_profile: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        if not spec or (not spec.get("nodes") and not spec.get("edges")):
-            return {"status": "skipped", "reason": "empty_spec"}
+        if not entry_id:
+            return {"status": "skipped", "reason": "missing_entry_id"}
+        if spec is None or not isinstance(spec, dict):
+            spec = {}
+        else:
+            spec = dict(spec)
+        nodes_in = spec.get("nodes")
+        edges_in = spec.get("edges")
+        if not isinstance(nodes_in, list):
+            nodes_in = []
+        if not isinstance(edges_in, list):
+            edges_in = []
+        spec["nodes"] = nodes_in
+        spec["edges"] = edges_in
+        journal_stub = len(nodes_in) == 0 and len(edges_in) == 0
+        if raw_text is None:
+            raw_text = ""
         ts = input_ts or datetime.now().astimezone().isoformat()
 
         with self.driver.session() as session:
-            return session.execute_write(
+            audit = session.execute_write(
                 self._write_tx,
                 spec=spec,
                 entry_id=entry_id,
@@ -262,6 +277,7 @@ class GraphWriter:
                 driver=self.driver,
                 wsd_profile=wsd_profile,
             )
+        return {"status": "ok", **audit, "journal_stub": journal_stub}
 
     @staticmethod
     def _write_tx(
@@ -288,6 +304,13 @@ class GraphWriter:
             label = str(node.get("label", ""))
             if nid and label:
                 id_to_label[nid] = label
+
+        try:
+            from .type_resolver import refine_e53_place_types_from_wikidata
+
+            refine_e53_place_types_from_wikidata(nodes)
+        except Exception as exc:
+            logger.debug("graph_writer: refine_e53_place_types_from_wikidata skipped: %s", exc)
 
         def _is_activity(label: str) -> bool:
             return label in {"E5_Event", "E7_Activity", "E10_Transfer_of_Custody", "E13_Attribute_Assignment"}
@@ -318,6 +341,17 @@ class GraphWriter:
             for n in nodes:
                 if isinstance(n, dict) and str(n.get("id", "")) == nid:
                     return str(n.get("name", ""))
+            return ""
+
+        def _get_place_wikidata_id(nid: str) -> str:
+            for n in nodes:
+                if isinstance(n, dict) and str(n.get("id", "")) != nid:
+                    continue
+                if str(n.get("label", "")) != "E53_Place":
+                    continue
+                p = n.get("properties")
+                if isinstance(p, dict):
+                    return str(p.get("wikidata_id") or "").strip()
             return ""
 
         def _add_node_once(nid: str, label: str, name: str, types: Optional[List[str]] = None) -> None:
@@ -579,12 +613,15 @@ class GraphWriter:
             # Only type places that are actual activity venues (P7 target); leave remote refs untyped
             if nid not in places_as_p7_target:
                 continue
-            # If the place name matches a seed vocab entry, use that canonical type.
-            # Otherwise fall back to Neighbourhood (generic urban venue).
+            # Prefer coarse type from linked Wikidata (country, city, …), then mention heuristics.
+            from .type_resolver import e53_place_e55_type_from_wikidata
             from .type_vocab import infer_place_type_name_from_mention
 
             pname = _get_node_name(nid)
-            place_type = infer_place_type_name_from_mention(pname)
+            wd_place = _get_place_wikidata_id(nid)
+            place_type = e53_place_e55_type_from_wikidata(wd_place) if wd_place else None
+            if not place_type:
+                place_type = infer_place_type_name_from_mention(pname)
             tid = f"auto_place_type_{nid}"
             _add_node_once(tid, "E55_Type", place_type)
             normalized_edges.append((nid, tid, "P2_has_type", {}))
@@ -635,10 +672,12 @@ class GraphWriter:
             Optional[str],
             Optional[str],
             Optional[str],
+            Optional[str],
         ]:
             np = node_props if isinstance(node_props, dict) else {}
             wid = str(np.get("wikidata_id", "") or "").strip()
             desc = str(np.get("description", "") or "").strip()
+            wdl = str(np.get("wikidata_label", "") or "").strip()
             aid = str(np.get("aat_id", "") or "").strip()
             bn = str(np.get("babel_synset_id", "") or "").strip()
             wn = str(np.get("wordnet_synset_id", "") or "").strip()
@@ -654,6 +693,8 @@ class GraphWriter:
                     wid = str(am.get("wikidata_id", "") or "").strip()
                 if not desc:
                     desc = str(am.get("description", "") or "").strip()
+                if not wdl:
+                    wdl = str(am.get("wikidata_label", "") or "").strip()
                 if not aid:
                     aid = str(am.get("aat_id", "") or "").strip()
                 if not bn:
@@ -677,6 +718,7 @@ class GraphWriter:
             return (
                 wid if wid else None,
                 desc if desc else None,
+                wdl if wdl else None,
                 aid if aid else None,
                 bn if bn.startswith("bn:") else None,
                 wn if wn else None,
@@ -694,6 +736,7 @@ class GraphWriter:
             (
                 wid_p,
                 desc_p,
+                wdl_p,
                 aid_p,
                 bn_p,
                 wn_p,
@@ -707,7 +750,8 @@ class GraphWriter:
             tx_inner.run(
                 """
                 MERGE (n:E55_Type {name: $name})
-                ON CREATE SET n.wikidata_id = $wid, n.description = $desc, n.aat_id = $aid,
+                ON CREATE SET n.wikidata_id = $wid, n.description = $desc, n.wikidata_label = $wdl,
+                    n.aat_id = $aid,
                     n.babel_synset_id = $bn, n.wordnet_synset_id = $wn,
                     n.babelnet_sources_json = $bj,
                     n.babel_gloss = $bg, n.babelnet_rdf_url = $bru, n.dbpedia_url = $dpu,
@@ -717,6 +761,7 @@ class GraphWriter:
                         WHEN $desc IS NOT NULL AND $desc <> '' THEN $desc
                         ELSE n.description
                     END,
+                    n.wikidata_label = coalesce($wdl, n.wikidata_label),
                     n.aat_id = CASE
                         WHEN $wid IS NOT NULL AND $wid <> '' THEN null
                         WHEN $aid IS NOT NULL AND $aid <> '' THEN $aid
@@ -737,6 +782,7 @@ class GraphWriter:
                 name=tname,
                 wid=wid_p,
                 desc=desc_p,
+                wdl=wdl_p,
                 aid=aid_p,
                 bn=bn_p,
                 wn=wn_p,

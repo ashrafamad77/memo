@@ -1,7 +1,18 @@
 """Main pipeline: text -> extract -> graph + vector store."""
 from datetime import datetime, timedelta
+import unicodedata
 from typing import List, Optional
 import uuid
+
+
+def _norm_mention_for_clarif(s: str) -> str:
+    """Fold case + strip combining marks so ``Israël`` ≈ ``Israel`` for confirmation checks."""
+    t = (s or "").strip()
+    if not t:
+        return ""
+    t = unicodedata.normalize("NFKC", t).casefold()
+    t = unicodedata.normalize("NFD", t)
+    return "".join(c for c in t if unicodedata.category(c) != "Mn")
 
 from .graph_store import GraphStore
 from .llm_extractor import LLMExtractor
@@ -193,8 +204,9 @@ class MemoryPipeline:
                 continue
             # Backup: canonical_label differs from surface name → LLM resolved silently.
             # Treat as needing clarification so the user can confirm or correct.
-            name = (r.get("name") or "").strip().lower()
-            canonical = (r.get("canonical_label") or "").strip().lower()
+            # Skip when the only difference is accents/spelling (e.g. Israël vs Israel).
+            name = _norm_mention_for_clarif(str(r.get("name") or ""))
+            canonical = _norm_mention_for_clarif(str(r.get("canonical_label") or ""))
             if canonical and canonical != name:
                 r = dict(r)
                 r["needs_clarification"] = True
