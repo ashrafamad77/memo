@@ -291,6 +291,43 @@ export function DashboardTabs() {
   const [impactLedgerLoading, setImpactLedgerLoading] = useState(false);
   const [impactLedgerError, setImpactLedgerError] = useState("");
   const [deletingEntryId, setDeletingEntryId] = useState<string | null>(null);
+  const [mobileTabMenuOpen, setMobileTabMenuOpen] = useState(false);
+  const mobileMenuBtnRef = useRef<HTMLButtonElement>(null);
+  const mobileMenuFirstBtnRef = useRef<HTMLButtonElement>(null);
+
+  const closeMobileTabMenu = useCallback(() => {
+    setMobileTabMenuOpen(false);
+    mobileMenuBtnRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    if (!mobileTabMenuOpen) return;
+    const id = requestAnimationFrame(() => {
+      mobileMenuFirstBtnRef.current?.focus();
+    });
+    return () => cancelAnimationFrame(id);
+  }, [mobileTabMenuOpen]);
+
+  useEffect(() => {
+    if (!mobileTabMenuOpen) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeMobileTabMenu();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [mobileTabMenuOpen, closeMobileTabMenu]);
+
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 768px)");
+    function onChange() {
+      if (mq.matches) setMobileTabMenuOpen(false);
+    }
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -534,13 +571,85 @@ export function DashboardTabs() {
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between gap-3 border-b border-zinc-200 dark:border-zinc-700 px-4 py-3">
-        <div className="flex flex-wrap gap-2">
+        <div className="hidden flex-wrap gap-2 md:flex">
           {tabs.map((t) => (
             <TabButton key={t} label={t} active={t === tab} onClick={() => setTab(t)} />
           ))}
         </div>
-        <div className="text-xs text-zinc-500 dark:text-zinc-400">dashboard</div>
+        <div className="flex min-w-0 flex-1 items-center justify-between gap-3 md:hidden">
+          <div className="min-w-0">
+            <div className="truncate text-sm font-semibold text-zinc-900 dark:text-zinc-100">{tab}</div>
+            <div className="text-[11px] text-zinc-500 dark:text-zinc-400">Dashboard</div>
+          </div>
+          <button
+            ref={mobileMenuBtnRef}
+            type="button"
+            aria-expanded={mobileTabMenuOpen}
+            aria-controls="mobile-dashboard-tab-menu"
+            aria-haspopup="dialog"
+            onClick={() => setMobileTabMenuOpen((o) => !o)}
+            className="shrink-0 rounded-lg border border-zinc-200 bg-zinc-100 p-2.5 text-zinc-700 outline-none transition-colors hover:bg-zinc-200 focus-visible:ring-2 focus-visible:ring-indigo-500/50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 dark:focus-visible:ring-indigo-400/40"
+          >
+            <span className="sr-only">Choose dashboard view</span>
+            <svg
+              aria-hidden
+              className="h-5 w-5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
+              <path strokeLinecap="round" d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+          </button>
+        </div>
+        <div className="hidden shrink-0 text-xs text-zinc-500 dark:text-zinc-400 md:block">dashboard</div>
       </div>
+
+      {mobileTabMenuOpen ? (
+        <div className="fixed inset-0 z-[45] md:hidden">
+          <button
+            type="button"
+            className="absolute inset-0 bg-black/50"
+            aria-label="Close dashboard view menu"
+            onClick={closeMobileTabMenu}
+          />
+          <div
+            id="mobile-dashboard-tab-menu"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="mobile-dash-menu-title"
+            className="absolute bottom-0 left-0 right-0 max-h-[min(72vh,28rem)] overflow-y-auto rounded-t-2xl border border-b-0 border-zinc-200 bg-white px-3 pb-[max(1rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_-8px_32px_-8px_rgba(0,0,0,0.2)] dark:border-zinc-700 dark:bg-zinc-950 dark:shadow-[0_-12px_40px_-10px_rgba(0,0,0,0.5)]"
+          >
+            <div className="mx-auto mb-2 h-1 w-10 shrink-0 rounded-full bg-zinc-300 dark:bg-zinc-600" aria-hidden />
+            <h2 id="mobile-dash-menu-title" className="sr-only">
+              Choose a dashboard view
+            </h2>
+            <div className="mx-auto flex max-w-lg flex-col gap-1 pb-2">
+              {tabs.map((t, i) => (
+                <button
+                  key={t}
+                  ref={i === 0 ? mobileMenuFirstBtnRef : undefined}
+                  type="button"
+                  aria-current={t === tab ? "true" : undefined}
+                  onClick={() => {
+                    setTab(t);
+                    closeMobileTabMenu();
+                  }}
+                  className={[
+                    "rounded-xl px-4 py-3 text-left text-sm font-semibold transition-colors",
+                    t === tab
+                      ? "bg-indigo-100 text-indigo-900 dark:bg-indigo-950/60 dark:text-indigo-100"
+                      : "bg-zinc-100 text-zinc-800 hover:bg-zinc-200 dark:bg-zinc-800/80 dark:text-zinc-200 dark:hover:bg-zinc-800",
+                  ].join(" ")}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         <div className={["mx-auto", tab === "Graph" ? "max-w-none" : "max-w-5xl"].join(" ")}>

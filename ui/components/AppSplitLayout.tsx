@@ -8,6 +8,8 @@ import { DashboardTabs } from "@/components/DashboardTabs";
 
 const MD_MEDIA = "(min-width: 768px)";
 
+type MobileSection = "journal" | "dashboard";
+
 /**
  * `md` breakpoint after mount. Initial `true` optimizes SSR / first HTML for desktop (split
  * panels) so cold refresh does not show stacked layout until JS loads. `useLayoutEffect`
@@ -25,18 +27,93 @@ function useMdUp() {
   return mdUp;
 }
 
+function MobileBottomNav({
+  section,
+  onSection,
+}: {
+  section: MobileSection;
+  onSection: (s: MobileSection) => void;
+}) {
+  const item = (id: MobileSection, label: string) => {
+    const active = section === id;
+    return (
+      <button
+        type="button"
+        onClick={() => onSection(id)}
+        aria-current={active ? "page" : undefined}
+        className={[
+          "flex flex-1 flex-col items-center justify-center gap-0.5 py-2.5 text-xs font-semibold transition-colors",
+          active
+            ? "text-indigo-600 dark:text-indigo-400"
+            : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200",
+        ].join(" ")}
+      >
+        {id === "journal" ? (
+          <svg
+            aria-hidden
+            className="h-5 w-5"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={2}
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+            />
+          </svg>
+        ) : (
+          <svg
+            aria-hidden
+            className="h-5 w-5"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={2}
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"
+            />
+          </svg>
+        )}
+        <span>{label}</span>
+      </button>
+    );
+  };
+
+  return (
+    <nav
+      className="flex shrink-0 border-t border-zinc-200 bg-zinc-50/95 pb-[max(0.25rem,env(safe-area-inset-bottom))] pt-0.5 backdrop-blur-sm dark:border-zinc-800 dark:bg-zinc-950/95"
+      aria-label="Primary"
+    >
+      {item("journal", "Journal")}
+      {item("dashboard", "Dashboard")}
+    </nav>
+  );
+}
+
 export function AppSplitLayout() {
   const mdUp = useMdUp();
+  const [mobileSection, setMobileSection] = useState<MobileSection>("journal");
 
   if (!mdUp) {
     return (
       <div className="flex h-full min-h-0 flex-col">
-        <section className="flex min-h-0 min-w-0 flex-1 flex-col border-b border-zinc-200 dark:border-zinc-800">
-          <ChatPanel />
-        </section>
-        <section className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <DashboardTabs />
-        </section>
+        <div className="min-h-0 flex-1 overflow-hidden">
+          {mobileSection === "journal" ? (
+            <section className="flex h-full min-h-0 min-w-0 flex-col">
+              <ChatPanel />
+            </section>
+          ) : (
+            <section className="flex h-full min-h-0 min-w-0 flex-col">
+              <DashboardTabs />
+            </section>
+          )}
+        </div>
+        <MobileBottomNav section={mobileSection} onSection={setMobileSection} />
       </div>
     );
   }
