@@ -71,6 +71,70 @@ _JOURNAL_STOPWORDS = frozenset(
     """.split()
 )
 
+_WD_EN_LABEL_DESC_CACHE: Dict[str, Tuple[str, str]] = {}
+
+
+def _parse_babelnet_wikidata_ids_from_json(bj: str) -> List[str]:
+    """Return uppercase Q-ids listed under ``wikidata`` in BabelNet ``babelnet_sources_json``."""
+    if not (bj or "").strip():
+        return []
+    try:
+        obj = json.loads(bj)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(obj, dict):
+        return []
+    w = obj.get("wikidata")
+    out: List[str] = []
+    if isinstance(w, list):
+        for x in w:
+            s = str(x).strip().upper()
+            if re.match(r"^Q\d+$", s):
+                out.append(s)
+    elif isinstance(w, str):
+        s = w.strip().upper()
+        if re.match(r"^Q\d+$", s):
+            out.append(s)
+    return out
+
+
+def _wikidata_en_label_and_description(qid: str) -> Tuple[str, str]:
+    """Fetch English label + description for a Q-id (cached). No hardcoded per-topic strings."""
+    q = _safe_wikidata_qid(qid)
+    if not q:
+        return "", ""
+    if q in _WD_EN_LABEL_DESC_CACHE:
+        return _WD_EN_LABEL_DESC_CACHE[q]
+    try:
+        r = requests.get(
+            _WIKIDATA_API,
+            params={
+                "action": "wbgetentities",
+                "ids": q,
+                "props": "labels|descriptions",
+                "languages": "en",
+                "format": "json",
+            },
+            timeout=8,
+            headers={"User-Agent": _WIKIDATA_UA},
+        )
+        r.raise_for_status()
+        data = r.json()
+        ent = (data.get("entities") or {}).get(q, {})
+        if ent.get("missing") == "":
+            out: Tuple[str, str] = ("", "")
+            _WD_EN_LABEL_DESC_CACHE[q] = out
+            return out
+        labels = ent.get("labels") or {}
+        descs = ent.get("descriptions") or {}
+        lab = (labels.get("en") or {}).get("value") or ""
+        des = (descs.get("en") or {}).get("value") or ""
+        out2 = (lab.strip(), des.strip())
+        _WD_EN_LABEL_DESC_CACHE[q] = out2
+        return out2
+    except Exception:
+        return "", ""
+
 
 def _enrich_e55_authority_babel_from_wikidata(authority: Dict[str, Dict[str, str]]) -> None:
     """Fill BabelNet synset metadata from ``wikidata_id`` when Babelfy did not run (e.g. seed QIDs)."""
@@ -2208,6 +2272,82 @@ class TypeResolver:
                 return ex
         return "".join(w.capitalize() for w in clean.split())
 
+    def _reconcile_e55_wikidata_from_babelnet(
+        self,
+        authority: Dict[str, Dict[str, str]],
+        resolved_map: Dict[str, Tuple[str, Optional[str], str, Optional[str]]],
+        working: List[str],
+    ) -> None:
+        """When BabelNet JSON lists Wikidata Q-ids and the resolver picked a different one, use BabelNet's first id.
+
+        Refreshes label/description from Wikidata. Renames the E55 canonical key to match the English Wikidata
+        label (e.g. ``armed conflict`` → ``ArmedConflict``) so ``name`` is not stuck on a wrong slug.
+        """
+        from .type_vocab import canonical_seed_name_for_qid
+
+        for canon in list(authority.keys()):
+            am = authority.get(canon)
+            if not isinstance(am, dict):
+                continue
+            cur = str(am.get("wikidata_id") or "").strip().upper()
+            if not re.match(r"^Q\d+$", cur):
+                continue
+            bj = str(am.get("babelnet_sources_json") or "").strip()
+            bn_ids = _parse_babelnet_wikidata_ids_from_json(bj)
+            if not bn_ids or cur in bn_ids:
+                continue
+            new_qid = bn_ids[0]
+            wlab, wdesc = _wikidata_en_label_and_description(new_qid)
+
+            seed_name = canonical_seed_name_for_qid(new_qid)
+            if seed_name:
+                new_canon = seed_name
+            elif wlab:
+                new_canon = self._label_to_camel(wlab)
+                for ex in working:
+                    if ex.lower() == new_canon.lower():
+                        new_canon = ex
+                        break
+            else:
+                new_canon = canon
+
+            new_row = dict(am)
+            new_row["wikidata_id"] = new_qid
+            if wlab:
+                new_row["wikidata_label"] = wlab
+            else:
+                new_row.pop("wikidata_label", None)
+            if wdesc:
+                new_row["description"] = wdesc
+            else:
+                new_row.pop("description", None)
+
+            if new_canon != canon:
+                authority.pop(canon, None)
+                prev = authority.get(new_canon)
+                if isinstance(prev, dict):
+                    merged = {**prev, **new_row}
+                    authority[new_canon] = merged
+                else:
+                    authority[new_canon] = new_row
+                if new_canon not in working:
+                    working.append(new_canon)
+                _log.debug(
+                    "e55_wikidata_reconcile: canon rename %r -> %r (%s -> %s)",
+                    canon,
+                    new_canon,
+                    cur,
+                    new_qid,
+                )
+            else:
+                authority[canon] = new_row
+
+            for raw_s, tup in list(resolved_map.items()):
+                c, _w, _d, aid = tup
+                if c != canon:
+                    continue
+                resolved_map[raw_s] = (new_canon, new_qid, wdesc or "", aid)
+
     def resolve_graph_spec(
         self,
         spec: Dict[str, Any],
@@ -2407,6 +2547,8 @@ class TypeResolver:
             wl = str(row_w.get("wikidata_label") or "").strip()
             if wl and not str(authority.get(ckey, {}).get("wikidata_label") or "").strip():
                 authority.setdefault(ckey, {})["wikidata_label"] = wl
+
+        self._reconcile_e55_wikidata_from_babelnet(authority, resolved_map, working)
 
         for node in nodes:
             if not isinstance(node, dict):

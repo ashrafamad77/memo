@@ -43,6 +43,47 @@ def _activity_name_implies_work_session(aname: str) -> bool:
     return any(h in n for h in _WORK_SESSION_NAME_FRAGMENTS)
 
 
+def _activity_name_implies_war_or_conflict(aname: str) -> bool:
+    """True when the activity label is about war/conflict, not a social/tourist visit."""
+    n = (aname or "").replace("_", " ").lower()
+    return any(
+        h in n
+        for h in (
+            "war",
+            "guerre",
+            "conflict",
+            "conflit",
+            "armed",
+            "battle",
+            "invasion",
+            "bombing",
+            "military attack",
+            "bombard",
+        )
+    )
+
+
+def _activity_name_implies_trip_planning_focus(aname: str) -> bool:
+    """Planning / scheduling a trip — not the same as Visit (being at the place)."""
+    if _activity_name_implies_war_or_conflict(aname):
+        return False
+    n = (aname or "").replace("_", " ").lower()
+    return any(
+        h in n
+        for h in (
+            "planif",
+            "planning",
+            "plan a",
+            "planned",
+            "schedule",
+            "prepare trip",
+            "prepare voyage",
+            "book trip",
+            "book flight",
+        )
+    ) or ("plan" in n and "voyage" in n)
+
+
 def _merge_babelfy_e55_into_spec_grounding(
     spec: Dict[str, Any],
     journal_text: str,
@@ -633,9 +674,15 @@ class GraphWriter:
                 continue
             if nid in activities_with_p2:
                 continue
-            # Activity at a place → Visit unless the name clearly denotes work/coding/etc.
             aname = _get_node_name(nid)
-            if nid in activities_with_place and not _activity_name_implies_work_session(aname):
+            # Do not default "activity + P7 to country" to Visit when the label is war or trip planning.
+            if _activity_name_implies_work_session(aname):
+                fallback_type = "WorkSession"
+            elif _activity_name_implies_war_or_conflict(aname):
+                fallback_type = "ArmedConflict"
+            elif _activity_name_implies_trip_planning_focus(aname):
+                fallback_type = "Planning"
+            elif nid in activities_with_place and not _activity_name_implies_work_session(aname):
                 fallback_type = "Visit"
             else:
                 fallback_type = "WorkSession"

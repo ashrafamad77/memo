@@ -58,6 +58,18 @@ SEED_VOCAB: Dict[str, _VocabEntry] = {
     "Cooking":      {"wikidata_id": None,        "description": "preparing food"},
     "Cleaning":     {"wikidata_id": None,        "description": "removing dirt or disorder"},
     "Errand":       {"wikidata_id": None,        "description": "short trip to perform a task"},
+    # Used by graph_writer fallback when an activity is clearly conflict/war, not a visit.
+    "ArmedConflict": {
+        "wikidata_id": "Q350604",
+        "wikidata_label": "armed conflict",
+        "description": "conflict including violence where at least one of the acting groups is a state",
+    },
+    # Trip / intent planning (distinct from being physically at a place = Visit).
+    "Planning": {
+        "wikidata_id": "Q7201355",
+        "wikidata_label": "cognitive planning",
+        "description": "thought process",
+    },
 
     # ── Place types (E53_Place types) ─────────────────────────────────────────
     "Library":       {"wikidata_id": "Q7075",    "description": "place for reading and borrowing books"},
