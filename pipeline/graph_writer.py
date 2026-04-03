@@ -633,6 +633,8 @@ class GraphWriter:
             Optional[str],
             Optional[str],
             Optional[str],
+            Optional[str],
+            Optional[str],
         ]:
             np = node_props if isinstance(node_props, dict) else {}
             wid = str(np.get("wikidata_id", "") or "").strip()
@@ -644,6 +646,8 @@ class GraphWriter:
             bg = str(np.get("babel_gloss", "") or "").strip()
             bru = str(np.get("babelnet_rdf_url", "") or "").strip()
             dpu = str(np.get("dbpedia_url", "") or "").strip()
+            wrel = str(np.get("wikidata_related_id", "") or "").strip()
+            wrdesc = str(np.get("wikidata_related_description", "") or "").strip()
             am = auth_meta.get(tname)
             if isinstance(am, dict):
                 if not wid:
@@ -664,6 +668,10 @@ class GraphWriter:
                     bru = str(am.get("babelnet_rdf_url", "") or "").strip()
                 if not dpu:
                     dpu = str(am.get("dbpedia_url", "") or "").strip()
+                if not wrel:
+                    wrel = str(am.get("wikidata_related_id", "") or "").strip()
+                if not wrdesc:
+                    wrdesc = str(am.get("wikidata_related_description", "") or "").strip()
             if wid:
                 aid = ""
             return (
@@ -676,6 +684,8 @@ class GraphWriter:
                 bg if bg else None,
                 bru if bru else None,
                 dpu if dpu else None,
+                wrel if wrel else None,
+                wrdesc if wrdesc else None,
             )
 
         def _merge_e55_type(
@@ -691,6 +701,8 @@ class GraphWriter:
                 bg_p,
                 bru_p,
                 dpu_p,
+                wrel_p,
+                wrdesc_p,
             ) = _e55_merge_props(tname, node_props)
             tx_inner.run(
                 """
@@ -698,7 +710,8 @@ class GraphWriter:
                 ON CREATE SET n.wikidata_id = $wid, n.description = $desc, n.aat_id = $aid,
                     n.babel_synset_id = $bn, n.wordnet_synset_id = $wn,
                     n.babelnet_sources_json = $bj,
-                    n.babel_gloss = $bg, n.babelnet_rdf_url = $bru, n.dbpedia_url = $dpu
+                    n.babel_gloss = $bg, n.babelnet_rdf_url = $bru, n.dbpedia_url = $dpu,
+                    n.wikidata_related_id = $wrel, n.wikidata_related_description = $wrdesc
                 SET n.wikidata_id = coalesce($wid, n.wikidata_id),
                     n.description = CASE
                         WHEN $desc IS NOT NULL AND $desc <> '' THEN $desc
@@ -714,7 +727,12 @@ class GraphWriter:
                     n.babelnet_sources_json = coalesce($bj, n.babelnet_sources_json),
                     n.babel_gloss = coalesce($bg, n.babel_gloss),
                     n.babelnet_rdf_url = coalesce($bru, n.babelnet_rdf_url),
-                    n.dbpedia_url = coalesce($dpu, n.dbpedia_url)
+                    n.dbpedia_url = coalesce($dpu, n.dbpedia_url),
+                    n.wikidata_related_id = coalesce($wrel, n.wikidata_related_id),
+                    n.wikidata_related_description = CASE
+                        WHEN $wrdesc IS NOT NULL AND $wrdesc <> '' THEN $wrdesc
+                        ELSE n.wikidata_related_description
+                    END
                 """,
                 name=tname,
                 wid=wid_p,
@@ -726,6 +744,8 @@ class GraphWriter:
                 bg=bg_p,
                 bru=bru_p,
                 dpu=dpu_p,
+                wrel=wrel_p,
+                wrdesc=wrdesc_p,
             )
 
         short_name = raw_text[:60].strip()

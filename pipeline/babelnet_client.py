@@ -275,6 +275,40 @@ def bundle_from_wikidata_qid(
     return bundle
 
 
+def e55_babel_fields_from_wikidata_qid(
+    qid: str,
+    *,
+    api_key: str,
+    target_lang: str = "EN",
+    timeout: Optional[float] = None,
+) -> Dict[str, str]:
+    """Map a Wikidata QID to E55 authority string fields (synset, gloss, JSON, URLs).
+
+    Used when ``wikidata_id`` is known (e.g. from seed) but Babelfy never ran for that type.
+    """
+    bundle = bundle_from_wikidata_qid(
+        qid, api_key=api_key, target_lang=target_lang, timeout=timeout
+    )
+    sid = str(bundle.get("synset_id") or "").strip()
+    if not sid.startswith("bn:"):
+        return {}
+    wn_ids = bundle.get("wordnet_ids") or []
+    wn0 = ""
+    if isinstance(wn_ids, list) and wn_ids:
+        wn0 = str(wn_ids[0]).strip()
+    gloss = str(bundle.get("gloss") or "").strip()
+    out: Dict[str, str] = {
+        "babel_synset_id": sid,
+        "babel_gloss": gloss,
+        "babelnet_sources_json": bundle_to_sources_json(bundle),
+        "babelnet_rdf_url": str(bundle.get("babelnet_rdf_url") or "").strip(),
+        "dbpedia_url": str(bundle.get("dbpedia_url") or "").strip(),
+    }
+    if wn0:
+        out["wordnet_synset_id"] = wn0
+    return out
+
+
 def get_senses(
     lemma: str,
     *,

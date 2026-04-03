@@ -3,8 +3,9 @@
 Two purposes:
 1. Prompt guidance — the ModelingAgent is shown these names as preferred choices,
    which prevents it from inventing ad-hoc compounds like "Urbanvisit" or "Deepwork".
-2. Zero-cost grounding — types with a wikidata_id skip Babelfy E55 grounding entirely;
-   the mapping is applied directly in _resolve_one (TypeResolver).
+2. Zero-cost Wikidata — types with a wikidata_id in the seed get that QID directly in _resolve_one
+   (no Babelfy search for WD). BabelNet synset metadata can still be filled via Wikidata→BabelNet
+   when ``MEMO_E55_BABEL_FROM_WIKIDATA`` is on.
 
 For types without a wikidata_id the name is still canonical (the prompt uses it), and
 the type will be grounded once on first occurrence and cached in Neo4j forever.
@@ -44,7 +45,8 @@ SEED_VOCAB: Dict[str, _VocabEntry] = {
     "Conversation": {"wikidata_id": None,        "description": "interactive spoken communication between people"},
     "Shopping":     {"wikidata_id": None,        "description": "browsing and purchasing goods"},
     "Reflection":   {"wikidata_id": None,        "description": "introspective thought"},
-    "WorkSession":  {"wikidata_id": None,        "description": "focused work period"},
+    # Approx. "work session" / focused work block (Wikidata has no dedicated everyday lemma).
+    "WorkSession":  {"wikidata_id": "Q31194416", "description": "period of work; focused work session"},
     "Lecture":      {"wikidata_id": None,        "description": "oral presentation for teaching"},
     "Walk":         {"wikidata_id": None,        "description": "act of walking"},
     "PhoneCall":    {"wikidata_id": None,        "description": "telephone conversation"},
@@ -189,5 +191,5 @@ def seed_type_names() -> List[str]:
 
 
 def grounded_seed_names() -> List[str]:
-    """Names that have a wikidata_id — these skip Babelfy E55 grounding entirely."""
+    """Names that have a seeded wikidata_id (applied directly; no Babelfy WD search for them)."""
     return [name for name, entry in SEED_VOCAB.items() if entry.get("wikidata_id")]

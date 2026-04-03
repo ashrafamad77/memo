@@ -107,3 +107,17 @@ MEMO_WD_VECTOR_INSTANCEOF_E55 = os.getenv("MEMO_WD_VECTOR_INSTANCEOF_E55", "").s
 MEMO_WD_VECTOR_INSTANCEOF_E53 = os.getenv("MEMO_WD_VECTOR_INSTANCEOF_E53", "").strip()
 MEMO_WD_VECTOR_INSTANCEOF_E21 = os.getenv("MEMO_WD_VECTOR_INSTANCEOF_E21", "").strip()
 MEMO_WD_VECTOR_INSTANCEOF_E74 = os.getenv("MEMO_WD_VECTOR_INSTANCEOF_E74", "").strip()
+
+# E55 Tier-A fallback: no WD id + no candidates from primary path → one LLM JSON (paraphrases +
+# broader concepts) + wbsearchentities; may set wikidata_related_* only. Seed types are allowed
+# unless listed in MEMO_E55_FALLBACK_DENY_TYPES (default skips only very ambiguous lemmas).
+MEMO_E55_FALLBACK = os.getenv("MEMO_E55_FALLBACK", "1").strip().lower() in ("1", "true", "yes")
+MEMO_E55_FALLBACK_MAX_QUERIES = int(os.getenv("MEMO_E55_FALLBACK_MAX_QUERIES", "6"))
+MEMO_E55_FALLBACK_RELATED_MIN_EMBED = float(os.getenv("MEMO_E55_FALLBACK_RELATED_MIN_EMBED", "0.22"))
+MEMO_E55_FALLBACK_DENY_TYPES = os.getenv("MEMO_E55_FALLBACK_DENY_TYPES", "Visit,Meeting").strip()
+# When an E55 has wikidata_id but no BabelNet synset (e.g. seed QID path), map WD → BabelNet via API.
+MEMO_E55_BABEL_FROM_WIKIDATA = os.getenv("MEMO_E55_BABEL_FROM_WIKIDATA", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)

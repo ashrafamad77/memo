@@ -71,6 +71,40 @@ _JOURNAL_STOPWORDS = frozenset(
 )
 
 
+def _enrich_e55_authority_babel_from_wikidata(authority: Dict[str, Dict[str, str]]) -> None:
+    """Fill BabelNet synset metadata from ``wikidata_id`` when Babelfy did not run (e.g. seed QIDs)."""
+    try:
+        from config import BABELFY_API_KEY, MEMO_E55_BABEL_FROM_WIKIDATA
+    except ImportError:
+        BABELFY_API_KEY = os.getenv("BABELFY_API_KEY", "")
+        MEMO_E55_BABEL_FROM_WIKIDATA = os.getenv("MEMO_E55_BABEL_FROM_WIKIDATA", "1").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+    if not MEMO_E55_BABEL_FROM_WIKIDATA:
+        return
+    key = (BABELFY_API_KEY or "").strip()
+    if not key:
+        return
+    try:
+        from .babelnet_client import e55_babel_fields_from_wikidata_qid
+    except ImportError:
+        return
+    for row in authority.values():
+        if not isinstance(row, dict):
+            continue
+        wid = str(row.get("wikidata_id") or "").strip().upper()
+        if not re.match(r"^Q\d+$", wid):
+            continue
+        if str(row.get("babel_synset_id") or "").strip().startswith("bn:"):
+            continue
+        patch = e55_babel_fields_from_wikidata_qid(wid, api_key=key)
+        if not patch:
+            continue
+        row.update(patch)
+
+
 def _forbidden_roots_for_category(category: str) -> Tuple[str, ...]:
     """Wikidata Q-ids that must not appear in P31/P279* closure for this journal-tag category."""
     cat = _normalize_context_category(category)
@@ -2185,7 +2219,8 @@ class TypeResolver:
                 aid = str(v.get("aat_id") or "").strip()
                 desc_p = str(v.get("description") or "").strip()
                 bn = str(v.get("babel_synset_id") or "").strip()
-                if not q and not aid and not bn.startswith("bn:"):
+                wrel = str(v.get("wikidata_related_id") or "").strip()
+                if not q and not aid and not bn.startswith("bn:") and not wrel:
                     continue
                 row: Dict[str, str] = {}
                 if q:
@@ -2211,6 +2246,11 @@ class TypeResolver:
                 dpu = str(v.get("dbpedia_url") or "").strip()
                 if dpu:
                     row["dbpedia_url"] = dpu
+                if wrel and re.match(r"^Q\d+$", wrel.upper()):
+                    row["wikidata_related_id"] = wrel.upper()
+                wrd = str(v.get("wikidata_related_description") or "").strip()
+                if wrd:
+                    row["wikidata_related_description"] = wrd
                 authority[str(k)] = row
         for canon, wid, desc, aid in resolved_map.values():
             if not wid and not aid and not desc:
@@ -2251,6 +2291,12 @@ class TypeResolver:
                 dpu = str(row_bn.get("dbpedia_url") or "").strip()
                 if dpu:
                     am["dbpedia_url"] = dpu
+                wrel = str(row_bn.get("wikidata_related_id") or "").strip().upper()
+                if wrel and re.match(r"^Q\d+$", wrel):
+                    am["wikidata_related_id"] = wrel
+                wrdsc = str(row_bn.get("wikidata_related_description") or "").strip()
+                if wrdsc:
+                    am["wikidata_related_description"] = wrdsc
 
         for node in nodes:
             if not isinstance(node, dict):
@@ -2296,6 +2342,12 @@ class TypeResolver:
                         dbp = str(row_g.get("dbpedia_url") or "").strip()
                         if dbp:
                             props["dbpedia_url"] = dbp
+                        wrel_g = str(row_g.get("wikidata_related_id") or "").strip().upper()
+                        if wrel_g and re.match(r"^Q\d+$", wrel_g):
+                            props["wikidata_related_id"] = wrel_g
+                        wrdg = str(row_g.get("wikidata_related_description") or "").strip()
+                        if wrdg:
+                            props["wikidata_related_description"] = wrdg
             types = node.get("types")
             if isinstance(types, list):
                 new_types: List[str] = []
@@ -2336,6 +2388,39 @@ class TypeResolver:
                     "aat_id": qa,
                     "description": str(props.get("description") or ""),
                 }
+
+        _enrich_e55_authority_babel_from_wikidata(authority)
+
+        for node in nodes:
+            if not isinstance(node, dict) or node.get("label") != "E55_Type":
+                continue
+            nm = str(node.get("name") or "").strip()
+            if not nm:
+                continue
+            am = authority.get(nm)
+            if not isinstance(am, dict):
+                continue
+            props = node.get("properties")
+            if not isinstance(props, dict):
+                continue
+            bn_am = str(am.get("babel_synset_id") or "").strip()
+            if bn_am.startswith("bn:") and not str(props.get("babel_synset_id") or "").strip():
+                props["babel_synset_id"] = bn_am
+            wn_am = str(am.get("wordnet_synset_id") or "").strip()
+            if wn_am and not str(props.get("wordnet_synset_id") or "").strip():
+                props["wordnet_synset_id"] = wn_am
+            bj_am = str(am.get("babelnet_sources_json") or "").strip()
+            if bj_am and not str(props.get("babelnet_sources_json") or "").strip():
+                props["babelnet_sources_json"] = bj_am
+            bg_am = str(am.get("babel_gloss") or "").strip()
+            if bg_am and not str(props.get("babel_gloss") or "").strip():
+                props["babel_gloss"] = bg_am
+            bru_am = str(am.get("babelnet_rdf_url") or "").strip()
+            if bru_am and not str(props.get("babelnet_rdf_url") or "").strip():
+                props["babelnet_rdf_url"] = bru_am
+            dpu_am = str(am.get("dbpedia_url") or "").strip()
+            if dpu_am and not str(props.get("dbpedia_url") or "").strip():
+                props["dbpedia_url"] = dpu_am
 
         spec["_e55_authority_meta"] = authority
         _strip_resolver_fields_from_spec(spec)

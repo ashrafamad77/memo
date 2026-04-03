@@ -285,6 +285,7 @@ class AgenticRunner:
                     MEMO_WD_VECTOR_INSTANCEOF_E55,
                     MEMO_WD_VECTOR_INSTANCEOF_E74,
                     MEMO_WD_VECTOR_ALLOW_PUBLIC,
+                    MEMO_E55_FALLBACK,
                 )
                 babelfy_key = (BABELFY_API_KEY or "").strip()
                 wd_secret = (MEMO_WD_VECTOR_API_SECRET or "").strip()
@@ -318,6 +319,11 @@ class AgenticRunner:
                 MEMO_WD_VECTOR_INSTANCEOF_E21 = os.getenv("MEMO_WD_VECTOR_INSTANCEOF_E21", "").strip()
                 MEMO_WD_VECTOR_INSTANCEOF_E74 = os.getenv("MEMO_WD_VECTOR_INSTANCEOF_E74", "").strip()
                 MEMO_WD_VECTOR_ALLOW_PUBLIC = os.getenv("MEMO_WD_VECTOR_ALLOW_PUBLIC", "0").strip().lower() in (
+                    "1",
+                    "true",
+                    "yes",
+                )
+                MEMO_E55_FALLBACK = os.getenv("MEMO_E55_FALLBACK", "1").strip().lower() in (
                     "1",
                     "true",
                     "yes",
@@ -660,6 +666,16 @@ class AgenticRunner:
                         "dbpedia_url": dbpedia,
                         "babelnet_sources_json": sources_json,
                     }
+
+            if e55_grounding_rows and MEMO_E55_FALLBACK:
+                from .e55_grounding_fallback import apply_e55_tier_a_fallback
+
+                for _e55_name in list(e55_grounding_rows.keys()):
+                    e55_grounding_rows[_e55_name] = apply_e55_tier_a_fallback(
+                        _e55_name,
+                        journal_text,
+                        e55_grounding_rows[_e55_name],
+                    )
 
             # ── TypeResolver: normalise types + apply E55 grounding ──────────────────
             if self.type_resolver:
