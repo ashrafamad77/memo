@@ -171,11 +171,12 @@ function JournalProcessingBubble({ state }: { state: JournalProcessingState }) {
   const nextStageIndex = PIPELINE_TRACK.findIndex((s) => pct < s.minPct);
 
   return (
-    <div className="relative overflow-hidden rounded-2xl border border-indigo-200/60 bg-gradient-to-br from-indigo-50/95 via-white to-violet-50/90 p-4 shadow-lg shadow-indigo-500/10 ring-1 ring-indigo-500/5 dark:border-indigo-800/50 dark:from-indigo-950/80 dark:via-zinc-900 dark:to-violet-950/50 dark:shadow-indigo-950/30 dark:ring-indigo-400/10">
+    <div className="relative w-full min-w-0 overflow-hidden rounded-2xl border border-indigo-200/60 bg-gradient-to-br from-indigo-50/95 via-white to-violet-50/90 p-4 shadow-lg shadow-indigo-500/10 ring-1 ring-indigo-500/5 sm:p-5 dark:border-indigo-800/50 dark:from-indigo-950/80 dark:via-zinc-900 dark:to-violet-950/50 dark:shadow-indigo-950/30 dark:ring-indigo-400/10">
       <div className="pointer-events-none absolute -right-8 -top-8 h-32 w-32 rounded-full bg-indigo-400/10 blur-2xl dark:bg-indigo-500/15" />
       <div className="pointer-events-none absolute -bottom-6 -left-6 h-24 w-24 rounded-full bg-violet-400/10 blur-2xl dark:bg-violet-500/10" />
 
-      <div className="relative flex flex-col gap-4 sm:flex-row sm:items-start sm:gap-5">
+      {/* Ring + status share one row; cards below use full width so nothing sits in an empty column beside the ring. */}
+      <div className="relative flex flex-col gap-4 sm:flex-row sm:items-center sm:gap-6">
         <div className="mx-auto flex shrink-0 flex-col items-center sm:mx-0">
           <div className="relative h-[132px] w-[132px]">
             <svg
@@ -213,24 +214,25 @@ function JournalProcessingBubble({ state }: { state: JournalProcessingState }) {
           </div>
         </div>
 
-        <div className="min-w-0 flex-1 space-y-3">
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-600/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-indigo-800 dark:bg-indigo-400/15 dark:text-indigo-200">
-                <span className="relative flex h-2 w-2">
-                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-indigo-400 opacity-60" />
-                  <span className="relative inline-flex h-2 w-2 rounded-full bg-indigo-600 dark:bg-indigo-400" />
-                </span>
-                Processing your entry
+        <div className="min-w-0 flex-1 text-center sm:text-left">
+          <div className="flex flex-wrap items-center justify-center gap-2 sm:justify-start">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-600/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-indigo-800 dark:bg-indigo-400/15 dark:text-indigo-200">
+              <span className="relative flex h-2 w-2">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-indigo-400 opacity-60" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-indigo-600 dark:bg-indigo-400" />
               </span>
-            </div>
-            <p className="mt-2 text-base font-semibold leading-snug text-zinc-900 dark:text-zinc-50">
-              {state.label || "Working on your journal…"}
-            </p>
+              Processing your entry
+            </span>
           </div>
+          <p className="mt-2 text-base font-semibold leading-snug text-zinc-900 dark:text-zinc-50">
+            {state.label || "Working on your journal…"}
+          </p>
+        </div>
+      </div>
 
+      <div className="relative mt-4 w-full min-w-0 space-y-3">
           {showQuote ? (
-            <div className="rounded-xl border border-zinc-200/80 bg-white/70 p-3 shadow-sm dark:border-zinc-600/60 dark:bg-zinc-950/50">
+            <div className="w-full rounded-xl border border-zinc-200/80 bg-white/70 p-3 shadow-sm sm:p-4 dark:border-zinc-600/60 dark:bg-zinc-950/50">
               <p className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
                 Your entry
               </p>
@@ -259,11 +261,11 @@ function JournalProcessingBubble({ state }: { state: JournalProcessingState }) {
             </div>
           ) : null}
 
-          <div className="rounded-xl border border-indigo-200/50 bg-indigo-500/[0.06] p-3 dark:border-indigo-800/40 dark:bg-indigo-950/30">
+          <div className="w-full rounded-xl border border-indigo-200/50 bg-indigo-500/[0.06] p-3 sm:p-4 dark:border-indigo-800/40 dark:bg-indigo-950/30">
             <p className="text-[10px] font-semibold uppercase tracking-wide text-indigo-700 dark:text-indigo-300">
               Pipeline stages
             </p>
-            <div className="mt-2 flex flex-wrap gap-1.5">
+            <div className="mt-2 flex flex-wrap gap-2">
               {PIPELINE_TRACK.map((s, i) => {
                 const done = pct >= s.minPct;
                 const pulse = nextStageIndex >= 0 && nextStageIndex === i;
@@ -293,7 +295,7 @@ function JournalProcessingBubble({ state }: { state: JournalProcessingState }) {
             pv.people?.length ||
             pv.activities?.length ||
             pv.types?.length) ? (
-            <div className="space-y-1.5">
+            <div className="w-full space-y-1.5">
               <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
                 Live graph preview
               </p>
@@ -341,7 +343,7 @@ function JournalProcessingBubble({ state }: { state: JournalProcessingState }) {
           ) : null}
 
           {state.log.length > 0 ? (
-            <div className="rounded-xl border border-zinc-200/70 bg-white/60 p-3 dark:border-zinc-700/80 dark:bg-zinc-950/40">
+            <div className="w-full rounded-xl border border-zinc-200/70 bg-white/60 p-3 sm:p-4 dark:border-zinc-700/80 dark:bg-zinc-950/40">
               <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
                 Activity
               </p>
@@ -355,7 +357,7 @@ function JournalProcessingBubble({ state }: { state: JournalProcessingState }) {
               </ul>
             </div>
           ) : showTips ? (
-            <div className="rounded-xl border border-violet-200/50 bg-gradient-to-br from-violet-50/90 to-indigo-50/50 p-3 dark:border-violet-800/40 dark:from-violet-950/40 dark:to-indigo-950/30">
+            <div className="w-full rounded-xl border border-violet-200/50 bg-gradient-to-br from-violet-50/90 to-indigo-50/50 p-3 sm:p-4 dark:border-violet-800/40 dark:from-violet-950/40 dark:to-indigo-950/30">
               <p className="text-[10px] font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-300">
                 What’s happening
               </p>
@@ -364,7 +366,6 @@ function JournalProcessingBubble({ state }: { state: JournalProcessingState }) {
               </p>
             </div>
           ) : null}
-        </div>
       </div>
     </div>
   );
@@ -843,7 +844,7 @@ export function ChatPanel() {
                   ? "ml-auto max-w-[95%] rounded-2xl border border-indigo-200/50 bg-indigo-50/90 px-3 py-2 text-sm text-indigo-950 dark:border-indigo-800/40 dark:bg-indigo-950/35 dark:text-indigo-50"
                   : `rounded-2xl border text-sm ${
                       m.processing
-                        ? "max-w-[min(95%,520px)] w-full border-transparent bg-transparent p-0 shadow-none"
+                        ? "w-full max-w-[min(95%,56rem)] border-transparent bg-transparent p-0 shadow-none"
                         : `max-w-[95%] border px-3 py-2 ${
                             m.hintFollowUp
                               ? "border-indigo-500/35 bg-gradient-to-br from-slate-900/90 to-indigo-950/50 text-slate-100 shadow-md shadow-indigo-950/20"
