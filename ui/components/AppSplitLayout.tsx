@@ -55,10 +55,10 @@ function MobileBottomNav({
         onClick={() => onSection(id)}
         aria-current={active ? "page" : undefined}
         className={[
-          "flex flex-1 flex-col items-center justify-center gap-1 rounded-xl py-2 text-[11px] font-semibold transition-colors outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/50 dark:focus-visible:ring-indigo-400/40",
+          "flex flex-1 flex-col items-center justify-center gap-1 rounded-xl py-2 text-[11px] font-semibold transition-colors outline-none focus-visible:ring-2 focus-visible:ring-lt-accentRing/80 dark:focus-visible:ring-zinc-500/55 nebula:focus-visible:ring-cyan-400/50",
           active
-            ? "bg-indigo-100 text-indigo-900 dark:bg-indigo-950/50 dark:text-indigo-100"
-            : "text-zinc-500 hover:bg-zinc-200/80 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100",
+            ? "bg-lt-accentSoft text-lt-accent dark:bg-zinc-800 dark:text-zinc-100 nebula:bg-cyan-950/50 nebula:text-cyan-50 nebula:shadow-neb-glow-cyan"
+            : "text-lt-textMuted hover:bg-lt-muted/80 hover:text-lt-text dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100 nebula:text-fuchsia-200/70 nebula:hover:bg-neb-haze/80 nebula:hover:text-cyan-50",
         ].join(" ")}
       >
         {id === "journal" ? (
@@ -99,7 +99,7 @@ function MobileBottomNav({
 
   return (
     <nav
-      className="flex shrink-0 gap-1.5 border-t border-zinc-200 bg-zinc-50/95 px-2 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] backdrop-blur-sm dark:border-zinc-800 dark:bg-zinc-950/95"
+      className="flex shrink-0 gap-1.5 border-t border-lt-border bg-lt-surface/90 px-2 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] backdrop-blur-md dark:border-zinc-800 dark:bg-zinc-950/95 nebula:border-cyan-500/25 nebula:bg-neb-panel/75 nebula:shadow-[0_-8px_32px_-12px_rgba(168,85,246,0.35)] nebula:backdrop-blur-xl"
       aria-label="Primary"
     >
       {item("journal", "Journal")}
@@ -155,17 +155,17 @@ export function AppSplitLayout() {
         maxSize={55}
         className="min-h-0 min-w-0"
       >
-        <section className="flex h-full min-h-0 flex-col border-r border-zinc-200 dark:border-zinc-800">
+        <section className="flex h-full min-h-0 flex-col border-r border-lt-border dark:border-zinc-800 nebula:border-fuchsia-500/20">
           <ChatPanel />
         </section>
       </Panel>
       <PanelResizeHandle
         aria-label="Resize chat and dashboard panels"
-        className="group relative flex w-2 shrink-0 cursor-col-resize items-stretch justify-center bg-zinc-200/40 px-3 outline-none transition-colors hover:bg-indigo-400/30 focus-visible:bg-indigo-400/40 focus-visible:ring-2 focus-visible:ring-indigo-500/50 dark:bg-zinc-800/60 dark:hover:bg-indigo-500/25 dark:focus-visible:ring-indigo-400/40"
+        className="group relative flex w-2 shrink-0 cursor-col-resize items-stretch justify-center bg-transparent px-3 outline-none hover:bg-transparent focus-visible:bg-transparent focus-visible:ring-0 dark:bg-zinc-950 dark:hover:bg-zinc-950 dark:focus-visible:bg-zinc-950 dark:focus-visible:ring-0 nebula:bg-transparent nebula:hover:bg-transparent nebula:focus-visible:bg-transparent nebula:focus-visible:ring-0"
       >
         <span
           aria-hidden
-          className="pointer-events-none my-auto h-12 w-1 rounded-full bg-zinc-400/90 group-hover:bg-indigo-500/80 dark:bg-zinc-500 dark:group-hover:bg-indigo-400/70"
+          className="pointer-events-none my-auto h-12 w-1 rounded-full bg-transparent group-hover:bg-transparent dark:bg-zinc-950 dark:group-hover:bg-zinc-950 nebula:bg-transparent nebula:group-hover:bg-transparent"
         />
       </PanelResizeHandle>
       <Panel defaultSize={100 - chatSize} minSize={40} className="min-h-0 min-w-0">

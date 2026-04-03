@@ -14,8 +14,11 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className="dark">
-      <body className="min-h-dvh min-w-0 max-w-full overflow-hidden">{children}</body>
+    <html lang="en" className="dark" suppressHydrationWarning>
+      <body className="relative min-h-dvh min-w-0 max-w-full overflow-hidden">
+        <div className="relative z-0 min-h-dvh min-h-[100dvh] min-w-0">{children}</div>
+        <div className="memo-nebula-veil" aria-hidden />
+      </body>
     </html>
   );
 }

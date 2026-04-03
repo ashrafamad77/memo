@@ -46,13 +46,13 @@ function PersonSignalTimeline({
   const maxTot = Math.max(1, ...days.map((d) => d.positive + d.negative + d.neutral));
   return (
     <div className="mt-3">
-      <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2 text-[10px] text-zinc-500 dark:text-zinc-400">
-        <span className="font-medium text-zinc-600 dark:text-zinc-300">Signals by day</span>
+      <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2 text-[10px] text-lt-textMuted dark:text-zinc-400">
+        <span className="font-medium text-lt-textMuted dark:text-zinc-300">Signals by day</span>
         <span className="font-mono text-zinc-400">
           {days[0]?.day?.slice(5)} → {days[days.length - 1]?.day?.slice(5)}
         </span>
       </div>
-      <div className="flex gap-px overflow-x-auto rounded-xl border border-zinc-200/80 bg-zinc-100/80 p-1.5 dark:border-zinc-700/80 dark:bg-zinc-900/50">
+      <div className="flex gap-px overflow-x-auto rounded-xl border border-lt-border/80 bg-zinc-100/80 p-1.5 dark:border-zinc-700/80 dark:bg-zinc-900/50">
         {days.map((d) => {
           const tot = d.positive + d.negative + d.neutral;
           const scale = tot > 0 ? Math.max(0.35, tot / maxTot) : 0.12;
@@ -124,13 +124,13 @@ function LedgerJournalContent({
   if (!data) return null;
   const d = data as Record<string, unknown>;
   return (
-    <div className="mt-3 rounded-xl border border-zinc-200 bg-zinc-50/90 p-3 text-xs dark:border-zinc-700 dark:bg-zinc-900/40">
+    <div className="mt-3 rounded-xl border border-lt-border bg-zinc-50/90 p-3 text-xs dark:border-zinc-700 dark:bg-zinc-900/40">
       <div className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">Step 3 · Full journal entry (E73)</div>
       <div className="mt-1 flex flex-wrap gap-2 font-mono text-[10px] text-zinc-500">
         <span>{String(d.day || "")}</span>
         <span>{String(d.input_time || "")}</span>
       </div>
-      <div className="mt-2 max-h-56 overflow-y-auto whitespace-pre-wrap text-sm leading-relaxed text-zinc-800 dark:text-zinc-100">
+      <div className="mt-2 max-h-56 overflow-y-auto whitespace-pre-wrap text-sm leading-relaxed text-lt-textSecondary dark:text-zinc-100">
         {String(d.text || "")}
       </div>
     </div>
@@ -189,10 +189,10 @@ function ImpactEventLedgerPanel({
   }
 
   if (loading) {
-    return <div className="animate-pulse border-t border-zinc-200 pt-3 text-xs text-zinc-500 dark:border-zinc-700">Loading activity…</div>;
+    return <div className="animate-pulse border-t border-lt-border pt-3 text-xs text-lt-textMuted dark:border-zinc-700">Loading activity…</div>;
   }
   if (error) {
-    return <div className="border-t border-zinc-200 pt-3 text-xs text-rose-600 dark:text-rose-400">{error}</div>;
+    return <div className="border-t border-lt-border pt-3 text-xs text-rose-600 dark:text-rose-400">{error}</div>;
   }
   if (!data) return null;
 
@@ -205,13 +205,13 @@ function ImpactEventLedgerPanel({
   const day = String(d.day || "").trim();
 
   return (
-    <div className="space-y-3 border-t border-zinc-200 pt-3 text-xs text-zinc-600 dark:border-zinc-700 dark:text-zinc-300">
+    <div className="space-y-3 border-t border-lt-border pt-3 text-xs text-lt-textMuted dark:border-zinc-700 dark:text-zinc-300">
       <div>
         <div className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">Step 2 · Modeled activity (E7)</div>
-        <div className="mt-1 text-base font-semibold leading-snug text-zinc-900 dark:text-zinc-50">{title}</div>
+        <div className="mt-1 text-base font-semibold leading-snug text-lt-text dark:text-zinc-50">{title}</div>
         {eventType ? (
           <div className="mt-1 text-[11px] text-zinc-500">
-            Type · <span className="text-zinc-700 dark:text-zinc-300">{eventType}</span>
+            Type · <span className="text-lt-textSecondary dark:text-zinc-300">{eventType}</span>
           </div>
         ) : null}
         <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 font-mono text-[10px] text-zinc-500">
@@ -229,7 +229,7 @@ function ImpactEventLedgerPanel({
             className={[
               "rounded-lg border px-3 py-1.5 text-[11px] font-semibold transition-colors",
               journalVisible
-                ? "border-zinc-400 bg-zinc-200/80 text-zinc-900 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-100"
+                ? "border-lt-borderStrong bg-lt-accentSoft/90 text-lt-accent dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-100"
                 : "border-sky-300/80 bg-sky-500/10 text-sky-900 hover:bg-sky-500/15 dark:border-sky-700 dark:text-sky-200 dark:hover:bg-sky-500/20",
             ].join(" ")}
           >
@@ -260,7 +260,7 @@ function TabButton({
       onClick={onClick}
       className={[
         "rounded-xl px-3 py-2 text-sm font-semibold",
-        active ? "bg-zinc-200 dark:bg-zinc-700 text-zinc-900 dark:text-white" : "bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700",
+        active ? "bg-lt-accentSoft text-lt-accent dark:bg-zinc-700 dark:text-white" : "bg-lt-muted dark:bg-zinc-800 text-lt-textMuted dark:text-zinc-300 hover:bg-lt-accentSoft/90 dark:hover:bg-zinc-700",
       ].join(" ")}
     >
       {label}
@@ -474,20 +474,20 @@ export function DashboardTabs() {
     switch (tab) {
       case "Inbox":
         return (
-          <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-5">
+          <div className="rounded-2xl border border-lt-border dark:border-zinc-800 bg-lt-surface dark:bg-zinc-950 p-5">
             <div className="text-sm font-semibold">Needs review</div>
             <InboxQueue />
           </div>
         );
       case "Timeline":
         return (
-          <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-5">
+          <div className="rounded-2xl border border-lt-border dark:border-zinc-800 bg-lt-surface dark:bg-zinc-950 p-5">
             <div className="text-sm font-semibold">Entries</div>
             <div className="mt-3 space-y-3">
               {timeline.map((e) => (
-                <div key={e.id} className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/40 p-3">
+                <div key={e.id} className="rounded-xl border border-lt-border dark:border-zinc-800 bg-lt-raised dark:bg-zinc-900/40 p-3">
                   <div className="flex items-center justify-between gap-3">
-                    <div className="text-xs font-semibold text-zinc-700 dark:text-zinc-200">
+                    <div className="text-xs font-semibold text-lt-textSecondary dark:text-zinc-200">
                       {e.day || "—"}
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
@@ -524,7 +524,7 @@ export function DashboardTabs() {
                       </button>
                     </div>
                   </div>
-                  <div className="mt-2 text-sm text-zinc-700 dark:text-zinc-200">
+                  <div className="mt-2 text-sm text-lt-textSecondary dark:text-zinc-200">
                     {(e.text || "").slice(0, 240)}
                     {(e.text || "").length > 240 ? "…" : ""}
                   </div>
@@ -538,25 +538,25 @@ export function DashboardTabs() {
         );
       case "Basic":
         return (
-          <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-5">
+          <div className="rounded-2xl border border-lt-border dark:border-zinc-800 bg-lt-surface dark:bg-zinc-950 p-5">
             <BasicOverviewPanel onGoToSuggestions={goToSuggestions} />
           </div>
         );
       case "Suggestions":
         return (
-          <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-5">
+          <div className="rounded-2xl border border-lt-border dark:border-zinc-800 bg-lt-surface dark:bg-zinc-950 p-5">
             <SuggestionsPanel />
           </div>
         );
       case "Graph":
         return (
-          <div className="flex h-[max(28rem,calc(100dvh-9rem))] min-h-0 flex-col rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-5">
+          <div className="flex h-[max(28rem,calc(100dvh-9rem))] min-h-0 flex-col rounded-2xl border border-lt-border dark:border-zinc-800 bg-lt-surface dark:bg-zinc-950 p-5">
             <GraphMindMap initialRoots={graphRoots} />
           </div>
         );
       case "Entity Timeline":
         return (
-          <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-5">
+          <div className="rounded-2xl border border-lt-border dark:border-zinc-800 bg-lt-surface dark:bg-zinc-950 p-5">
             <div className="text-sm font-semibold">Entity timeline</div>
             <EntityTimeline />
           </div>
@@ -570,7 +570,7 @@ export function DashboardTabs() {
 
   return (
     <div className="flex h-full min-w-0 max-w-full flex-col overflow-x-hidden">
-      <div className="flex items-center justify-between gap-3 border-b border-zinc-200 dark:border-zinc-700 px-4 py-3">
+      <div className="flex items-center justify-between gap-3 border-b border-lt-border dark:border-zinc-700 nebula:border-fuchsia-500/25 nebula:bg-neb-panel/40 nebula:backdrop-blur-md nebula:shadow-neb-inset px-4 py-3">
         <div className="hidden flex-wrap gap-2 md:flex">
           {tabs.map((t) => (
             <TabButton key={t} label={t} active={t === tab} onClick={() => setTab(t)} />
@@ -578,8 +578,8 @@ export function DashboardTabs() {
         </div>
         <div className="flex min-w-0 flex-1 items-center justify-between gap-3 md:hidden">
           <div className="min-w-0">
-            <div className="truncate text-sm font-semibold text-zinc-900 dark:text-zinc-100">{tab}</div>
-            <div className="text-[11px] text-zinc-500 dark:text-zinc-400">Dashboard</div>
+            <div className="truncate text-sm font-semibold text-lt-text dark:text-zinc-100">{tab}</div>
+            <div className="text-[11px] text-lt-textMuted dark:text-zinc-400">Dashboard</div>
           </div>
           <button
             ref={mobileMenuBtnRef}
@@ -588,7 +588,7 @@ export function DashboardTabs() {
             aria-controls="mobile-dashboard-tab-menu"
             aria-haspopup="dialog"
             onClick={() => setMobileTabMenuOpen((o) => !o)}
-            className="shrink-0 rounded-lg border border-zinc-200 bg-zinc-100 p-2.5 text-zinc-700 outline-none transition-colors hover:bg-zinc-200 focus-visible:ring-2 focus-visible:ring-indigo-500/50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 dark:focus-visible:ring-indigo-400/40"
+            className="shrink-0 rounded-lg border border-lt-border bg-lt-muted p-2.5 text-lt-textSecondary outline-none transition-colors hover:bg-lt-subtle focus-visible:ring-2 focus-visible:ring-lt-accentRing/80 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 dark:focus-visible:ring-zinc-500/50 nebula:border-cyan-500/35 nebula:bg-neb-haze/90 nebula:text-cyan-100 nebula:hover:bg-violet-950/80 nebula:focus-visible:ring-cyan-400/50"
           >
             <span className="sr-only">Choose dashboard view</span>
             <svg
@@ -603,7 +603,7 @@ export function DashboardTabs() {
             </svg>
           </button>
         </div>
-        <div className="hidden shrink-0 text-xs text-zinc-500 dark:text-zinc-400 md:block">dashboard</div>
+        <div className="hidden shrink-0 text-xs text-lt-textMuted dark:text-zinc-400 md:block">dashboard</div>
       </div>
 
       {mobileTabMenuOpen ? (
@@ -619,7 +619,7 @@ export function DashboardTabs() {
             role="dialog"
             aria-modal="true"
             aria-labelledby="mobile-dash-menu-title"
-            className="absolute bottom-0 left-0 right-0 max-h-[min(72vh,28rem)] overflow-y-auto rounded-t-2xl border border-b-0 border-zinc-200 bg-white px-3 pb-[max(1rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_-8px_32px_-8px_rgba(0,0,0,0.2)] dark:border-zinc-700 dark:bg-zinc-950 dark:shadow-[0_-12px_40px_-10px_rgba(0,0,0,0.5)]"
+            className="absolute bottom-0 left-0 right-0 max-h-[min(72vh,28rem)] overflow-y-auto rounded-t-2xl border border-b-0 border-lt-border bg-lt-surface px-3 pb-[max(1rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_-8px_32px_-8px_rgba(0,0,0,0.2)] dark:border-zinc-700 dark:bg-zinc-950 dark:shadow-[0_-12px_40px_-10px_rgba(0,0,0,0.5)] nebula:border-cyan-500/30 nebula:bg-neb-deep/95 nebula:shadow-[0_-12px_48px_-8px_rgba(232,121,249,0.25)] nebula:backdrop-blur-xl"
           >
             <div className="mx-auto mb-2 h-1 w-10 shrink-0 rounded-full bg-zinc-300 dark:bg-zinc-600" aria-hidden />
             <h2 id="mobile-dash-menu-title" className="sr-only">
@@ -639,8 +639,8 @@ export function DashboardTabs() {
                   className={[
                     "rounded-xl px-4 py-3 text-left text-sm font-semibold transition-colors",
                     t === tab
-                      ? "bg-indigo-100 text-indigo-900 dark:bg-indigo-950/60 dark:text-indigo-100"
-                      : "bg-zinc-100 text-zinc-800 hover:bg-zinc-200 dark:bg-zinc-800/80 dark:text-zinc-200 dark:hover:bg-zinc-800",
+                      ? "bg-lt-accentSoft text-lt-accent dark:bg-indigo-950/60 dark:text-indigo-100"
+                      : "bg-lt-muted text-lt-textSecondary hover:bg-lt-subtle dark:bg-zinc-800/80 dark:text-zinc-200 dark:hover:bg-zinc-800",
                   ].join(" ")}
                 >
                   {t}
@@ -674,7 +674,7 @@ export function DashboardTabs() {
           />
           <div
             className={[
-              "absolute inset-y-0 right-0 w-full max-w-xl overflow-y-auto rounded-l-2xl border-l border-zinc-200/90 bg-white p-5 shadow-[0_0_40px_-10px_rgba(0,0,0,0.25)] transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] dark:border-zinc-800 dark:bg-zinc-950 dark:shadow-[0_0_50px_-12px_rgba(0,0,0,0.65)]",
+              "absolute inset-y-0 right-0 w-full max-w-xl overflow-y-auto rounded-l-2xl border-l border-lt-border/90 bg-lt-surface p-5 shadow-[0_0_40px_-10px_rgba(0,0,0,0.25)] transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] dark:border-zinc-800 dark:bg-zinc-950 dark:shadow-[0_0_50px_-12px_rgba(0,0,0,0.65)]",
               impactPanelExiting || !impactPanelEntered ? "translate-x-full" : "translate-x-0",
             ].join(" ")}
             onClick={(e) => e.stopPropagation()}
@@ -684,7 +684,7 @@ export function DashboardTabs() {
           >
             <div className="border-b border-zinc-100 pb-4 dark:border-zinc-800/80">
               <div className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">People impact explainability</div>
-              <div id="impact-drawer-title" className="mt-1 text-xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+              <div id="impact-drawer-title" className="mt-1 text-xl font-semibold tracking-tight text-lt-text dark:text-zinc-50">
                 {selectedImpactPerson}
               </div>
               <div className="mt-1 text-xs text-zinc-500">Click outside to close · Esc</div>
@@ -701,12 +701,12 @@ export function DashboardTabs() {
 
             {impactDetail ? (
               <div className="mt-5 space-y-5">
-                <div className="rounded-2xl border border-zinc-200/90 bg-gradient-to-b from-zinc-50 to-white p-4 dark:border-zinc-800 dark:from-zinc-900/50 dark:to-zinc-950">
-                  <div className="text-xs font-medium text-zinc-500">How this score is computed</div>
-                  <div className="mt-1 font-mono text-[13px] text-zinc-800 dark:text-zinc-200">{impactDetail.formula}</div>
+                <div className="rounded-2xl border border-lt-border/90 bg-gradient-to-b from-lt-washTop via-lt-muted/40 to-lt-surface p-4 dark:border-zinc-800 dark:from-zinc-900/50 dark:to-zinc-950">
+                  <div className="text-xs font-medium text-lt-textMuted">How this score is computed</div>
+                  <div className="mt-1 font-mono text-[13px] text-lt-textSecondary dark:text-zinc-200">{impactDetail.formula}</div>
                   <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-sm">
                     <div>
-                      Label <span className="font-semibold text-zinc-900 dark:text-zinc-100">{impactDetail.label}</span>
+                      Label <span className="font-semibold text-lt-text dark:text-zinc-100">{impactDetail.label}</span>
                     </div>
                     <div>
                       Net <span className="font-mono font-medium">{impactDetail.net_score.toFixed(2)}</span>
@@ -719,18 +719,18 @@ export function DashboardTabs() {
                     </div>
                     <div className="text-emerald-700 dark:text-emerald-400">+ {impactDetail.counts.positive}</div>
                     <div className="text-rose-700 dark:text-rose-400">− {impactDetail.counts.negative}</div>
-                    <div className="text-zinc-600 dark:text-zinc-400">= {impactDetail.counts.neutral}</div>
-                    <div className="text-zinc-500">Window {impactDetail.window_days}d</div>
+                    <div className="text-lt-textMuted dark:text-zinc-400">= {impactDetail.counts.neutral}</div>
+                    <div className="text-lt-textMuted">Window {impactDetail.window_days}d</div>
                   </div>
                   <PersonSignalTimeline days={impactDetail.signals_per_day || []} />
                 </div>
 
                 <div>
-                  <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Metric ledger</div>
-                  <div className="mt-1 text-xs leading-relaxed text-zinc-500">
-                    Each row is <span className="font-medium text-zinc-600 dark:text-zinc-400">step 1 · the feeling</span>
-                    . Open <span className="font-medium text-zinc-600 dark:text-zinc-400">modelled activity</span> for the E7
-                    micro-event, then <span className="font-medium text-zinc-600 dark:text-zinc-400">view journal</span> only
+                  <div className="text-sm font-semibold text-lt-text dark:text-zinc-100">Metric ledger</div>
+                  <div className="mt-1 text-xs leading-relaxed text-lt-textMuted">
+                    Each row is <span className="font-medium text-lt-textMuted dark:text-zinc-400">step 1 · the feeling</span>
+                    . Open <span className="font-medium text-lt-textMuted dark:text-zinc-400">modelled activity</span> for the E7
+                    micro-event, then <span className="font-medium text-lt-textMuted dark:text-zinc-400">view journal</span> only
                     if you want the full note — the long text appears once, in that last step.
                   </div>
                   <div className="mt-3 space-y-3">
@@ -740,11 +740,11 @@ export function DashboardTabs() {
                       return (
                         <div
                           key={rowKey}
-                          className="rounded-2xl border border-zinc-200/90 bg-zinc-50/80 p-3 transition-[border-color,box-shadow] duration-200 hover:border-zinc-300/90 hover:shadow-sm dark:border-zinc-800 dark:bg-zinc-900/35 dark:hover:border-zinc-600"
+                          className="rounded-2xl border border-lt-border/90 bg-lt-raised/90 p-3 transition-[border-color,box-shadow] duration-200 hover:border-lt-accentRing/70 hover:shadow-sm dark:border-zinc-800 dark:bg-zinc-900/35 dark:hover:border-zinc-600"
                         >
-                          <div className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">Step 1 · Signal</div>
+                          <div className="text-[10px] font-medium uppercase tracking-wide text-lt-textMuted">Step 1 · Signal</div>
                           <div className="mt-1 flex items-center justify-between gap-3 text-xs">
-                            <div className="text-zinc-500">{ev.day || ev.input_time || "—"}</div>
+                            <div className="text-lt-textMuted">{ev.day || ev.input_time || "—"}</div>
                             <div
                               className={[
                                 "rounded-full px-2 py-0.5 text-[11px] font-semibold",
@@ -752,18 +752,18 @@ export function DashboardTabs() {
                                   ? "bg-emerald-500/15 text-emerald-800 dark:text-emerald-300"
                                   : ev.polarity === "negative"
                                   ? "bg-rose-500/15 text-rose-800 dark:text-rose-300"
-                                  : "bg-zinc-400/20 text-zinc-700 dark:text-zinc-300",
+                                  : "bg-zinc-400/20 text-lt-textSecondary dark:text-zinc-300",
                               ].join(" ")}
                             >
                               {ev.polarity}
                             </div>
                           </div>
-                          <div className="mt-1 text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                          <div className="mt-1 text-sm font-semibold text-lt-text dark:text-zinc-100">
                             {ev.tag || ev.assignment_name || "signal"}
                           </div>
                           {ev.event_name ? (
                             <div className="mt-0.5 text-xs text-zinc-500">
-                              Linked micro-event · <span className="text-zinc-700 dark:text-zinc-300">{ev.event_name}</span>
+                              Linked micro-event · <span className="text-lt-textSecondary dark:text-zinc-300">{ev.event_name}</span>
                             </div>
                           ) : (
                             <div className="mt-0.5 text-xs text-zinc-500">No activity label on this signal.</div>
@@ -778,7 +778,7 @@ export function DashboardTabs() {
                                 "rounded-lg border px-3 py-1.5 text-[11px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40",
                                 eventOpen
                                   ? "border-sky-500/50 bg-sky-500/10 text-sky-900 dark:text-sky-200"
-                                  : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900",
+                                  : "border-lt-border bg-lt-surface text-lt-textSecondary hover:bg-lt-muted dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900",
                               ].join(" ")}
                             >
                               {eventOpen ? "Hide modelled activity" : "Open modelled activity →"}

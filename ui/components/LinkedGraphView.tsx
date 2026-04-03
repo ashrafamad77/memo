@@ -196,14 +196,14 @@ function NodeInfoPeek({
         i
       </span>
       {open ? (
-        <div className="absolute right-0 top-full z-[200] mt-1 w-72 max-h-72 overflow-y-auto rounded-lg border border-zinc-200 bg-white p-2.5 text-left text-[11px] leading-snug text-zinc-700 shadow-xl dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200">
-          {title ? <span className="block font-semibold text-zinc-900 dark:text-zinc-100">{title}</span> : null}
+        <div className="absolute right-0 top-full z-[200] mt-1 w-72 max-h-72 overflow-y-auto rounded-lg border border-lt-border bg-lt-surface p-2.5 text-left text-[11px] leading-snug text-lt-textSecondary shadow-xl dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200">
+          {title ? <span className="block font-semibold text-lt-text dark:text-zinc-100">{title}</span> : null}
           {entryId ? (
             <div className="mt-1">
               <LazyJournalBody entryId={entryId} visible />
             </div>
           ) : body ? (
-            <span className="mt-1 block whitespace-pre-wrap text-zinc-600 dark:text-zinc-300">{body}</span>
+            <span className="mt-1 block whitespace-pre-wrap text-lt-textMuted dark:text-zinc-300">{body}</span>
           ) : null}
         </div>
       ) : null}
@@ -625,7 +625,7 @@ export function LinkedGraphView({
       </div>
 
       <div
-        className="pointer-events-auto absolute right-2 top-2 z-30 flex items-center gap-0.5 rounded-lg border border-zinc-200/90 bg-white/95 px-1 py-0.5 shadow-sm backdrop-blur-sm dark:border-zinc-600/90 dark:bg-zinc-900/95"
+        className="pointer-events-auto absolute right-2 top-2 z-30 flex items-center gap-0.5 rounded-lg border border-lt-border/90 bg-lt-surface/95 px-1 py-0.5 shadow-sm backdrop-blur-sm dark:border-zinc-600/90 dark:bg-zinc-900/95"
         onWheel={(e) => e.stopPropagation()}
       >
         <button
@@ -640,7 +640,7 @@ export function LinkedGraphView({
           type="button"
           aria-label={`Zoom ${Math.round(zoom * 100)} percent, reset to 100 percent`}
           title="Reset zoom to 100%"
-          className="min-w-[2.75rem] px-1 text-center text-[10px] font-medium tabular-nums text-zinc-600 dark:text-zinc-300"
+          className="min-w-[2.75rem] px-1 text-center text-[10px] font-medium tabular-nums text-lt-textMuted dark:text-zinc-300"
           onClick={zoomReset}
         >
           {Math.round(zoom * 100)}%
@@ -656,7 +656,7 @@ export function LinkedGraphView({
       </div>
 
       {model.hint ? (
-        <p className="pointer-events-none absolute bottom-2 left-0 right-0 px-3 text-center text-[10px] leading-snug text-zinc-500 dark:text-zinc-400">
+        <p className="pointer-events-none absolute bottom-2 left-0 right-0 px-3 text-center text-[10px] leading-snug text-lt-textMuted dark:text-zinc-400">
           {model.hint}
         </p>
       ) : null}

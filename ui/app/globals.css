@@ -16,9 +16,99 @@ body {
   max-width: 100%;
   overflow: hidden;
   overscroll-behavior: none;
-  @apply bg-white text-zinc-900;
 }
 
-.dark body {
+html:not(.dark) body {
+  /* Kimbie-adjacent light: cream, wheat, soft tan (VS Code Kimbie Dark is #221a0f / #d3af86 family). */
+  background-image: linear-gradient(
+    165deg,
+    #faf3ea 0%,
+    #f3e8d8 38%,
+    #ede0cc 68%,
+    #f7ecdc 100%
+  );
+  background-attachment: fixed;
+  @apply text-lt-text;
+}
+
+html:not(.dark) ::selection {
+  background-color: rgba(165, 122, 76, 0.35);
+  color: #1a140c;
+}
+
+.dark:not(.theme-nebula) body {
   @apply bg-zinc-950 text-zinc-100;
+}
+
+/* ─── Nebula: second dark theme (cosmic glass + aurora). Default `.dark` zinc is untouched above. ─── */
+.dark.theme-nebula body {
+  @apply text-zinc-100;
+  background-color: #050014;
+  background-image:
+    radial-gradient(ellipse 120% 90% at 0% -20%, rgba(139, 92, 246, 0.45) 0%, transparent 55%),
+    radial-gradient(ellipse 100% 80% at 100% 0%, rgba(6, 182, 212, 0.28) 0%, transparent 50%),
+    radial-gradient(ellipse 70% 60% at 50% 100%, rgba(244, 63, 94, 0.12) 0%, transparent 45%),
+    linear-gradient(168deg, #050014 0%, #0a0528 42%, #031a1f 72%, #060212 100%);
+  background-attachment: fixed;
+}
+
+.dark.theme-nebula ::selection {
+  background-color: rgba(34, 211, 238, 0.35);
+  color: #ecfeff;
+}
+
+.memo-nebula-veil {
+  display: none;
+}
+
+.dark.theme-nebula .memo-nebula-veil {
+  display: block;
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  pointer-events: none;
+  mix-blend-mode: soft-light;
+  opacity: 0.42;
+  background:
+    radial-gradient(ellipse 80% 50% at 15% 20%, rgba(232, 121, 249, 0.55) 0%, transparent 55%),
+    radial-gradient(ellipse 70% 60% at 85% 75%, rgba(34, 211, 238, 0.45) 0%, transparent 50%),
+    radial-gradient(ellipse 50% 40% at 50% 50%, rgba(190, 242, 100, 0.08) 0%, transparent 60%);
+  animation: memo-nebula-veil-drift 28s ease-in-out infinite;
+}
+
+@keyframes memo-nebula-veil-drift {
+  0%,
+  100% {
+    transform: translate(0, 0) rotate(0deg);
+    filter: hue-rotate(0deg);
+  }
+  50% {
+    transform: translate(-1.5%, 1%) rotate(1deg);
+    filter: hue-rotate(18deg);
+  }
+}
+
+.dark.theme-nebula .memo-nebula-veil::after {
+  content: "";
+  position: absolute;
+  inset: -20%;
+  background: linear-gradient(
+    115deg,
+    transparent 35%,
+    rgba(255, 255, 255, 0.07) 48%,
+    rgba(34, 211, 238, 0.12) 52%,
+    transparent 65%
+  );
+  background-size: 200% 200%;
+  animation: memo-nebula-sheen 14s ease-in-out infinite;
+}
+
+@keyframes memo-nebula-sheen {
+  0%,
+  100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
 }

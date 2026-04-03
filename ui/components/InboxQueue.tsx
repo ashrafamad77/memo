@@ -103,7 +103,7 @@ export function InboxQueue() {
   }
 
   if (!items.length) {
-    return <div className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">No pending tasks.</div>;
+    return <div className="mt-2 text-sm text-lt-textMuted dark:text-zinc-400">No pending tasks.</div>;
   }
 
   return (
@@ -113,7 +113,7 @@ export function InboxQueue() {
         return (
           <div
             key={t.id}
-            className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/40 p-3"
+            className="rounded-xl border border-lt-border dark:border-zinc-800 bg-lt-raised dark:bg-zinc-900/40 p-3"
           >
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
@@ -121,9 +121,9 @@ export function InboxQueue() {
                   {isPlace ? (
                     <>
                       Link place:{" "}
-                      <span className="text-zinc-900 dark:text-zinc-100">{t.mention}</span>
+                      <span className="text-lt-text dark:text-zinc-100">{t.mention}</span>
                       {t.entity_label ? (
-                        <span className="ml-2 font-normal text-zinc-500 dark:text-zinc-400">
+                        <span className="ml-2 font-normal text-lt-textMuted dark:text-zinc-400">
                           ({t.entity_label})
                         </span>
                       ) : null}
@@ -131,16 +131,16 @@ export function InboxQueue() {
                   ) : (
                     <>
                       Disambiguate:{" "}
-                      <span className="text-zinc-900 dark:text-zinc-100">{t.mention}</span>
+                      <span className="text-lt-text dark:text-zinc-100">{t.mention}</span>
                     </>
                   )}
                 </div>
                 {isPlace ? (
-                  <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                  <div className="mt-1 text-xs text-lt-textMuted dark:text-zinc-400">
                     Pick a Wikidata match or skip to leave the place unlinked.
                   </div>
                 ) : (
-                  <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                  <div className="mt-1 text-xs text-lt-textMuted dark:text-zinc-400">
                     candidate: {t.candidate_name || "—"} ({t.candidate_role || "—"}) · proposed:{" "}
                     {t.proposed_name || "—"} ({t.proposed_role || "—"}) · score:{" "}
                     {typeof t.score === "number" ? t.score.toFixed(2) : "—"}
@@ -158,11 +158,11 @@ export function InboxQueue() {
                     type="button"
                     title={c.description || c.wikidata_id}
                     onClick={() => resolvePlace(t.id, "pick", c.wikidata_id)}
-                    className="max-w-full rounded-lg bg-zinc-50 dark:bg-zinc-900 px-3 py-2 text-left text-xs font-semibold text-zinc-950 disabled:opacity-50"
+                    className="max-w-full rounded-lg bg-lt-raised dark:bg-zinc-900 px-3 py-2 text-left text-xs font-semibold text-zinc-950 disabled:opacity-50"
                   >
                     <span className="block truncate">{c.label || c.wikidata_id}</span>
                     {c.description ? (
-                      <span className="mt-0.5 block line-clamp-2 text-[10px] font-normal font-sans text-zinc-500 dark:text-zinc-400">
+                      <span className="mt-0.5 block line-clamp-2 text-[10px] font-normal font-sans text-lt-textMuted dark:text-zinc-400">
                         {c.description}
                       </span>
                     ) : null}
@@ -175,7 +175,7 @@ export function InboxQueue() {
                   disabled={busy === t.id}
                   type="button"
                   onClick={() => resolvePlace(t.id, "skip")}
-                  className="rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent px-3 py-2 text-xs font-semibold text-zinc-900 dark:text-zinc-100 disabled:opacity-50"
+                  className="rounded-lg border border-lt-borderStrong dark:border-zinc-700 bg-transparent px-3 py-2 text-xs font-semibold text-lt-text dark:text-zinc-100 disabled:opacity-50"
                 >
                   Skip
                 </button>
@@ -185,14 +185,14 @@ export function InboxQueue() {
                 <button
                   disabled={busy === t.id}
                   onClick={() => resolvePerson(t.id, "merge")}
-                  className="rounded-lg bg-zinc-50 dark:bg-zinc-900 px-3 py-2 text-xs font-semibold text-zinc-950 disabled:opacity-50"
+                  className="rounded-lg bg-lt-raised dark:bg-zinc-900 px-3 py-2 text-xs font-semibold text-zinc-950 disabled:opacity-50"
                 >
                   Merge (same person)
                 </button>
                 <button
                   disabled={busy === t.id}
                   onClick={() => resolvePerson(t.id, "split")}
-                  className="rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent px-3 py-2 text-xs font-semibold text-zinc-900 dark:text-zinc-100 disabled:opacity-50"
+                  className="rounded-lg border border-lt-borderStrong dark:border-zinc-700 bg-transparent px-3 py-2 text-xs font-semibold text-lt-text dark:text-zinc-100 disabled:opacity-50"
                 >
                   Split (different)
                 </button>

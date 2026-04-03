@@ -111,20 +111,20 @@ export function GraphMindMap({ initialRoots: _initialRoots }: { initialRoots: { 
     <div className="flex h-full min-h-0 flex-col gap-2">
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-          <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Graph explorer</h2>
+          <h2 className="text-sm font-semibold text-lt-text dark:text-zinc-100">Graph explorer</h2>
           <KpiHelp description={GRAPH_EXPLORER_HELP} />
         </div>
         <button
           type="button"
           onClick={ex.restartWizard}
-          className="shrink-0 rounded-xl border border-zinc-200 bg-white/80 px-3 py-2 text-[11px] font-bold text-zinc-700 shadow-sm dark:border-zinc-700 dark:bg-zinc-900/80 dark:text-zinc-200"
+          className="shrink-0 rounded-xl border border-lt-border bg-lt-surface/80 px-3 py-2 text-[11px] font-bold text-lt-textSecondary shadow-sm dark:border-zinc-700 dark:bg-zinc-900/80 dark:text-zinc-200"
         >
           Start over
         </button>
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-zinc-200/80 bg-gradient-to-b from-zinc-50 to-sky-50/40 shadow-xl dark:border-zinc-800 dark:from-zinc-950 dark:to-slate-950/80">
-        <div className="bg-white/60 px-3 py-1.5 dark:bg-black/25">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-lt-border/80 bg-gradient-to-b from-lt-washTop to-sky-50/40 shadow-xl dark:border-zinc-800 dark:from-zinc-950 dark:to-slate-950/80">
+        <div className="bg-lt-surface/60 px-3 py-1.5 dark:bg-black/25">
           <StepRail
             compact
             step={ex.wizardStep}
@@ -134,18 +134,18 @@ export function GraphMindMap({ initialRoots: _initialRoots }: { initialRoots: { 
         </div>
 
         {ex.wizardStep === "pick_entity" ? (
-          <div className="border-b border-zinc-200/60 px-3 py-2 dark:border-zinc-800">
+          <div className="border-b border-lt-border/80 px-3 py-2 dark:border-zinc-800">
             <input
               value={ex.searchInput}
               onChange={(e) => ex.setSearchInput(e.target.value)}
               placeholder="Filter entities (does not change the graph layout)…"
-              className="w-full max-w-md rounded-lg border border-zinc-200 bg-white/90 px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950/90"
+              className="w-full max-w-md rounded-lg border border-lt-border bg-lt-surface/90 px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950/90"
             />
           </div>
         ) : null}
 
         {ex.wizardStep === "content" ? (
-          <div className="flex flex-wrap gap-2 border-b border-zinc-200/60 px-3 py-2 text-[11px] dark:border-zinc-800">
+          <div className="flex flex-wrap gap-2 border-b border-lt-border/80 px-3 py-2 text-[11px] dark:border-zinc-800">
             <button
               type="button"
               onClick={() => {

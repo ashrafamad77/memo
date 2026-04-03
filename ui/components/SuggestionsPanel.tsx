@@ -73,8 +73,8 @@ export function SuggestionsPanel() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Suggestions</h2>
-        <p className="mt-1 max-w-2xl text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">
+        <h2 className="text-sm font-semibold text-lt-text dark:text-zinc-100">Suggestions</h2>
+        <p className="mt-1 max-w-2xl text-[11px] leading-relaxed text-lt-textMuted dark:text-zinc-400">
           Run the AI when you want ideas grounded in your journal graph and current context (time, city, weather). Nothing
           is fetched until you click the button.
         </p>
@@ -89,7 +89,7 @@ export function SuggestionsPanel() {
             "rounded-xl px-4 py-2.5 text-sm font-semibold shadow-sm transition-colors",
             loading
               ? "cursor-not-allowed bg-zinc-200 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-500"
-              : "bg-violet-600 text-white hover:bg-violet-500 dark:bg-violet-600 dark:hover:bg-violet-500",
+              : "bg-lt-accentBright text-white hover:bg-lt-accent dark:bg-violet-600 dark:hover:bg-violet-500",
           ].join(" ")}
         >
           {loading ? "Working…" : "AI suggestions"}
@@ -104,14 +104,14 @@ export function SuggestionsPanel() {
 
       {data && !error ? (
         <div className="space-y-4">
-          <div className="rounded-xl border border-zinc-200/90 bg-zinc-50/80 px-3 py-2 text-[11px] text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900/40 dark:text-zinc-400">
+          <div className="rounded-xl border border-lt-border/90 bg-lt-raised/90 px-3 py-2 text-[11px] text-lt-textSecondary dark:border-zinc-700 dark:bg-zinc-900/40 dark:text-zinc-400">
             <div>
-              <span className="font-medium text-zinc-500 dark:text-zinc-500">Generated</span>{" "}
-              <span className="font-mono text-zinc-700 dark:text-zinc-300">{data.generated_at}</span>
+              <span className="font-medium text-lt-textMuted dark:text-zinc-500">Generated</span>{" "}
+              <span className="font-mono text-lt-textSecondary dark:text-zinc-300">{data.generated_at}</span>
             </div>
             {engine ? (
               <div className="mt-0.5">
-                <span className="font-medium text-zinc-500 dark:text-zinc-500">Engine</span> {engine}
+                <span className="font-medium text-lt-textMuted dark:text-zinc-500">Engine</span> {engine}
               </div>
             ) : null}
             {skipped ? (
@@ -148,33 +148,33 @@ export function SuggestionsPanel() {
                     </span>
                     <div className="min-w-0">
                       <h3 className="text-sm font-semibold text-violet-950 dark:text-violet-100">{prop.title}</h3>
-                      <p className="mt-1 text-[13px] leading-relaxed text-zinc-700 dark:text-zinc-300">{prop.body}</p>
+                      <p className="mt-1 text-[13px] leading-relaxed text-lt-textSecondary dark:text-zinc-300">{prop.body}</p>
                     </div>
                   </div>
                   {prop.priority != null ? (
-                    <span className="shrink-0 rounded-lg bg-white/90 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-violet-800 ring-1 ring-violet-200/70 dark:bg-zinc-900/80 dark:text-violet-200 dark:ring-violet-800/60">
+                    <span className="shrink-0 rounded-lg bg-lt-surface/90 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-violet-800 ring-1 ring-violet-200/70 dark:bg-zinc-900/80 dark:text-violet-200 dark:ring-violet-800/60">
                       priority {prop.priority}
                     </span>
                   ) : null}
                 </div>
 
-                <dl className="mt-3 grid gap-1.5 text-[11px] text-zinc-600 dark:text-zinc-400 sm:grid-cols-2">
+                <dl className="mt-3 grid gap-1.5 text-[11px] text-lt-textMuted dark:text-zinc-400 sm:grid-cols-2">
                   <div>
                     <dt className="font-medium text-zinc-500 dark:text-zinc-500">Kind</dt>
-                    <dd className="font-mono text-zinc-800 dark:text-zinc-200">{prop.kind}</dd>
+                    <dd className="font-mono text-lt-textSecondary dark:text-zinc-200">{prop.kind}</dd>
                   </div>
                   <div>
                     <dt className="font-medium text-zinc-500 dark:text-zinc-500">Anchor date</dt>
-                    <dd className="font-mono text-zinc-800 dark:text-zinc-200">{prop.anchor_date}</dd>
+                    <dd className="font-mono text-lt-textSecondary dark:text-zinc-200">{prop.anchor_date}</dd>
                   </div>
                   <div className="sm:col-span-2">
                     <dt className="font-medium text-zinc-500 dark:text-zinc-500">Proposal id</dt>
-                    <dd className="break-all font-mono text-[10px] text-zinc-700 dark:text-zinc-300">{prop.id}</dd>
+                    <dd className="break-all font-mono text-[10px] text-lt-textSecondary dark:text-zinc-300">{prop.id}</dd>
                   </div>
                   {prop.valid_from || prop.valid_until ? (
                     <div className="sm:col-span-2">
                       <dt className="font-medium text-zinc-500 dark:text-zinc-500">Valid window</dt>
-                      <dd className="font-mono text-[10px] text-zinc-700 dark:text-zinc-300">
+                      <dd className="font-mono text-[10px] text-lt-textSecondary dark:text-zinc-300">
                         {prop.valid_from ?? "—"} → {prop.valid_until ?? "—"}
                       </dd>
                     </div>
@@ -190,10 +190,10 @@ export function SuggestionsPanel() {
                       {prop.people.map((person) => (
                         <span
                           key={`${prop.id}-${person.name}`}
-                          className="rounded-md bg-white/90 px-2 py-0.5 text-[11px] font-medium text-zinc-800 ring-1 ring-violet-200/60 dark:bg-zinc-900/70 dark:text-zinc-200 dark:ring-violet-800/50"
+                          className="rounded-md bg-lt-surface/90 px-2 py-0.5 text-[11px] font-medium text-lt-textSecondary ring-1 ring-violet-200/60 dark:bg-zinc-900/70 dark:text-zinc-200 dark:ring-violet-800/50"
                         >
                           {person.name}
-                          <span className="ml-1 font-normal text-zinc-500 dark:text-zinc-400">{tierLabel(person.tier)}</span>
+                          <span className="ml-1 font-normal text-lt-textMuted dark:text-zinc-400">{tierLabel(person.tier)}</span>
                         </span>
                       ))}
                     </div>
@@ -201,7 +201,7 @@ export function SuggestionsPanel() {
                 ) : null}
 
                 {prop.evidence && prop.evidence.length > 0 ? (
-                  <details className="mt-3 rounded-lg border border-violet-200/50 bg-white/60 p-2 dark:border-violet-900/40 dark:bg-zinc-900/40">
+                  <details className="mt-3 rounded-lg border border-violet-200/50 bg-lt-surface/60 p-2 dark:border-violet-900/40 dark:bg-zinc-900/40">
                     <summary className="cursor-pointer text-[11px] font-semibold text-violet-900 dark:text-violet-200">
                       Evidence & traceability
                     </summary>
@@ -209,7 +209,7 @@ export function SuggestionsPanel() {
                       {prop.evidence.map((ev, i) => (
                         <li
                           key={`${prop.id}-ev-${i}`}
-                          className="break-words text-[11px] leading-snug text-zinc-600 dark:text-zinc-400"
+                          className="break-words text-[11px] leading-snug text-lt-textMuted dark:text-zinc-400"
                         >
                           {evidenceSummary(ev)}
                         </li>

@@ -300,11 +300,11 @@ function WeatherExpandedDetails({ weather }: { weather: WeatherOk }) {
   const c = weather.current;
   return (
     <div className="space-y-4 pt-1">
-      <div className="rounded-xl border border-sky-100/90 bg-white/85 p-4 dark:border-sky-900/45 dark:bg-zinc-900/55">
+      <div className="rounded-xl border border-sky-100/90 bg-lt-surface/85 p-4 dark:border-sky-900/45 dark:bg-zinc-900/55">
         <div className="text-[10px] font-bold uppercase tracking-wider text-sky-700/90 dark:text-sky-300/90">
           Now · details
         </div>
-        <div className="mt-2 grid gap-2 text-sm text-zinc-700 dark:text-zinc-300 sm:grid-cols-2">
+        <div className="mt-2 grid gap-2 text-sm text-lt-textSecondary dark:text-zinc-300 sm:grid-cols-2">
           <div>
             Feels like{" "}
             <span className="font-semibold tabular-nums">{c.apparent_c != null ? `${c.apparent_c}°` : "—"}</span>
@@ -317,9 +317,9 @@ function WeatherExpandedDetails({ weather }: { weather: WeatherOk }) {
             Humidity{" "}
             <span className="font-semibold tabular-nums">{c.humidity_pct != null ? `${c.humidity_pct}%` : "—"}</span>
           </div>
-          <div className="font-mono text-[11px] text-zinc-500 dark:text-zinc-400">{formatLocalTime(c.time)}</div>
+          <div className="font-mono text-[11px] text-lt-textMuted dark:text-zinc-400">{formatLocalTime(c.time)}</div>
         </div>
-        <div className="mt-3 text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">
+        <div className="mt-3 text-[11px] leading-relaxed text-lt-textMuted dark:text-zinc-400">
           From profile city “{weather.query_city}” · forecast timezone: {weather.timezone_used}
           {weather.profile_timezone ? (
             <span className="mt-0.5 block">Your profile timezone: {weather.profile_timezone}</span>
@@ -329,18 +329,18 @@ function WeatherExpandedDetails({ weather }: { weather: WeatherOk }) {
 
       {weather.hourly_sample?.length ? (
         <div>
-          <div className="mb-2 text-xs font-semibold text-zinc-600 dark:text-zinc-300">Next hours</div>
+          <div className="mb-2 text-xs font-semibold text-lt-textMuted dark:text-zinc-300">Next hours</div>
           <div className="flex gap-2 overflow-x-auto pb-1">
             {weather.hourly_sample.map((h, i) => (
               <div
                 key={`${h.time}-${i}`}
-                className="min-w-[4.75rem] shrink-0 rounded-xl border border-zinc-200 bg-white px-2 py-2 text-center dark:border-zinc-700 dark:bg-zinc-900/60"
+                className="min-w-[4.75rem] shrink-0 rounded-xl border border-lt-border bg-lt-surface px-2 py-2 text-center dark:border-zinc-700 dark:bg-zinc-900/60"
               >
                 <div className="text-[10px] font-medium text-zinc-500">{formatHourLabel(h.time)}</div>
                 <div className="mt-0.5 text-2xl leading-none" title={h.label} aria-hidden>
                   {weatherEmoji(h.weather_code, isDaytimeFromIso(h.time))}
                 </div>
-                <div className="mt-1 text-sm font-bold tabular-nums text-zinc-900 dark:text-zinc-100">
+                <div className="mt-1 text-sm font-bold tabular-nums text-lt-text dark:text-zinc-100">
                   {h.temp_c != null ? `${h.temp_c}°` : "—"}
                 </div>
                 <div className="mt-0.5 line-clamp-2 text-[9px] leading-tight text-zinc-500">{h.label}</div>
@@ -355,28 +355,28 @@ function WeatherExpandedDetails({ weather }: { weather: WeatherOk }) {
 
       {weather.daily?.length ? (
         <div>
-          <div className="mb-2 text-xs font-semibold text-zinc-600 dark:text-zinc-300">7-day outlook</div>
+          <div className="mb-2 text-xs font-semibold text-lt-textMuted dark:text-zinc-300">7-day outlook</div>
           <div className="space-y-1.5">
             {weather.daily.map((d) => (
               <div
                 key={d.date}
-                className="flex items-center justify-between gap-3 rounded-xl border border-zinc-200/90 bg-white px-3 py-2 dark:border-zinc-700 dark:bg-zinc-900/50"
+                className="flex items-center justify-between gap-3 rounded-xl border border-lt-border/90 bg-lt-surface px-3 py-2 dark:border-zinc-700 dark:bg-zinc-900/50"
               >
                 <div className="flex min-w-0 items-center gap-2.5">
                   <span className="shrink-0 text-3xl leading-none" title={d.label} aria-hidden>
                     {weatherEmoji(d.weather_code, true)}
                   </span>
                   <div className="min-w-0">
-                    <div className="text-sm font-medium text-zinc-900 dark:text-zinc-100">{formatDayDate(d.date)}</div>
+                    <div className="text-sm font-medium text-lt-text dark:text-zinc-100">{formatDayDate(d.date)}</div>
                     <div className="truncate text-[11px] text-zinc-500">{d.label}</div>
                   </div>
                 </div>
                 <div className="shrink-0 text-right text-sm tabular-nums">
-                  <span className="font-semibold text-zinc-900 dark:text-zinc-100">
+                  <span className="font-semibold text-lt-text dark:text-zinc-100">
                     {d.max_c != null ? `${d.max_c}°` : "—"}
                   </span>
                   <span className="text-zinc-400"> / </span>
-                  <span className="text-zinc-600 dark:text-zinc-300">{d.min_c != null ? `${d.min_c}°` : "—"}</span>
+                  <span className="text-lt-textMuted dark:text-zinc-300">{d.min_c != null ? `${d.min_c}°` : "—"}</span>
                   {d.precip_prob_max != null ? (
                     <div className="text-[10px] text-sky-600 dark:text-sky-400">↑{d.precip_prob_max}% precip</div>
                   ) : null}
@@ -409,7 +409,7 @@ function ActivityFocusChip({ label }: { label: string }) {
 
   return (
     <div
-      className="inline-flex max-w-full items-center gap-2.5 rounded-2xl border border-amber-200/60 bg-white/90 py-1.5 pl-1.5 pr-3 shadow-sm dark:border-amber-900/40 dark:bg-zinc-900/70"
+      className="inline-flex max-w-full items-center gap-2.5 rounded-2xl border border-amber-200/60 bg-lt-surface/90 py-1.5 pl-1.5 pr-3 shadow-sm dark:border-amber-900/40 dark:bg-zinc-900/70"
       title={`${label} · ${visualGroup}`}
     >
       <span
@@ -421,7 +421,7 @@ function ActivityFocusChip({ label }: { label: string }) {
       >
         <span className="drop-shadow-sm">{emoji}</span>
       </span>
-      <span className="min-w-0 text-sm font-medium leading-snug text-zinc-800 dark:text-zinc-100">{display}</span>
+      <span className="min-w-0 text-sm font-medium leading-snug text-lt-textSecondary dark:text-zinc-100">{display}</span>
     </div>
   );
 }
@@ -586,32 +586,32 @@ export function BasicOverviewPanel({ onGoToSuggestions }: { onGoToSuggestions: (
             <p className="text-xs font-semibold uppercase tracking-widest text-emerald-700/80 dark:text-emerald-400/90">
               Daily briefing
             </p>
-            <h1 className="mt-2 text-2xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50 sm:text-3xl">
+            <h1 className="mt-2 text-2xl font-bold tracking-tight text-lt-text dark:text-zinc-50 sm:text-3xl">
               {greeting}, {displayName}
             </h1>
-            <p className="mt-3 font-mono text-3xl font-semibold tabular-nums text-zinc-800 dark:text-zinc-100 sm:text-4xl">
+            <p className="mt-3 font-mono text-3xl font-semibold tabular-nums text-lt-textSecondary dark:text-zinc-100 sm:text-4xl">
               {formatTimeInTz(now, tz)}
             </p>
-            <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">{formatDateInTz(now, tz)}</p>
+            <p className="mt-2 text-sm text-lt-textMuted dark:text-zinc-400">{formatDateInTz(now, tz)}</p>
 
             <div className="mt-5 border-t border-emerald-200/60 pt-4 dark:border-emerald-900/40">
               <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-800/70 dark:text-emerald-400/80">
                 Where you&apos;re based
               </p>
-              <dl className="mt-2 flex flex-wrap gap-x-6 gap-y-2 text-[13px] text-zinc-700 dark:text-zinc-300">
+              <dl className="mt-2 flex flex-wrap gap-x-6 gap-y-2 text-[13px] text-lt-textSecondary dark:text-zinc-300">
                 <div>
                   <dt className="text-[11px] font-medium text-zinc-500 dark:text-zinc-500">Current city</dt>
-                  <dd className="mt-0.5 font-semibold text-zinc-900 dark:text-zinc-100">{profile?.current_city || "—"}</dd>
+                  <dd className="mt-0.5 font-semibold text-lt-text dark:text-zinc-100">{profile?.current_city || "—"}</dd>
                 </div>
                 <div>
                   <dt className="text-[11px] font-medium text-zinc-500 dark:text-zinc-500">Timezone</dt>
-                  <dd className="mt-0.5 font-mono text-sm text-zinc-800 dark:text-zinc-200">{profile?.timezone || "—"}</dd>
+                  <dd className="mt-0.5 font-mono text-sm text-lt-textSecondary dark:text-zinc-200">{profile?.timezone || "—"}</dd>
                 </div>
               </dl>
             </div>
           </header>
 
-          <div className="overflow-hidden rounded-2xl border border-sky-200/80 bg-gradient-to-b from-sky-50/90 to-white dark:border-sky-900/45 dark:from-sky-950/35 dark:to-zinc-950">
+          <div className="overflow-hidden rounded-2xl border border-sky-200/80 bg-gradient-to-b from-sky-50/90 to-lt-surface dark:border-sky-900/45 dark:from-sky-950/35 dark:to-zinc-950">
             {weather && weather.ok ? (
               <>
                 <button
@@ -647,8 +647,8 @@ export function BasicOverviewPanel({ onGoToSuggestions }: { onGoToSuggestions: (
                       <div className="text-4xl font-bold tabular-nums text-sky-900 dark:text-sky-100">
                         {weather.current.temperature_c != null ? `${weather.current.temperature_c}°` : "—"}
                       </div>
-                      <div className="text-sm font-medium text-zinc-700 dark:text-zinc-300">{weather.current.label}</div>
-                      <div className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">{weather.location.label}</div>
+                      <div className="text-sm font-medium text-lt-textSecondary dark:text-zinc-300">{weather.current.label}</div>
+                      <div className="mt-1 text-[11px] text-lt-textMuted dark:text-zinc-400">{weather.location.label}</div>
                     </div>
                   </div>
                   <p className="mt-3 text-[10px] font-medium text-sky-700/70 group-hover:text-sky-800 dark:text-sky-400/90 dark:group-hover:text-sky-300">
@@ -666,7 +666,7 @@ export function BasicOverviewPanel({ onGoToSuggestions }: { onGoToSuggestions: (
                 <div className="text-[10px] font-bold uppercase tracking-wider text-sky-700/90 dark:text-sky-300/90">
                   Weather
                 </div>
-                <p className="mt-3 text-sm text-zinc-600 dark:text-zinc-400">
+                <p className="mt-3 text-sm text-lt-textMuted dark:text-zinc-400">
                   {weather && !weather.ok ? weather.message : "Add a current city in your profile to see weather."}
                 </p>
               </div>
@@ -677,7 +677,7 @@ export function BasicOverviewPanel({ onGoToSuggestions }: { onGoToSuggestions: (
             <h2 className="text-xs font-bold uppercase tracking-wider text-amber-900/90 dark:text-amber-200/90">
               Today&apos;s focus
             </h2>
-            <p className="mt-2 text-sm leading-relaxed text-zinc-800 dark:text-zinc-200">{focusSummary}</p>
+            <p className="mt-2 text-sm leading-relaxed text-lt-textSecondary dark:text-zinc-200">{focusSummary}</p>
 
             {focus && focus.activity_count > 0 ? (
               <div className="mt-4">
@@ -718,17 +718,17 @@ export function BasicOverviewPanel({ onGoToSuggestions }: { onGoToSuggestions: (
             </p>
           </section>
 
-          <section className="rounded-2xl border border-sky-200/60 bg-gradient-to-b from-sky-50/50 to-white p-5 dark:border-sky-900/40 dark:from-sky-950/25 dark:to-zinc-950/90">
+          <section className="rounded-2xl border border-sky-200/60 bg-gradient-to-b from-sky-50/50 to-lt-surface p-5 dark:border-sky-900/40 dark:from-sky-950/25 dark:to-zinc-950/90">
             <h2 className="text-xs font-bold uppercase tracking-wider text-sky-800/90 dark:text-sky-300/90">
               World context
             </h2>
-            <p className="mt-1 text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">
+            <p className="mt-1 text-[11px] leading-relaxed text-lt-textMuted dark:text-zinc-400">
               Two short lists: where you are now (city) and where you are from (home country). Up to five stories each,
               with a thumbnail when the feed provides one.
             </p>
             {worldContext?.gl ? (
-              <p className="mt-2 text-[10px] text-zinc-500 dark:text-zinc-400">
-                Google News region hint: <span className="font-mono text-zinc-600 dark:text-zinc-300">{worldContext.gl}</span>
+              <p className="mt-2 text-[10px] text-lt-textMuted dark:text-zinc-400">
+                Google News region hint: <span className="font-mono text-lt-textMuted dark:text-zinc-300">{worldContext.gl}</span>
               </p>
             ) : null}
             {worldContext && !worldContext.ok ? (
@@ -752,9 +752,9 @@ export function BasicOverviewPanel({ onGoToSuggestions }: { onGoToSuggestions: (
                     <h3 className="text-[11px] font-bold uppercase tracking-wide text-sky-900/85 dark:text-sky-200/90">
                       {title}
                     </h3>
-                    <p className="text-[10px] text-zinc-500 dark:text-zinc-400">{sub}</p>
+                    <p className="text-[10px] text-lt-textMuted dark:text-zinc-400">{sub}</p>
                     {sec.skipped ? (
-                      <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+                      <p className="mt-2 text-xs text-lt-textMuted dark:text-zinc-400">
                         {key === "city" ? "Add your current city in profile for local headlines." : null}
                         {key === "home"
                           ? "Add home country (or nationality) in profile for headlines from home."
@@ -777,14 +777,14 @@ export function BasicOverviewPanel({ onGoToSuggestions }: { onGoToSuggestions: (
                                 href={item.link}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                className="group flex gap-3 rounded-xl border border-zinc-200/80 bg-white/90 p-2.5 transition hover:border-sky-300/80 hover:bg-sky-50/50 dark:border-zinc-700 dark:bg-zinc-900/60 dark:hover:border-sky-700 dark:hover:bg-sky-950/40"
+                                className="group flex gap-3 rounded-xl border border-lt-border/80 bg-lt-surface/90 p-2.5 transition hover:border-sky-300/80 hover:bg-sky-50/50 dark:border-zinc-700 dark:bg-zinc-900/60 dark:hover:border-sky-700 dark:hover:bg-sky-950/40"
                               >
                                 <NewsThumbnail url={item.image_url} />
                                 <div className="min-w-0 flex-1">
-                                  <span className="line-clamp-3 text-sm font-medium leading-snug text-zinc-900 group-hover:text-sky-800 dark:text-zinc-100 dark:group-hover:text-sky-200">
+                                  <span className="line-clamp-3 text-sm font-medium leading-snug text-lt-text group-hover:text-sky-800 dark:text-zinc-100 dark:group-hover:text-sky-200">
                                     {item.title}
                                   </span>
-                                  <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-zinc-500 dark:text-zinc-400">
+                                  <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-lt-textMuted dark:text-zinc-400">
                                     {item.source ? <span>{item.source}</span> : null}
                                     {item.published ? (
                                       <span className="font-mono">{formatNewsDate(item.published)}</span>
@@ -793,9 +793,9 @@ export function BasicOverviewPanel({ onGoToSuggestions }: { onGoToSuggestions: (
                                 </div>
                               </a>
                             ) : (
-                              <div className="flex gap-3 rounded-xl border border-zinc-200/80 bg-white/90 p-2.5 dark:border-zinc-700 dark:bg-zinc-900/60">
+                              <div className="flex gap-3 rounded-xl border border-lt-border/80 bg-lt-surface/90 p-2.5 dark:border-zinc-700 dark:bg-zinc-900/60">
                                 <NewsThumbnail url={item.image_url} />
-                                <span className="line-clamp-3 min-w-0 text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                                <span className="line-clamp-3 min-w-0 text-sm font-medium text-lt-text dark:text-zinc-100">
                                   {item.title}
                                 </span>
                               </div>
@@ -817,7 +817,7 @@ export function BasicOverviewPanel({ onGoToSuggestions }: { onGoToSuggestions: (
             <button
               type="button"
               onClick={onGoToSuggestions}
-              className="w-full rounded-2xl border-2 border-violet-400/80 bg-violet-600 px-4 py-3.5 text-center text-sm font-semibold text-white shadow-md transition hover:bg-violet-500 dark:border-violet-500 dark:bg-violet-600 dark:hover:bg-violet-500 sm:text-base"
+              className="w-full rounded-2xl border-2 border-lt-borderStrong bg-lt-accentBright px-4 py-3.5 text-center text-sm font-semibold text-white shadow-md transition hover:bg-lt-accent dark:border-violet-500 dark:bg-violet-600 dark:hover:bg-violet-500 sm:text-base"
             >
               Need a recommendation? Go to AI Suggestions →
             </button>

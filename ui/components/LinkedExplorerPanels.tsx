@@ -55,20 +55,20 @@ function DayExplorer({
   return (
     <div className="mt-4 space-y-5">
       {fl !== "all" ? (
-        <div className="rounded-lg border border-zinc-200 bg-zinc-50/80 px-3 py-2 text-[11px] text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900/40 dark:text-zinc-400">
-          View: <span className="font-semibold text-zinc-800 dark:text-zinc-200">{dayFocusLabel(fl)}</span>. Use{" "}
+        <div className="rounded-lg border border-lt-border bg-zinc-50/80 px-3 py-2 text-[11px] text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900/40 dark:text-zinc-400">
+          View: <span className="font-semibold text-lt-textSecondary dark:text-zinc-200">{dayFocusLabel(fl)}</span>. Use{" "}
           <span className="font-medium">Change view</span> to pick another lens (situations, notes, people, feelings).
         </div>
       ) : (
-        <p className="text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">
-          <span className="font-medium text-zinc-600 dark:text-zinc-300">Direct</span>: situations on this date (P4 time
-          span). <span className="font-medium text-zinc-600 dark:text-zinc-300">By proxy</span>: notes written this day or
+        <p className="text-[11px] leading-relaxed text-lt-textMuted dark:text-zinc-400">
+          <span className="font-medium text-lt-textMuted dark:text-zinc-300">Direct</span>: situations on this date (P4 time
+          span). <span className="font-medium text-lt-textMuted dark:text-zinc-300">By proxy</span>: notes written this day or
           linked to those situations; people on those situations; feelings on those notes.
         </p>
       )}
 
       {!hasAnything ? (
-        <div className="rounded-xl border border-zinc-200 bg-zinc-50/80 p-4 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900/40 dark:text-zinc-400">
+        <div className="rounded-xl border border-lt-border bg-zinc-50/80 p-4 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900/40 dark:text-zinc-400">
           Nothing in the graph for this date yet. Try another day or add journal entries that reference activities on
           this day.
         </div>
@@ -85,7 +85,7 @@ function DayExplorer({
                 value={sitFilter}
                 onChange={(e) => setSitFilter(e.target.value)}
                 placeholder="Filter situations…"
-                className="mt-2 w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                className="mt-2 w-full rounded-lg border border-lt-border bg-lt-surface px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
               />
               <div className="mt-3 max-h-[min(40vh,16rem)] space-y-2 overflow-y-auto pr-1">
                 {situations.length ? (
@@ -94,9 +94,9 @@ function DayExplorer({
                       key={s.event_key}
                       type="button"
                       onClick={() => onNavigate(s.ref)}
-                      className="flex w-full flex-col items-start gap-0.5 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-left text-sm transition-colors hover:border-sky-400/60 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:border-sky-800"
+                      className="flex w-full flex-col items-start gap-0.5 rounded-xl border border-lt-border bg-lt-surface px-3 py-2 text-left text-sm transition-colors hover:border-sky-400/60 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:border-sky-800"
                     >
-                      <span className="font-semibold text-zinc-900 dark:text-zinc-100">{s.title}</span>
+                      <span className="font-semibold text-lt-text dark:text-zinc-100">{s.title}</span>
                       <span className="text-[11px] text-zinc-500">
                         {[s.event_type, s.places.join(", ")].filter(Boolean).join(" · ") || "Activity"}
                       </span>
@@ -124,7 +124,7 @@ function DayExplorer({
                 key={p.id}
                 type="button"
                 onClick={() => onNavigate(`E21_Person:${p.id}`)}
-                className="rounded-full border border-violet-300/70 bg-white px-3 py-1 text-[11px] font-semibold text-violet-900 dark:border-violet-700 dark:bg-zinc-950 dark:text-violet-200"
+                className="rounded-full border border-violet-300/70 bg-lt-surface px-3 py-1 text-[11px] font-semibold text-violet-900 dark:border-violet-700 dark:bg-zinc-950 dark:text-violet-200"
               >
                 {p.name}
                 {p.role ? ` · ${p.role}` : ""}
@@ -146,7 +146,7 @@ function DayExplorer({
                 key={t.ref}
                 type="button"
                 onClick={() => onNavigate(t.ref)}
-                className="rounded-full border border-amber-400/50 bg-white px-3 py-1.5 text-[11px] font-semibold text-amber-950 dark:border-amber-800 dark:bg-zinc-950 dark:text-amber-100"
+                className="rounded-full border border-amber-400/50 bg-lt-surface px-3 py-1.5 text-[11px] font-semibold text-amber-950 dark:border-amber-800 dark:bg-zinc-950 dark:text-amber-100"
               >
                 {t.name}
                 <span className="ml-1 font-normal opacity-70">×{t.count}</span>
@@ -157,18 +157,18 @@ function DayExplorer({
       ) : null}
 
       {showFeel && !day.feeling_tags.length && (showAll || fl === "feelings") ? (
-        <div className="text-sm text-zinc-500">No feeling assignments on notes for this day.</div>
+        <div className="text-sm text-lt-textMuted">No feeling assignments on notes for this day.</div>
       ) : null}
 
       {showJournal ? (
-        <div className="rounded-2xl border border-zinc-200/90 bg-zinc-50/50 p-4 dark:border-zinc-800 dark:bg-zinc-900/30">
+        <div className="rounded-2xl border border-lt-border/90 bg-lt-raised/70 p-4 dark:border-zinc-800 dark:bg-zinc-900/30">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">Journal notes</div>
+            <div className="text-[10px] font-medium uppercase tracking-wide text-lt-textMuted">Journal notes</div>
             {showAll ? (
               <button
                 type="button"
                 onClick={() => setOpenNotes((v) => !v)}
-                className="text-[11px] font-semibold text-zinc-600 underline dark:text-zinc-400"
+                className="text-[11px] font-semibold text-lt-textSecondary underline dark:text-zinc-400"
               >
                 {openNotes ? "Hide" : "Show"} list
               </button>
@@ -179,10 +179,10 @@ function DayExplorer({
               {day.entries.map((e) => (
                 <div
                   key={e.entry_id}
-                  className="rounded-lg border border-zinc-200 bg-white/90 p-2.5 dark:border-zinc-800 dark:bg-zinc-950/80"
+                  className="rounded-lg border border-lt-border bg-lt-surface/90 p-2.5 dark:border-zinc-800 dark:bg-zinc-950/80"
                 >
                   <div className="text-[11px] text-zinc-500">{e.input_time || ""}</div>
-                  <div className="text-sm text-zinc-800 dark:text-zinc-200">{e.text_preview || ""}</div>
+                  <div className="text-sm text-lt-textSecondary dark:text-zinc-200">{e.text_preview || ""}</div>
                   {e.event_key ? (
                     <button
                       type="button"
@@ -220,7 +220,7 @@ function PersonFeelingTagsBar({
       <div className="text-[10px] font-medium uppercase tracking-wide text-amber-900/80 dark:text-amber-300/90">
         Go deeper · feelings and tags with this person
       </div>
-      <p className="mt-1 text-[11px] leading-relaxed text-zinc-600 dark:text-zinc-400">
+      <p className="mt-1 text-[11px] leading-relaxed text-lt-textMuted dark:text-zinc-400">
         Tags from journal assignments tied to the same situations as this person. Open one to see those moments and who
         else was there.
       </p>
@@ -230,7 +230,7 @@ function PersonFeelingTagsBar({
             key={t.ref}
             type="button"
             onClick={() => onPickTag(t.ref, personRef)}
-            className="rounded-full border border-amber-400/50 bg-white px-3 py-1.5 text-[11px] font-semibold text-amber-950 shadow-sm transition-colors hover:bg-amber-50 dark:border-amber-800 dark:bg-zinc-950 dark:text-amber-100 dark:hover:bg-amber-950/40"
+            className="rounded-full border border-amber-400/50 bg-lt-surface px-3 py-1.5 text-[11px] font-semibold text-amber-950 shadow-sm transition-colors hover:bg-amber-50 dark:border-amber-800 dark:bg-zinc-950 dark:text-amber-100 dark:hover:bg-amber-950/40"
           >
             {t.name}
             <span className="ml-1 font-normal opacity-70">×{t.count}</span>
@@ -253,12 +253,12 @@ function StepToggle({
   variant?: "neutral" | "accent" | "people";
 }) {
   const styles = open
-    ? "border-zinc-400 bg-zinc-200/80 text-zinc-900 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-100"
+    ? "border-lt-borderStrong bg-lt-accentSoft/90 text-lt-accent dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-100"
     : variant === "accent"
     ? "border-sky-300/80 bg-sky-500/10 text-sky-900 hover:bg-sky-500/15 dark:border-sky-700 dark:text-sky-200"
     : variant === "people"
     ? "border-violet-300/80 bg-violet-500/10 text-violet-900 hover:bg-violet-500/15 dark:border-violet-700 dark:text-violet-200"
-    : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900";
+    : "border-lt-border bg-lt-surface text-lt-textSecondary hover:bg-lt-muted dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900";
   return (
     <button
       type="button"
@@ -300,7 +300,7 @@ export function LazyJournalBody({ entryId, visible }: { entryId: string; visible
   if (loading) return <div className="mt-2 animate-pulse text-xs text-zinc-500">Loading note…</div>;
   if (err) return <div className="mt-2 text-xs text-rose-600 dark:text-rose-400">{err}</div>;
   return (
-    <div className="mt-2 rounded-lg border border-zinc-200 bg-white/80 p-2.5 text-sm leading-relaxed text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950/50 dark:text-zinc-100">
+    <div className="mt-2 rounded-lg border border-lt-border bg-lt-surface/80 p-2.5 text-sm leading-relaxed text-lt-textSecondary dark:border-zinc-700 dark:bg-zinc-950/50 dark:text-zinc-100">
       {text || "—"}
     </div>
   );
@@ -323,19 +323,19 @@ function MomentChainCard({
   const st = flow;
 
   return (
-    <div className="rounded-2xl border border-zinc-200/90 bg-gradient-to-b from-zinc-50/90 to-white p-4 dark:border-zinc-800 dark:from-zinc-900/40 dark:to-zinc-950">
-      <div className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">Step 1 · {moment.step1Label}</div>
-      <div className="mt-1 flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-500">
+    <div className="rounded-2xl border border-lt-border/90 bg-gradient-to-b from-lt-washTop via-lt-muted/30 to-lt-surface p-4 dark:border-zinc-800 dark:from-zinc-900/40 dark:to-zinc-950">
+      <div className="text-[10px] font-medium uppercase tracking-wide text-lt-textMuted">Step 1 · {moment.step1Label}</div>
+      <div className="mt-1 flex flex-wrap items-center justify-between gap-2 text-xs text-lt-textMuted">
         <span>{moment.day || moment.time || "—"}</span>
         {moment.tagBadge ? (
-          <span className="rounded-full bg-zinc-200/80 px-2 py-0.5 text-[10px] font-semibold text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
+          <span className="rounded-full bg-lt-accentSoft/90 px-2 py-0.5 text-[10px] font-semibold text-lt-accent dark:bg-zinc-800 dark:text-zinc-200">
             {moment.tagBadge}
           </span>
         ) : null}
       </div>
-      <div className="mt-1 text-sm font-semibold text-zinc-900 dark:text-zinc-100">{moment.recordTitle}</div>
+      <div className="mt-1 text-sm font-semibold text-lt-text dark:text-zinc-100">{moment.recordTitle}</div>
       {moment.entryPreview ? (
-        <div className="mt-1 text-[11px] italic text-zinc-400 dark:text-zinc-500">
+        <div className="mt-1 text-[11px] italic text-lt-textMuted dark:text-zinc-500">
           Hint · {moment.entryPreview}
           {moment.entryPreview.length >= 140 ? "…" : ""}
         </div>
@@ -361,12 +361,12 @@ function MomentChainCard({
       {st.situation && hasSituation ? (
         <div className="mt-3 rounded-xl border border-sky-200/60 bg-sky-500/5 p-3 dark:border-sky-900/40 dark:bg-sky-500/10">
           <div className="text-[10px] font-medium uppercase tracking-wide text-sky-800/80 dark:text-sky-300/90">Step 2 · Situation</div>
-          <div className="mt-1 text-base font-semibold text-zinc-900 dark:text-zinc-50">
+          <div className="mt-1 text-base font-semibold text-lt-text dark:text-zinc-50">
             {moment.activityName || "Unnamed situation"}
           </div>
           {moment.activityKind ? (
             <div className="mt-0.5 text-[11px] text-zinc-500">
-              Kind · <span className="text-zinc-700 dark:text-zinc-300">{moment.activityKind}</span>
+              Kind · <span className="text-lt-textSecondary dark:text-zinc-300">{moment.activityKind}</span>
             </div>
           ) : null}
           <div className="mt-1 font-mono text-[10px] text-zinc-500">
@@ -376,7 +376,7 @@ function MomentChainCard({
             <button
               type="button"
               onClick={() => onNavigate(`Event:${moment.eventKey}`)}
-              className="rounded-lg border border-sky-400/60 bg-white px-3 py-1.5 text-[11px] font-semibold text-sky-900 hover:bg-sky-50 dark:border-sky-700 dark:bg-zinc-950 dark:text-sky-200 dark:hover:bg-sky-950/30"
+              className="rounded-lg border border-sky-400/60 bg-lt-surface px-3 py-1.5 text-[11px] font-semibold text-sky-900 hover:bg-sky-50 dark:border-sky-700 dark:bg-zinc-950 dark:text-sky-200 dark:hover:bg-sky-950/30"
             >
               Focus this situation (details & cast) →
             </button>
@@ -398,7 +398,7 @@ function MomentChainCard({
                 key={p.id}
                 type="button"
                 onClick={() => onNavigate(`E21_Person:${p.id}`)}
-                className="rounded-full border border-violet-300/70 bg-white px-3 py-1 text-[11px] font-semibold text-violet-900 transition-colors hover:bg-violet-50 dark:border-violet-700 dark:bg-zinc-950 dark:text-violet-200 dark:hover:bg-violet-950/40"
+                className="rounded-full border border-violet-300/70 bg-lt-surface px-3 py-1 text-[11px] font-semibold text-violet-900 transition-colors hover:bg-violet-50 dark:border-violet-700 dark:bg-zinc-950 dark:text-violet-200 dark:hover:bg-violet-950/40"
               >
                 {p.name}
                 {p.role ? ` · ${p.role}` : ""}
@@ -446,16 +446,16 @@ function HubExplorer({
   if (hub.kind === "situation") {
     return (
       <div className="mt-4 space-y-3">
-        <div className="rounded-2xl border border-zinc-200/90 bg-gradient-to-b from-zinc-50/90 to-white p-4 dark:border-zinc-800 dark:from-zinc-900/40 dark:to-zinc-950">
-          <div className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
+        <div className="rounded-2xl border border-lt-border/90 bg-gradient-to-b from-lt-washTop via-lt-muted/30 to-lt-surface p-4 dark:border-zinc-800 dark:from-zinc-900/40 dark:to-zinc-950">
+          <div className="text-[10px] font-medium uppercase tracking-wide text-lt-textMuted">
             {hub.placeLens ? "Anchor · Place" : "Anchor · Situation"}
           </div>
-          <div className="mt-1 text-lg font-semibold text-zinc-900 dark:text-zinc-50">{hub.title}</div>
-          {hub.subtitle ? <div className="mt-1 text-xs text-zinc-500">{hub.subtitle}</div> : null}
+          <div className="mt-1 text-lg font-semibold text-lt-text dark:text-zinc-50">{hub.title}</div>
+          {hub.subtitle ? <div className="mt-1 text-xs text-lt-textMuted">{hub.subtitle}</div> : null}
           {hub.summaryText ? (
-            <div className="mt-2 text-sm leading-relaxed text-zinc-600 dark:text-zinc-300">{hub.summaryText}</div>
+            <div className="mt-2 text-sm leading-relaxed text-lt-textMuted dark:text-zinc-300">{hub.summaryText}</div>
           ) : hub.placeLens ? (
-            <div className="mt-2 text-xs text-zinc-500">
+            <div className="mt-2 text-xs text-lt-textMuted">
               No journal text preview yet for this place lens — expand <span className="font-medium">Journal notes</span> below if
               entries are linked.
             </div>
@@ -479,7 +479,7 @@ function HubExplorer({
                   key={p.id}
                   type="button"
                   onClick={() => onNavigate(`E21_Person:${p.id}`)}
-                  className="rounded-full border border-violet-300/70 bg-white px-3 py-1 text-[11px] font-semibold text-violet-900 hover:bg-violet-50 dark:border-violet-700 dark:bg-zinc-950 dark:text-violet-200"
+                  className="rounded-full border border-violet-300/70 bg-lt-surface px-3 py-1 text-[11px] font-semibold text-violet-900 hover:bg-violet-50 dark:border-violet-700 dark:bg-zinc-950 dark:text-violet-200"
                 >
                   {p.name}
                 </button>
@@ -487,27 +487,27 @@ function HubExplorer({
               {hub.users.map((u, i) => (
                 <span
                   key={`${u.name}-${i}`}
-                  className="rounded-full border border-zinc-200 px-3 py-1 text-[11px] text-zinc-600 dark:border-zinc-700 dark:text-zinc-400"
+                  className="rounded-full border border-lt-border px-3 py-1 text-[11px] text-lt-textSecondary dark:border-zinc-700 dark:text-zinc-400"
                 >
                   {u.name}
                 </span>
               ))}
               {!hub.persons.length && !hub.users.length ? (
-                <div className="text-sm text-zinc-500">No one linked here.</div>
+                <div className="text-sm text-lt-textMuted">No one linked here.</div>
               ) : null}
             </div>
           </div>
         ) : null}
 
         {openNotes ? (
-          <div className="space-y-2 rounded-xl border border-zinc-200 bg-zinc-50/80 p-3 dark:border-zinc-800 dark:bg-zinc-900/40">
+          <div className="space-y-2 rounded-xl border border-lt-border bg-lt-raised/80 p-3 dark:border-zinc-800 dark:bg-zinc-900/40">
             {hub.entries.map((e) => (
-              <div key={e.entry_id} className="text-sm text-zinc-700 dark:text-zinc-200">
-                <div className="text-[11px] text-zinc-500">{e.input_time || e.day || ""}</div>
+              <div key={e.entry_id} className="text-sm text-lt-textSecondary dark:text-zinc-200">
+                <div className="text-[11px] text-lt-textMuted">{e.input_time || e.day || ""}</div>
                 <div>{e.text_preview || ""}</div>
               </div>
             ))}
-            {!hub.entries.length ? <div className="text-sm text-zinc-500">No notes found.</div> : null}
+            {!hub.entries.length ? <div className="text-sm text-lt-textMuted">No notes found.</div> : null}
           </div>
         ) : null}
       </div>
@@ -517,16 +517,16 @@ function HubExplorer({
   /* context hub */
   return (
     <div className="mt-4 space-y-3">
-      <div className="rounded-2xl border border-zinc-200/90 bg-gradient-to-b from-zinc-50/90 to-white p-4 dark:border-zinc-800 dark:from-zinc-900/40 dark:to-zinc-950">
-        <div className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
+      <div className="rounded-2xl border border-lt-border/90 bg-gradient-to-b from-lt-washTop via-lt-muted/30 to-lt-surface p-4 dark:border-zinc-800 dark:from-zinc-900/40 dark:to-zinc-950">
+        <div className="text-[10px] font-medium uppercase tracking-wide text-lt-textMuted">
           {hub.anchorKind === "journal" ? "Anchor · Journal entry" : "Anchor · Context excerpt"}
         </div>
-        <div className="mt-1 text-lg font-semibold text-zinc-900 dark:text-zinc-50">{hub.name}</div>
-        <div className="mt-1 flex flex-wrap gap-2 text-xs text-zinc-500">
+        <div className="mt-1 text-lg font-semibold text-lt-text dark:text-zinc-50">{hub.name}</div>
+        <div className="mt-1 flex flex-wrap gap-2 text-xs text-lt-textMuted">
           {hub.day ? <span>{hub.day}</span> : null}
           {hub.eventType ? <span>{hub.eventType}</span> : null}
         </div>
-        {hub.text ? <div className="mt-2 text-sm text-zinc-600 dark:text-zinc-300">{hub.text}</div> : null}
+        {hub.text ? <div className="mt-2 text-sm text-lt-textMuted dark:text-zinc-300">{hub.text}</div> : null}
       </div>
 
       <div className="flex flex-wrap gap-2">
@@ -552,7 +552,7 @@ function HubExplorer({
                       key={`${L.ref}-${L.ref_type}-${L.source}`}
                       type="button"
                       onClick={() => onNavigate(L.ref)}
-                      className="flex max-w-full flex-col items-start rounded-lg border border-sky-300/60 bg-white px-2.5 py-1.5 text-left text-[11px] font-semibold text-sky-950 hover:bg-sky-50 dark:border-sky-800 dark:bg-zinc-950 dark:text-sky-100 dark:hover:bg-sky-950/40"
+                      className="flex max-w-full flex-col items-start rounded-lg border border-sky-300/60 bg-lt-surface px-2.5 py-1.5 text-left text-[11px] font-semibold text-sky-950 hover:bg-sky-50 dark:border-sky-800 dark:bg-zinc-950 dark:text-sky-100 dark:hover:bg-sky-950/40"
                     >
                       <span className="truncate">{L.name}</span>
                       <span className="mt-0.5 font-normal text-[10px] text-zinc-500">
@@ -574,9 +574,9 @@ function HubExplorer({
       ) : null}
 
       {openEntries ? (
-        <div className="space-y-2 rounded-xl border border-zinc-200 bg-zinc-50/80 p-3 dark:border-zinc-800 dark:bg-zinc-900/40">
+        <div className="space-y-2 rounded-xl border border-lt-border bg-zinc-50/80 p-3 dark:border-zinc-800 dark:bg-zinc-900/40">
           {hub.entries.map((e) => (
-            <div key={e.entry_id} className="text-sm text-zinc-700 dark:text-zinc-200">
+            <div key={e.entry_id} className="text-sm text-lt-textSecondary dark:text-zinc-200">
               <div className="text-[11px] text-zinc-500">{e.input_time || ""}</div>
               <div>{e.text_preview || ""}</div>
             </div>
@@ -609,7 +609,7 @@ export function StepRail({
     <div
       className={[
         "flex flex-wrap items-center gap-2 text-[11px]",
-        compact ? "" : "mb-4 border-b border-zinc-200 pb-3 dark:border-zinc-800",
+        compact ? "" : "mb-4 border-b border-lt-border pb-3 dark:border-zinc-800",
       ].join(" ")}
     >
       {phases.map((p, i) => (
@@ -678,7 +678,7 @@ export function LinkedExplorerDetails({
       {!overviewLoading && overview ? (
         <>
           <div className="mt-3 flex flex-wrap items-baseline justify-between gap-2">
-            <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">{contentHeader}</div>
+            <div className="text-sm font-semibold text-lt-text dark:text-zinc-50">{contentHeader}</div>
             <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400">
               {exploreKindLabel(overview)}
             </span>
@@ -733,14 +733,14 @@ export function LinkedExplorerDetails({
 
           {!moments.length && !hub && overview.kind !== "Day" ? (
             overview.kind === "Person" ? (
-              <div className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50/80 p-4 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900/40 dark:text-zinc-300">
-                <p className="font-medium text-zinc-800 dark:text-zinc-100">No timeline rows yet</p>
+              <div className="mt-4 rounded-xl border border-lt-border bg-zinc-50/80 p-4 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900/40 dark:text-zinc-300">
+                <p className="font-medium text-lt-textSecondary dark:text-zinc-100">No timeline rows yet</p>
                 <p className="mt-1 text-[13px] leading-relaxed">
                   Notes show up here when they are linked to a situation that lists this person as a participant (Activity →
                   person). The person can still exist in your graph from mentions or aliases.
                 </p>
                 {typeof overview.mentions === "number" && overview.mentions > 0 ? (
-                  <p className="mt-2 text-[13px] text-zinc-500 dark:text-zinc-400">
+                  <p className="mt-2 text-[13px] text-lt-textMuted dark:text-zinc-400">
                     Recorded mentions in the graph: {overview.mentions}
                   </p>
                 ) : null}

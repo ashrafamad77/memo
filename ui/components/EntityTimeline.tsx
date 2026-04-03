@@ -10,23 +10,23 @@ export function EntityTimeline() {
   return (
     <div className="mt-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">Linked explorer</div>
+        <div className="text-sm font-semibold text-lt-textSecondary dark:text-zinc-100">Linked explorer</div>
         <button
           type="button"
           onClick={ex.restartWizard}
-          className="rounded-lg border border-zinc-200 px-2 py-1 text-[11px] font-semibold text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+          className="rounded-lg border border-lt-border px-2 py-1 text-[11px] font-semibold text-zinc-600 hover:bg-lt-muted dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
         >
           Start over
         </button>
       </div>
-      <p className="mt-1 text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">
-        Three steps: pick a <span className="font-medium text-zinc-600 dark:text-zinc-300">category</span>, then an{" "}
-        <span className="font-medium text-zinc-600 dark:text-zinc-300">item</span>, then how to{" "}
-        <span className="font-medium text-zinc-600 dark:text-zinc-300">view</span> it. If the graph has no links, we tell
+      <p className="mt-1 text-[11px] leading-relaxed text-lt-textMuted dark:text-zinc-400">
+        Three steps: pick a <span className="font-medium text-lt-textMuted dark:text-zinc-300">category</span>, then an{" "}
+        <span className="font-medium text-lt-textMuted dark:text-zinc-300">item</span>, then how to{" "}
+        <span className="font-medium text-lt-textMuted dark:text-zinc-300">view</span> it. If the graph has no links, we tell
         you instead of failing silently.
       </p>
 
-      <div className="mt-3 rounded-2xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
+      <div className="mt-3 rounded-2xl border border-lt-border bg-lt-surface p-5 dark:border-zinc-800 dark:bg-zinc-950">
         <StepRail
           step={ex.wizardStep}
           categoryLabel={ex.categoryLabel}
@@ -42,9 +42,9 @@ export function EntityTimeline() {
                   key={c.id}
                   type="button"
                   onClick={() => ex.startCategory(c.id, c.label)}
-                  className="rounded-xl border border-zinc-200 bg-zinc-50/80 p-3 text-left transition-colors hover:border-sky-300/60 hover:bg-sky-500/5 dark:border-zinc-800 dark:bg-zinc-900/40 dark:hover:border-sky-800"
+                  className="rounded-xl border border-lt-border bg-zinc-50/80 p-3 text-left transition-colors hover:border-sky-300/60 hover:bg-sky-500/5 dark:border-zinc-800 dark:bg-zinc-900/40 dark:hover:border-sky-800"
                 >
-                  <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">{c.label}</div>
+                  <div className="text-sm font-semibold text-lt-text dark:text-zinc-50">{c.label}</div>
                   <div className="mt-0.5 text-[11px] text-zinc-500">{c.hint}</div>
                 </button>
               ))}
@@ -71,7 +71,7 @@ export function EntityTimeline() {
               value={ex.searchInput}
               onChange={(e) => ex.setSearchInput(e.target.value)}
               placeholder="Filter by name…"
-              className="mt-2 w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+              className="mt-2 w-full rounded-lg border border-lt-border bg-lt-surface px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
             />
             {ex.entityLoading ? (
               <div className="mt-4 animate-pulse text-sm text-zinc-500">Loading list…</div>
@@ -119,9 +119,9 @@ export function EntityTimeline() {
                   type="button"
                   onClick={() => void ex.jumpToEntity(e.ref)}
                   disabled={ex.navLoading || !e.ref?.trim()}
-                  className="flex w-full items-center justify-between gap-2 rounded-lg border border-zinc-100 bg-zinc-50/50 px-3 py-2 text-left text-sm hover:border-zinc-300 hover:bg-white disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-900/30 dark:hover:bg-zinc-900"
+                  className="flex w-full items-center justify-between gap-2 rounded-lg border border-lt-border/60 bg-lt-raised/50 px-3 py-2 text-left text-sm hover:border-lt-borderStrong hover:bg-lt-surface disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-900/30 dark:hover:bg-zinc-900"
                 >
-                  <span className="font-medium text-zinc-900 dark:text-zinc-100">{e.name}</span>
+                  <span className="font-medium text-lt-text dark:text-zinc-100">{e.name}</span>
                   <span className="shrink-0 text-[10px] text-zinc-400">{formatEntityOption(e)}</span>
                 </button>
               ))}
@@ -146,7 +146,7 @@ export function EntityTimeline() {
                 ← Other item
               </button>
             </div>
-            <div className="mt-1 text-sm text-zinc-700 dark:text-zinc-200">
+            <div className="mt-1 text-sm text-lt-textSecondary dark:text-zinc-200">
               <span className="font-semibold">{ex.selectedDisplayName || ex.selectedRef}</span>
             </div>
             {ex.navError ? (
@@ -171,12 +171,12 @@ export function EntityTimeline() {
                   className={[
                     "w-full rounded-xl border p-3 text-left transition-colors",
                     opt.enabled
-                      ? "border-zinc-200 bg-white hover:border-sky-300/70 hover:bg-sky-500/5 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:border-sky-800"
+                      ? "border-lt-border bg-lt-surface hover:border-sky-300/70 hover:bg-sky-500/5 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:border-sky-800"
                       : "cursor-not-allowed border-zinc-100 bg-zinc-50/50 opacity-60 dark:border-zinc-800/60",
                   ].join(" ")}
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">{opt.title}</span>
+                    <span className="text-sm font-semibold text-lt-text dark:text-zinc-50">{opt.title}</span>
                     <span className="text-[11px] text-zinc-500">
                       {opt.count} link{opt.count === 1 ? "" : "s"}
                     </span>

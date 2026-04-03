@@ -171,23 +171,23 @@ function JournalProcessingBubble({ state }: { state: JournalProcessingState }) {
   const nextStageIndex = PIPELINE_TRACK.findIndex((s) => pct < s.minPct);
 
   return (
-    <div className="relative w-full min-w-0 overflow-hidden rounded-2xl border border-indigo-200/60 bg-gradient-to-br from-indigo-50/95 via-white to-violet-50/90 p-4 shadow-lg shadow-indigo-500/10 ring-1 ring-indigo-500/5 sm:p-5 dark:border-indigo-800/50 dark:from-indigo-950/80 dark:via-zinc-900 dark:to-violet-950/50 dark:shadow-indigo-950/30 dark:ring-indigo-400/10">
-      <div className="pointer-events-none absolute -right-8 -top-8 h-32 w-32 rounded-full bg-indigo-400/10 blur-2xl dark:bg-indigo-500/15" />
-      <div className="pointer-events-none absolute -bottom-6 -left-6 h-24 w-24 rounded-full bg-violet-400/10 blur-2xl dark:bg-violet-500/10" />
+    <div className="relative w-full min-w-0 overflow-hidden rounded-2xl border border-amber-200/55 bg-gradient-to-br from-amber-50/95 via-lt-surface to-orange-50/80 p-4 shadow-lg shadow-amber-900/10 ring-1 ring-amber-700/10 sm:p-5 dark:border-indigo-800/50 dark:from-indigo-950/80 dark:via-zinc-900 dark:to-violet-950/50 dark:shadow-indigo-950/30 dark:ring-indigo-400/10 nebula:border-cyan-500/40 nebula:from-slate-950/95 nebula:via-fuchsia-950/45 nebula:to-violet-950/85 nebula:shadow-neb-glow-fuchsia nebula:ring-cyan-400/25">
+      <div className="pointer-events-none absolute -right-8 -top-8 h-32 w-32 rounded-full bg-amber-400/15 blur-2xl dark:bg-indigo-500/15 nebula:bg-fuchsia-500/25" />
+      <div className="pointer-events-none absolute -bottom-6 -left-6 h-24 w-24 rounded-full bg-orange-300/20 blur-2xl dark:bg-violet-500/10 nebula:bg-cyan-500/20" />
 
       {/* Ring + status share one row; cards below use full width so nothing sits in an empty column beside the ring. */}
       <div className="relative flex flex-col gap-4 sm:flex-row sm:items-center sm:gap-6">
         <div className="mx-auto flex shrink-0 flex-col items-center sm:mx-0">
           <div className="relative h-[132px] w-[132px]">
             <svg
-              className="h-[132px] w-[132px] -rotate-90 text-indigo-200/90 dark:text-zinc-700"
+              className="h-[132px] w-[132px] -rotate-90 text-amber-200/85 dark:text-zinc-700"
               viewBox="0 0 120 120"
               aria-hidden
             >
               <defs>
                 <linearGradient id={gradId} x1="0%" y1="0%" x2="100%" y2="100%">
-                  <stop offset="0%" stopColor="#6366f1" />
-                  <stop offset="100%" stopColor="#8b5cf6" />
+                  <stop offset="0%" stopColor="#b45309" />
+                  <stop offset="100%" stopColor="#ea580c" />
                 </linearGradient>
               </defs>
               <circle cx="60" cy="60" r={PROCESS_RING_R} fill="none" stroke="currentColor" strokeWidth="9" />
@@ -204,10 +204,10 @@ function JournalProcessingBubble({ state }: { state: JournalProcessingState }) {
               />
             </svg>
             <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
-              <span className="text-2xl font-bold tabular-nums tracking-tight text-indigo-950 dark:text-indigo-100">
+              <span className="text-2xl font-bold tabular-nums tracking-tight text-lt-text dark:text-indigo-100">
                 {Math.round(pct)}%
               </span>
-              <span className="mt-0.5 text-[10px] font-medium uppercase tracking-wider text-indigo-600/80 dark:text-indigo-300/80">
+              <span className="mt-0.5 text-[10px] font-medium uppercase tracking-wider text-lt-accent dark:text-indigo-300/80">
                 progress
               </span>
             </div>
@@ -216,15 +216,15 @@ function JournalProcessingBubble({ state }: { state: JournalProcessingState }) {
 
         <div className="min-w-0 flex-1 text-center sm:text-left">
           <div className="flex flex-wrap items-center justify-center gap-2 sm:justify-start">
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-600/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-indigo-800 dark:bg-indigo-400/15 dark:text-indigo-200">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-lt-accent/12 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-lt-accent dark:bg-indigo-400/15 dark:text-indigo-200">
               <span className="relative flex h-2 w-2">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-indigo-400 opacity-60" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-indigo-600 dark:bg-indigo-400" />
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-60 dark:bg-indigo-400" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-lt-accentBright dark:bg-indigo-400" />
               </span>
               Processing your entry
             </span>
           </div>
-          <p className="mt-2 text-base font-semibold leading-snug text-zinc-900 dark:text-zinc-50">
+          <p className="mt-2 text-base font-semibold leading-snug text-lt-text dark:text-zinc-50">
             {state.label || "Working on your journal…"}
           </p>
         </div>
@@ -232,27 +232,27 @@ function JournalProcessingBubble({ state }: { state: JournalProcessingState }) {
 
       <div className="relative mt-4 w-full min-w-0 space-y-3">
           {showQuote ? (
-            <div className="w-full rounded-xl border border-zinc-200/80 bg-white/70 p-3 shadow-sm sm:p-4 dark:border-zinc-600/60 dark:bg-zinc-950/50">
-              <p className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+            <div className="w-full rounded-xl border border-lt-border/80 bg-lt-surface/70 p-3 shadow-sm sm:p-4 dark:border-zinc-600/60 dark:bg-zinc-950/50">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-lt-textMuted dark:text-zinc-400">
                 Your entry
               </p>
-              <blockquote className="mt-1.5 border-l-4 border-indigo-400/80 pl-3 text-sm italic leading-relaxed text-zinc-800 dark:border-indigo-500/70 dark:text-zinc-200">
+              <blockquote className="mt-1.5 border-l-4 border-lt-accentBright pl-3 text-sm italic leading-relaxed text-lt-textSecondary dark:border-indigo-500/70 dark:text-zinc-200">
                 “{quoteText}”
               </blockquote>
               {(pv?.word_count != null || pv?.char_count != null || pv?.entry_id) && (
                 <div className="mt-3 flex flex-wrap gap-2">
                   {pv?.word_count != null ? (
-                    <span className="rounded-md bg-zinc-900/5 px-2 py-px text-[11px] font-medium tabular-nums text-zinc-700 dark:bg-white/10 dark:text-zinc-300">
+                    <span className="rounded-md bg-lt-subtle/80 px-2 py-px text-[11px] font-medium tabular-nums text-lt-textSecondary dark:bg-white/10 dark:text-zinc-300">
                       {pv.word_count} words
                     </span>
                   ) : null}
                   {pv?.char_count != null ? (
-                    <span className="rounded-md bg-zinc-900/5 px-2 py-px text-[11px] font-medium tabular-nums text-zinc-700 dark:bg-white/10 dark:text-zinc-300">
+                    <span className="rounded-md bg-lt-subtle/80 px-2 py-px text-[11px] font-medium tabular-nums text-lt-textSecondary dark:bg-white/10 dark:text-zinc-300">
                       {pv.char_count} characters
                     </span>
                   ) : null}
                   {pv?.entry_id ? (
-                    <span className="rounded-md bg-indigo-500/10 px-2 py-px font-mono text-[10px] text-indigo-800 dark:bg-indigo-400/15 dark:text-indigo-200">
+                    <span className="rounded-md bg-lt-accent/12 px-2 py-px font-mono text-[10px] text-lt-accent dark:bg-indigo-400/15 dark:text-indigo-200">
                       id {String(pv.entry_id).slice(0, 8)}…
                     </span>
                   ) : null}
@@ -261,8 +261,8 @@ function JournalProcessingBubble({ state }: { state: JournalProcessingState }) {
             </div>
           ) : null}
 
-          <div className="w-full rounded-xl border border-indigo-200/50 bg-indigo-500/[0.06] p-3 sm:p-4 dark:border-indigo-800/40 dark:bg-indigo-950/30">
-            <p className="text-[10px] font-semibold uppercase tracking-wide text-indigo-700 dark:text-indigo-300">
+          <div className="w-full rounded-xl border border-amber-200/45 bg-amber-500/[0.07] p-3 sm:p-4 dark:border-indigo-800/40 dark:bg-indigo-950/30">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-lt-accent dark:text-indigo-300">
               Pipeline stages
             </p>
             <div className="mt-2 flex flex-wrap gap-2">
@@ -277,8 +277,8 @@ function JournalProcessingBubble({ state }: { state: JournalProcessingState }) {
                       done
                         ? "border-emerald-400/50 bg-emerald-500/15 text-emerald-900 dark:border-emerald-600/40 dark:text-emerald-100"
                         : pulse
-                          ? "border-indigo-400/60 bg-indigo-500/20 text-indigo-950 shadow-sm shadow-indigo-500/20 dark:border-indigo-500/50 dark:text-indigo-50"
-                          : "border-zinc-200/80 bg-white/50 text-zinc-500 dark:border-zinc-700 dark:bg-zinc-800/50 dark:text-zinc-400"
+                          ? "border-lt-borderStrong/70 bg-lt-accentSoft text-lt-text shadow-sm shadow-amber-900/15 dark:border-indigo-500/50 dark:bg-indigo-500/20 dark:text-indigo-50 dark:shadow-indigo-500/20"
+                          : "border-lt-border/80 bg-lt-surface/50 text-lt-textMuted dark:border-zinc-700 dark:bg-zinc-800/50 dark:text-zinc-400"
                     }`}
                   >
                     {done ? "✓ " : ""}
@@ -296,12 +296,12 @@ function JournalProcessingBubble({ state }: { state: JournalProcessingState }) {
             pv.activities?.length ||
             pv.types?.length) ? (
             <div className="w-full space-y-1.5">
-              <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-lt-textMuted dark:text-zinc-400">
                 Live graph preview
               </p>
               <div className="flex flex-wrap gap-1.5">
                 {pv.node_count != null ? (
-                  <span className="rounded-lg border border-zinc-200/80 bg-white/80 px-2.5 py-1 text-xs font-medium text-zinc-700 shadow-sm dark:border-zinc-600 dark:bg-zinc-800/80 dark:text-zinc-200">
+                  <span className="rounded-lg border border-lt-border/80 bg-lt-surface/80 px-2.5 py-1 text-xs font-medium text-lt-textSecondary shadow-sm dark:border-zinc-600 dark:bg-zinc-800/80 dark:text-zinc-200">
                     {pv.node_count} nodes
                     {pv.edge_count != null ? ` · ${pv.edge_count} edges` : ""}
                   </span>
@@ -343,25 +343,25 @@ function JournalProcessingBubble({ state }: { state: JournalProcessingState }) {
           ) : null}
 
           {state.log.length > 0 ? (
-            <div className="w-full rounded-xl border border-zinc-200/70 bg-white/60 p-3 sm:p-4 dark:border-zinc-700/80 dark:bg-zinc-950/40">
-              <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+            <div className="w-full rounded-xl border border-lt-border/70 bg-lt-surface/60 p-3 sm:p-4 dark:border-zinc-700/80 dark:bg-zinc-950/40">
+              <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-lt-textMuted dark:text-zinc-400">
                 Activity
               </p>
-              <ul className="max-h-[140px] space-y-1.5 overflow-y-auto text-[13px] leading-snug text-zinc-700 dark:text-zinc-300">
+              <ul className="max-h-[140px] space-y-1.5 overflow-y-auto text-[13px] leading-snug text-lt-textSecondary dark:text-zinc-300">
                 {state.log.slice(-6).map((line, i) => (
-                  <li key={`${i}-${line.slice(0, 24)}`} className="flex gap-2 border-l-2 border-indigo-400/50 pl-2 dark:border-indigo-500/40">
-                    <span className="shrink-0 text-indigo-500 dark:text-indigo-400">→</span>
+                  <li key={`${i}-${line.slice(0, 24)}`} className="flex gap-2 border-l-2 border-lt-accentRing pl-2 dark:border-indigo-500/40">
+                    <span className="shrink-0 text-lt-accentBright dark:text-indigo-400">→</span>
                     <span className="min-w-0 break-words">{line}</span>
                   </li>
                 ))}
               </ul>
             </div>
           ) : showTips ? (
-            <div className="w-full rounded-xl border border-violet-200/50 bg-gradient-to-br from-violet-50/90 to-indigo-50/50 p-3 sm:p-4 dark:border-violet-800/40 dark:from-violet-950/40 dark:to-indigo-950/30">
-              <p className="text-[10px] font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-300">
+            <div className="w-full rounded-xl border border-amber-200/45 bg-gradient-to-br from-amber-50/88 to-orange-50/45 p-3 sm:p-4 dark:border-violet-800/40 dark:from-violet-950/40 dark:to-indigo-950/30">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-900/80 dark:text-violet-300">
                 What’s happening
               </p>
-              <p key={tipIdx} className="mt-2 text-sm leading-relaxed text-violet-950/90 dark:text-violet-100/95">
+              <p key={tipIdx} className="mt-2 text-sm leading-relaxed text-lt-text dark:text-violet-100/95">
                 {PIPELINE_TIPS[tipIdx % PIPELINE_TIPS.length]}
               </p>
             </div>
@@ -374,8 +374,8 @@ function JournalProcessingBubble({ state }: { state: JournalProcessingState }) {
 function FrozenTaskSnapshot({ task: t }: { task: InboxTask }) {
   const isPlace = t.type === "place_wikidata";
   return (
-    <div className="rounded-lg border border-zinc-200/80 bg-zinc-50/80 p-2 dark:border-zinc-700 dark:bg-zinc-900/50">
-      <div className="text-[11px] font-semibold text-zinc-600 dark:text-zinc-300">
+    <div className="rounded-lg border border-lt-border/80 bg-lt-raised/80 p-2 dark:border-zinc-700 dark:bg-zinc-900/50">
+      <div className="text-[11px] font-semibold text-lt-textMuted dark:text-zinc-300">
         {isPlace ? `Place: ${t.mention}` : `Person: ${t.mention}`}
       </div>
       {isPlace ? (
@@ -383,9 +383,9 @@ function FrozenTaskSnapshot({ task: t }: { task: InboxTask }) {
           {(t.candidates || []).map((c) => (
             <span
               key={c.wikidata_id}
-              className="inline-block max-w-full rounded border border-zinc-200 bg-white/90 px-2 py-1 text-[10px] text-zinc-600 dark:border-zinc-600 dark:bg-zinc-950 dark:text-zinc-400"
+              className="inline-block max-w-full rounded border border-lt-border bg-lt-surface/90 px-2 py-1 text-[10px] text-lt-textMuted dark:border-zinc-600 dark:bg-zinc-950 dark:text-zinc-400"
             >
-              <span className="font-medium text-zinc-800 dark:text-zinc-200">{c.label || c.wikidata_id}</span>
+              <span className="font-medium text-lt-textSecondary dark:text-zinc-200">{c.label || c.wikidata_id}</span>
               {c.description ? (
                 <span className="mt-0.5 block line-clamp-1 text-zinc-500">{c.description}</span>
               ) : null}
@@ -818,12 +818,14 @@ export function ChatPanel() {
 
   return (
     <div className="flex h-full min-h-0 min-w-0 max-w-full flex-col overflow-x-hidden">
-      <div className="flex items-center justify-between gap-3 border-b border-zinc-200 dark:border-zinc-800 px-4 py-3">
-        <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Memo</div>
-        <div className="flex items-center gap-2 text-xs text-zinc-400 dark:text-zinc-500">
+      <div className="flex items-center justify-between gap-3 border-b border-lt-border dark:border-zinc-800 nebula:border-cyan-500/25 nebula:bg-neb-panel/35 nebula:backdrop-blur-md nebula:shadow-neb-inset px-4 py-3">
+        <div className="text-sm font-semibold text-lt-text dark:text-zinc-100 nebula:bg-gradient-to-r nebula:from-cyan-200 nebula:to-fuchsia-200 nebula:bg-clip-text nebula:text-transparent">
+          Memo
+        </div>
+        <div className="flex items-center gap-2 text-xs text-zinc-400 dark:text-zinc-500 nebula:text-cyan-200/65">
           {busy ? (
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-500/10 px-2 py-0.5 text-[11px] font-medium text-indigo-700 dark:text-indigo-300">
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-indigo-500" />
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-lt-accent/12 px-2 py-0.5 text-[11px] font-medium text-lt-accent dark:text-indigo-300">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-lt-accentBright dark:bg-indigo-500" />
               Working
             </span>
           ) : null}
@@ -841,14 +843,14 @@ export function ChatPanel() {
               key={m.id}
               className={
                 m.role === "user"
-                  ? "ml-auto max-w-[95%] rounded-2xl border border-indigo-200/50 bg-indigo-50/90 px-3 py-2 text-sm text-indigo-950 dark:border-indigo-800/40 dark:bg-indigo-950/35 dark:text-indigo-50"
+                  ? "ml-auto max-w-[95%] rounded-2xl border border-lt-borderStrong/50 bg-lt-accentSoft px-3 py-2 text-sm text-lt-text dark:border-indigo-800/40 dark:bg-indigo-950/35 dark:text-indigo-50"
                   : `rounded-2xl border text-sm ${
                       m.processing
                         ? "w-full max-w-[min(95%,56rem)] border-transparent bg-transparent p-0 shadow-none"
                         : `max-w-[95%] border px-3 py-2 ${
                             m.hintFollowUp
                               ? "border-indigo-500/35 bg-gradient-to-br from-slate-900/90 to-indigo-950/50 text-slate-100 shadow-md shadow-indigo-950/20"
-                              : "border-zinc-200/80 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100"
+                              : "border-lt-border/90 bg-lt-raised dark:border-zinc-800 dark:bg-zinc-900 text-lt-text dark:text-zinc-100"
                           }`
                     }`
               }
@@ -858,7 +860,7 @@ export function ChatPanel() {
               ) : (
                 <>
                   {m.role === "assistant" && m.badge ? (
-                    <div className="mb-1 inline-flex rounded-full border border-zinc-300 dark:border-zinc-700 bg-zinc-100 dark:bg-zinc-800 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-300">
+                    <div className="mb-1 inline-flex rounded-full border border-lt-borderStrong dark:border-zinc-700 bg-lt-muted dark:bg-zinc-800 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-lt-textMuted dark:text-zinc-300">
                       {m.badge}
                     </div>
                   ) : null}
@@ -886,7 +888,7 @@ export function ChatPanel() {
                           type="button"
                           disabled={busy}
                           onClick={() => void sendClarificationPick(c)}
-                          className="rounded-lg border border-amber-300/80 bg-white px-3 py-2 text-left text-sm font-medium text-amber-950 shadow-sm hover:bg-amber-100 disabled:opacity-50 dark:border-amber-800 dark:bg-zinc-900 dark:text-amber-50 dark:hover:bg-zinc-800"
+                          className="rounded-lg border border-amber-300/80 bg-lt-surface px-3 py-2 text-left text-sm font-medium text-amber-950 shadow-sm hover:bg-amber-100 disabled:opacity-50 dark:border-amber-800 dark:bg-zinc-900 dark:text-amber-50 dark:hover:bg-zinc-800"
                         >
                           {c}
                         </button>
@@ -922,11 +924,11 @@ export function ChatPanel() {
                 </div>
               ) : null}
               {m.role === "assistant" && m.frozenOpenTasks && m.frozenOpenTasks.length > 0 ? (
-                <details className="mt-3 rounded-xl border border-zinc-300/60 bg-zinc-100/50 dark:border-zinc-700 dark:bg-black/20">
-                  <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium text-zinc-600 dark:text-zinc-400">
+                <details className="mt-3 rounded-xl border border-lt-borderStrong/70 bg-lt-muted/50 dark:border-zinc-700 dark:bg-black/20">
+                  <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium text-lt-textMuted dark:text-zinc-400">
                     Earlier suggestions (before your hint) — tap to expand
                   </summary>
-                  <div className="space-y-2 border-t border-zinc-200/80 p-3 dark:border-zinc-800">
+                  <div className="space-y-2 border-t border-lt-border/90 p-3 dark:border-zinc-800">
                     {m.frozenOpenTasks.map((t) => (
                       <FrozenTaskSnapshot key={`f-${t.id}`} task={t} />
                     ))}
@@ -946,7 +948,7 @@ export function ChatPanel() {
                     return (
                       <div
                         key={t.id}
-                        className="rounded-xl border border-indigo-200/40 bg-white/70 p-3 dark:border-indigo-800/40 dark:bg-slate-950/60"
+                        className="rounded-xl border border-indigo-200/40 bg-lt-surface/70 p-3 dark:border-indigo-800/40 dark:bg-slate-950/60"
                       >
                         <div className="text-xs font-semibold text-indigo-950 dark:text-indigo-100">
                           {isPlace ? (
@@ -1055,7 +1057,7 @@ export function ChatPanel() {
         </div>
       </div>
 
-      <div className="min-w-0 max-w-full border-t border-zinc-200 p-3 dark:border-zinc-800">
+      <div className="min-w-0 max-w-full border-t border-lt-border p-3 dark:border-zinc-800">
         {hintContext ? (
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-200/80 bg-amber-50/90 px-3 py-2 text-xs text-amber-950 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-100">
             <span>
@@ -1065,7 +1067,7 @@ export function ChatPanel() {
             <button
               type="button"
               onClick={clearHintContext}
-              className="shrink-0 rounded-md border border-amber-300 bg-white px-2 py-0.5 font-medium text-amber-900 hover:bg-amber-100 dark:border-amber-800 dark:bg-zinc-900 dark:text-amber-50 dark:hover:bg-zinc-800"
+              className="shrink-0 rounded-md border border-amber-300 bg-lt-surface px-2 py-0.5 font-medium text-amber-900 hover:bg-amber-100 dark:border-amber-800 dark:bg-zinc-900 dark:text-amber-50 dark:hover:bg-zinc-800"
             >
               Cancel
             </button>
@@ -1088,7 +1090,7 @@ export function ChatPanel() {
             enterKeyHint="send"
             inputMode="text"
             name="journal-entry"
-            className="min-h-[96px] min-w-0 w-full max-w-full flex-1 resize-none rounded-xl border border-zinc-200 bg-white px-3 py-2 text-base text-zinc-900 outline-none placeholder:text-zinc-500 focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-600 md:text-sm sm:resize-y"
+            className="min-h-[96px] min-w-0 w-full max-w-full flex-1 resize-none rounded-xl border border-lt-border bg-lt-surface px-3 py-2 text-base text-lt-text outline-none placeholder:text-lt-textMuted focus:border-lt-accentRing dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-600 md:text-sm sm:resize-y"
             placeholder={
               hintContext
                 ? `e.g. central London, weekend in the UK, Victoria BC…`
@@ -1098,7 +1100,7 @@ export function ChatPanel() {
           <button
             disabled={!canSend || busy}
             onClick={send}
-            className="w-full rounded-xl bg-zinc-200 hover:bg-zinc-300 dark:bg-zinc-700 dark:hover:bg-zinc-600 px-4 py-3 text-sm font-semibold text-zinc-900 dark:text-white disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto sm:py-0 sm:self-stretch"
+            className="w-full rounded-xl bg-lt-accentBright px-4 py-3 text-sm font-semibold text-white hover:bg-lt-accent disabled:cursor-not-allowed disabled:opacity-40 dark:bg-zinc-700 dark:hover:bg-zinc-600 sm:w-auto sm:py-0 sm:self-stretch"
           >
             {busy ? "…" : "Send"}
           </button>
