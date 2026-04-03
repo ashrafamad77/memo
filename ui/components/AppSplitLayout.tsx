@@ -40,7 +40,7 @@ function useMdUp() {
   return mdUp;
 }
 
-function MobileTopBanner({
+function MobileBottomNav({
   section,
   onSection,
 }: {
@@ -55,10 +55,10 @@ function MobileTopBanner({
         onClick={() => onSection(id)}
         aria-current={active ? "page" : undefined}
         className={[
-          "flex flex-1 flex-row items-center justify-center gap-2 rounded-xl py-2.5 text-xs font-semibold transition-colors outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/50 dark:focus-visible:ring-indigo-400/40",
+          "flex flex-1 flex-col items-center justify-center gap-1 rounded-xl py-2 text-[11px] font-semibold transition-colors outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/50 dark:focus-visible:ring-indigo-400/40",
           active
             ? "bg-indigo-100 text-indigo-900 dark:bg-indigo-950/50 dark:text-indigo-100"
-            : "text-zinc-600 hover:bg-zinc-200/80 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100",
+            : "text-zinc-500 hover:bg-zinc-200/80 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100",
         ].join(" ")}
       >
         {id === "journal" ? (
@@ -99,7 +99,7 @@ function MobileTopBanner({
 
   return (
     <nav
-      className="flex shrink-0 gap-1.5 border-b border-zinc-200 bg-zinc-50/95 px-2 pb-2 pt-[max(0.5rem,env(safe-area-inset-top))] backdrop-blur-sm dark:border-zinc-800 dark:bg-zinc-950/95"
+      className="flex shrink-0 gap-1.5 border-t border-zinc-200 bg-zinc-50/95 px-2 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] backdrop-blur-sm dark:border-zinc-800 dark:bg-zinc-950/95"
       aria-label="Primary"
     >
       {item("journal", "Journal")}
@@ -121,18 +121,18 @@ export function AppSplitLayout() {
   if (!mdUp) {
     return (
       <div className="flex h-full min-h-0 flex-col">
-        <MobileTopBanner section={mobileSection} onSection={setMobileSection} />
-        <div className="min-h-0 flex-1 overflow-hidden">
+        <div className="min-h-0 min-w-0 max-w-full flex-1 overflow-x-hidden overflow-y-hidden">
           {mobileSection === "journal" ? (
-            <section className="flex h-full min-h-0 min-w-0 flex-col">
+            <section className="flex h-full min-h-0 min-w-0 max-w-full flex-col overflow-x-hidden">
               <ChatPanel />
             </section>
           ) : (
-            <section className="flex h-full min-h-0 min-w-0 flex-col">
+            <section className="flex h-full min-h-0 min-w-0 max-w-full flex-col overflow-x-hidden">
               <DashboardTabs />
             </section>
           )}
         </div>
+        <MobileBottomNav section={mobileSection} onSection={setMobileSection} />
       </div>
     );
   }

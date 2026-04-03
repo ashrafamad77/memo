@@ -817,7 +817,7 @@ export function ChatPanel() {
   }
 
   return (
-    <div className="flex h-full flex-col min-h-0">
+    <div className="flex h-full min-h-0 min-w-0 max-w-full flex-col overflow-x-hidden">
       <div className="flex items-center justify-between gap-3 border-b border-zinc-200 dark:border-zinc-800 px-4 py-3">
         <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Memo</div>
         <div className="flex items-center gap-2 text-xs text-zinc-400 dark:text-zinc-500">
@@ -1055,7 +1055,7 @@ export function ChatPanel() {
         </div>
       </div>
 
-      <div className="border-t border-zinc-200 dark:border-zinc-800 p-3">
+      <div className="min-w-0 max-w-full border-t border-zinc-200 p-3 dark:border-zinc-800">
         {hintContext ? (
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-200/80 bg-amber-50/90 px-3 py-2 text-xs text-amber-950 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-100">
             <span>
@@ -1071,7 +1071,7 @@ export function ChatPanel() {
             </button>
           </div>
         ) : null}
-        <div className="flex gap-2">
+        <div className="flex min-w-0 max-w-full flex-col gap-2 sm:flex-row sm:items-end">
           <textarea
             value={text}
             onChange={(e) => setText(e.target.value)}
@@ -1083,7 +1083,12 @@ export function ChatPanel() {
               if (!busy && canSend) void send();
             }}
             rows={4}
-            className="min-h-[96px] flex-1 resize-y rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 px-3 py-2 text-sm text-zinc-900 dark:text-zinc-100 outline-none placeholder:text-zinc-500 focus:border-zinc-400 dark:focus:border-zinc-600"
+            autoComplete="off"
+            autoCorrect="on"
+            enterKeyHint="send"
+            inputMode="text"
+            name="journal-entry"
+            className="min-h-[96px] min-w-0 w-full max-w-full flex-1 resize-none rounded-xl border border-zinc-200 bg-white px-3 py-2 text-base text-zinc-900 outline-none placeholder:text-zinc-500 focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-600 md:text-sm sm:resize-y"
             placeholder={
               hintContext
                 ? `e.g. central London, weekend in the UK, Victoria BC…`
@@ -1093,7 +1098,7 @@ export function ChatPanel() {
           <button
             disabled={!canSend || busy}
             onClick={send}
-            className="rounded-xl bg-zinc-200 hover:bg-zinc-300 dark:bg-zinc-700 dark:hover:bg-zinc-600 px-4 text-sm font-semibold text-zinc-900 dark:text-white disabled:cursor-not-allowed disabled:opacity-40"
+            className="w-full rounded-xl bg-zinc-200 hover:bg-zinc-300 dark:bg-zinc-700 dark:hover:bg-zinc-600 px-4 py-3 text-sm font-semibold text-zinc-900 dark:text-white disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto sm:py-0 sm:self-stretch"
           >
             {busy ? "…" : "Send"}
           </button>

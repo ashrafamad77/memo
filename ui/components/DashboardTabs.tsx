@@ -569,7 +569,7 @@ export function DashboardTabs() {
   }, [tab, graphRoots, timeline, insights, goToSuggestions, deletingEntryId]);
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full min-w-0 max-w-full flex-col overflow-x-hidden">
       <div className="flex items-center justify-between gap-3 border-b border-zinc-200 dark:border-zinc-700 px-4 py-3">
         <div className="hidden flex-wrap gap-2 md:flex">
           {tabs.map((t) => (
