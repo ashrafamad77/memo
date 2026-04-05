@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .babelnet_client import bundle_to_sources_json, enrich_babel_synset
 from .babelfy_client import disambiguate
 from .babelfy_entity_link import _annotation_score, _char_fragment_span, _find_mention_span, _spans_overlap
+from .semantic_gate import is_coherent
 from .type_grounding_embed import wikidata_fetch_labels_descriptions
 
 logger = logging.getLogger(__name__)
@@ -194,15 +195,34 @@ def run_babelfy_e55_grounding(
     if not concept_hits:
         return out, stats
 
+    # Category → short phrase describing what kind of concept is expected.
+    # Used as the gate context instead of the full journal text so multi-topic
+    # journals don't bleed irrelevant domain signal into the comparison.
+    _CAT_HINTS: Dict[str, str] = {
+        "activity":     "human activity action behavior social interaction",
+        "event":        "event occurrence experience happening",
+        "concept":      "abstract concept category idea type",
+        "object":       "physical object artifact material thing",
+        "state":        "mental state condition emotion feeling",
+        "place":        "geographic location place spatial",
+        "person":       "person human individual",
+        "organization": "organization group institution",
+        "transfer":     "transfer exchange give receive",
+        "other":        "concept category type",
+    }
+
     for req in type_requests:
         name = str(req.get("name") or "").strip()
         if not name:
             continue
+        category = str(req.get("context_category") or "other").strip().lower() or "other"
+        gate_context = _CAT_HINTS.get(category, _CAT_HINTS["other"])
 
-        best_sid: Optional[str] = None
-        best_sc = -1.0
-        best_ann: Optional[Dict[str, Any]] = None
-
+        # Collect all surface-matched candidates for this type, sorted best-score first.
+        # The semantic gate is applied in order so that if the top Babelfy pick is
+        # wrong-domain (e.g. "Conversation tart") a lower-ranked but correct synset
+        # (e.g. bn:00022349n "conversation, verbal exchange") can still be accepted.
+        ranked: List[Tuple[float, str, Dict[str, Any]]] = []
         for sp, sid, sc, ann in concept_hits:
             s0, s1 = sp
             surface = text[s0:s1].strip() if text else ""
@@ -219,33 +239,75 @@ def run_babelfy_e55_grounding(
                 ):
                     ok = True
                     break
-            if not ok:
-                continue
-            if sc > best_sc:
-                best_sc = sc
-                best_sid = sid
-                best_ann = ann
+            if ok:
+                ranked.append((sc, sid, ann))
 
-        if not best_sid:
+        if not ranked:
+            continue
+        ranked.sort(key=lambda t: t[0], reverse=True)
+
+        accepted_sid: Optional[str] = None
+        accepted_sc: float = -1.0
+        accepted_ann: Optional[Dict[str, Any]] = None
+        accepted_bundle: Dict[str, Any] = {}
+        accepted_candidates: List[Dict[str, str]] = []
+        accepted_gloss: str = ""
+
+        for best_sc, best_sid, best_ann in ranked:
+            bundle = enrich_babel_synset(best_sid, api_key=key, target_lang=bab_lang)
+            wd_list_raw = list(bundle.get("wikidata_qids") or [])[:6]
+            wn_ids_raw = list(bundle.get("wordnet_ids") or [])
+            gloss_raw = str(bundle.get("gloss") or "").strip()
+
+            cands_raw: List[Dict[str, str]] = []
+            if wd_list_raw:
+                fetched = wikidata_fetch_labels_descriptions(wd_list_raw)
+                for q in wd_list_raw:
+                    lab, dsc = fetched.get(q, ("", ""))
+                    cands_raw.append(
+                        {
+                            "qid": q,
+                            "label": str(lab or "").strip(),
+                            "description": str(dsc or "").strip(),
+                        }
+                    )
+
+            # Semantic coherence gate: compare the concept description against the
+            # category hint (not the full journal) so multi-topic journals don't bleed
+            # unrelated domain signal (e.g. "music" boosting "album by Twinz").
+            # Use only Wikidata descriptions — the BabelNet gloss is usually just the
+            # headword repeated and adds no discriminating power.
+            cand_parts = [c.get("description", "") for c in cands_raw[:2]]
+            # Fall back to gloss only when Wikidata returned no descriptions.
+            if not any(cand_parts):
+                cand_parts = [gloss_raw]
+            candidate_text = " ".join(p for p in cand_parts if p)
+            if not is_coherent(gate_context, candidate_text):
+                logger.debug(
+                    "E55 semantic gate: rejected type=%r synset=%s gloss=%r — trying next candidate",
+                    name, best_sid, gloss_raw,
+                )
+                continue
+
+            accepted_sid = best_sid
+            accepted_sc = best_sc
+            accepted_ann = best_ann
+            accepted_bundle = bundle
+            accepted_candidates = cands_raw
+            accepted_gloss = gloss_raw
+            break
+
+        if not accepted_sid:
             continue
 
-        bundle = enrich_babel_synset(best_sid, api_key=key, target_lang=bab_lang)
+        best_sid = accepted_sid
+        best_sc = accepted_sc
+        best_ann = accepted_ann
+        bundle = accepted_bundle
+        candidates = accepted_candidates
+        gloss = accepted_gloss
         wd_list = list(bundle.get("wikidata_qids") or [])[:6]
         wn_ids = list(bundle.get("wordnet_ids") or [])
-        gloss = str(bundle.get("gloss") or "").strip()
-
-        candidates: List[Dict[str, str]] = []
-        if wd_list:
-            fetched = wikidata_fetch_labels_descriptions(wd_list)
-            for q in wd_list:
-                lab, dsc = fetched.get(q, ("", ""))
-                candidates.append(
-                    {
-                        "qid": q,
-                        "label": str(lab or "").strip(),
-                        "description": str(dsc or "").strip(),
-                    }
-                )
 
         conf = "high" if best_sc >= 0.2 else "medium"
         bru = ""

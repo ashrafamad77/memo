@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .babelnet_client import bundle_to_sources_json, enrich_babel_synset
 from .babelfy_client import disambiguate
+from .semantic_gate import is_coherent
 from .type_grounding_embed import wikidata_fetch_labels_descriptions
 from .type_resolver import apply_entity_linking, collect_entity_linking_requests
 
@@ -144,10 +145,10 @@ def run_babelfy_entity_linking(
             continue
 
         span = _find_mention_span(text, name)
-        best_sid: Optional[str] = None
-        best_sc = -1.0
-        best_ann: Optional[Dict[str, Any]] = None
 
+        # Collect all surface-matched candidates sorted best-score first so the
+        # semantic gate can fall through to a lower-ranked but correct synset.
+        ranked: List[Tuple[float, str, Dict[str, Any]]] = []
         for sp, sid, sc, ann in candidates:
             s0, s1 = sp
             surface = text[s0:s1].strip() if text else ""
@@ -160,50 +161,62 @@ def run_babelfy_entity_linking(
                 or surface.casefold() in name.casefold()
             ):
                 ok = True
-            if not ok:
-                continue
-            if sc > best_sc:
-                best_sc = sc
-                best_sid = sid
-                best_ann = ann
+            if ok:
+                ranked.append((sc, sid, ann))
 
-        if not best_sid:
+        if not ranked:
+            continue
+        ranked.sort(key=lambda t: t[0], reverse=True)
+
+        accepted: Optional[Dict[str, Any]] = None
+        for best_sc, best_sid, best_ann in ranked:
+            bundle = enrich_babel_synset(best_sid, api_key=key, target_lang=bab_lang)
+            wd_list = list(bundle.get("wikidata_qids") or [])
+            qid = wd_list[0] if wd_list else ""
+            desc = str(bundle.get("gloss") or "").strip()
+            if qid:
+                fetched = wikidata_fetch_labels_descriptions([qid])
+                pair = fetched.get(qid)
+                if pair:
+                    lab, d2 = pair[0] or "", pair[1] or ""
+                    if d2:
+                        desc = d2
+                    elif lab and not desc:
+                        desc = lab
+            wn_ids = list(bundle.get("wordnet_ids") or [])
+            wn0 = wn_ids[0] if wn_ids else ""
+            gloss_bn = str(bundle.get("gloss") or "").strip()
+            bru = str(best_ann.get("BabelNetURL") or "").strip() if isinstance(best_ann, dict) else ""
+            dpu = str(best_ann.get("DBpediaURL") or "").strip() if isinstance(best_ann, dict) else ""
+
+            # Semantic coherence gate: reject synsets whose concept domain is unrelated
+            # to the journal context.
+            # Exclude the entity name (it's the surface word shared by all candidates).
+            # Use only gloss + Wikidata description to discriminate between concepts.
+            candidate_text = " ".join(filter(None, [gloss_bn, desc]))
+            if not is_coherent(text, candidate_text):
+                logger.debug(
+                    "EL semantic gate: rejected entity=%r synset=%s gloss=%r — trying next candidate",
+                    name, best_sid, gloss_bn,
+                )
+                continue
+
+            accepted = {
+                "wikidata_id": qid,
+                "description": desc,
+                "babel_synset_id": best_sid,
+                "wordnet_synset_id": wn0,
+                "babel_gloss": gloss_bn,
+                "babelnet_rdf_url": bru,
+                "dbpedia_url": dpu,
+                "babelnet_sources_json": bundle_to_sources_json(bundle, babelfy_ann=best_ann),
+            }
+            break
+
+        if not accepted:
             continue
 
-        bundle = enrich_babel_synset(best_sid, api_key=key, target_lang=bab_lang)
-        wd_list = list(bundle.get("wikidata_qids") or [])
-        qid = wd_list[0] if wd_list else ""
-        desc = str(bundle.get("gloss") or "").strip()
-        if qid:
-            fetched = wikidata_fetch_labels_descriptions([qid])
-            pair = fetched.get(qid)
-            if pair:
-                lab, d2 = pair[0] or "", pair[1] or ""
-                if d2:
-                    desc = d2
-                elif lab and not desc:
-                    desc = lab
-        wn_ids = list(bundle.get("wordnet_ids") or [])
-        wn0 = wn_ids[0] if wn_ids else ""
-        gloss_bn = str(bundle.get("gloss") or "").strip()
-        bru = ""
-        dpu = ""
-        if isinstance(best_ann, dict):
-            bru = str(best_ann.get("BabelNetURL") or "").strip()
-            dpu = str(best_ann.get("DBpediaURL") or "").strip()
-
-        el_results[name] = {
-            "wikidata_id": qid,
-            "description": desc,
-            "babel_synset_id": best_sid,
-            "wordnet_synset_id": wn0,
-            "babel_gloss": gloss_bn,
-            "babelnet_rdf_url": bru,
-            "dbpedia_url": dpu,
-            "babelnet_sources_json": bundle_to_sources_json(
-                bundle, babelfy_ann=best_ann
-            ),
-        }
+        el_results[name] = accepted
         stats["matched_nodes"] += 1
 
     if not el_results:

@@ -428,6 +428,7 @@ def lookup_by_label_contextual(
     api_key: str,
     journal_text: str = "",
     type_label: str = "",
+    context_hint: str = "",
     lang: str = "EN",
     max_candidates: int = 8,
     timeout: Optional[float] = None,
@@ -436,6 +437,12 @@ def lookup_by_label_contextual(
 
     Tries embedding similarity when ``embedding_service`` is available; otherwise scores
     candidates by token overlap between context and gloss / WordNet ids.
+
+    ``context_hint`` — when provided, replaces ``journal_text`` as the semantic anchor
+    for the query embedding.  Use a short category description (e.g.
+    "human activity action behavior social interaction") to avoid multi-topic journal
+    texts leaking unrelated domain signal (e.g. "listened to music" boosting an album
+    synset for the word "Conversation").
     """
     empty: Dict[str, Any] = {
         "synset_id": "",
@@ -478,7 +485,27 @@ def lookup_by_label_contextual(
         bundles.append((sid, b))
 
     tl = (type_label or lemma or "").strip()
-    query_text = f"E55 type {tl}: {lm}. {journal_text or ''}".strip()[:2000]
+    # Use context_hint when available so multi-topic journals don't bleed unrelated
+    # domain signal into the candidate scoring (e.g. "music" boosting an album synset).
+    context_body = (context_hint or journal_text or "").strip()
+    query_text = f"E55 type {tl}: {lm}. {context_body}".strip()[:2000]
+
+    # Pre-fetch Wikidata descriptions for all candidate synsets so the doc text
+    # includes concrete descriptions ("album by Twinz") not just the bare headword.
+    try:
+        from .type_grounding_embed import wikidata_fetch_labels_descriptions as _wd_fetch
+        all_qids: List[str] = []
+        for _, b in bundles:
+            all_qids.extend(str(q) for q in (b.get("wikidata_qids") or [])[:2] if q)
+        wd_desc_map: Dict[str, str] = {}
+        if all_qids:
+            fetched = _wd_fetch(list(dict.fromkeys(all_qids)))
+            for q, pair in fetched.items():
+                desc = str(pair[1] or "").strip() if pair else ""
+                if desc:
+                    wd_desc_map[q] = desc
+    except Exception:
+        wd_desc_map = {}
 
     best_sid: str = ""
     best_bundle: Optional[Dict[str, Any]] = None
@@ -493,7 +520,14 @@ def lookup_by_label_contextual(
         for idx, (sid, b) in enumerate(bundles):
             gloss = str(b.get("gloss") or "")
             wn = " ".join(str(x) for x in (b.get("wordnet_ids") or []) if x)
-            doc = f"{gloss} {wn}".strip()[:500]
+            # Append Wikidata description so the doc reflects the actual concept
+            # ("album by Twinz") rather than just the bare headword ("conversation").
+            wd_descs = " ".join(
+                wd_desc_map[q]
+                for q in (b.get("wikidata_qids") or [])[:2]
+                if q in wd_desc_map
+            )
+            doc = " ".join(filter(None, [gloss, wn, wd_descs])).strip()[:500]
             if not doc:
                 doc = gloss or sid
             try:

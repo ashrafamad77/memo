@@ -380,7 +380,30 @@ class AgenticRunner:
                 except Exception as _exc:
                     logger.debug("agentic: Babelfy CONCEPTS prefetch failed: %s", _exc)
 
-            def legacy_bundle(name_lc: str, canonical_lc: str, cidoc_lc: str) -> Dict[str, Any]:
+            # Category hint map: type name → short semantic description.
+            # Used instead of the full journal text when scoring BabelNet candidates so
+            # unrelated topics (e.g. "listened to music") don't bias synset selection.
+            _E55_CAT_HINTS: Dict[str, str] = {
+                "activity":     "human activity action behavior social interaction",
+                "event":        "event occurrence experience happening",
+                "concept":      "abstract concept category idea type",
+                "object":       "physical object artifact material thing",
+                "state":        "mental state condition emotion feeling",
+                "place":        "geographic location place spatial",
+                "person":       "person human individual",
+                "organization": "organization group institution",
+                "transfer":     "transfer exchange give receive",
+                "other":        "concept category type",
+            }
+            from .type_resolver import collect_e55_grounding_requests as _collect_e55_reqs
+            _type_cat_hints: Dict[str, str] = {
+                req["name"]: _E55_CAT_HINTS.get(
+                    str(req.get("context_category") or "other").lower(), "concept category type"
+                )
+                for req in _collect_e55_reqs(spec)
+            }
+
+            def legacy_bundle(name_lc: str, canonical_lc: str, cidoc_lc: str, context_hint_: str = "") -> Dict[str, Any]:
                 if not babelfy_key:
                     return {
                         "synset_id": "",
@@ -422,6 +445,7 @@ class AgenticRunner:
                         api_key=babelfy_key,
                         journal_text=journal_text,
                         type_label=name,
+                        context_hint=context_hint_,
                     )
                 return lookup_by_label(canonical_lc, api_key=babelfy_key)
 
@@ -592,7 +616,10 @@ class AgenticRunner:
                                     "babelnet_sources_json": "",
                                 }
                         continue
-                    bundle = legacy_bundle(name.lower(), canonical, cidoc)
+                    bundle = legacy_bundle(
+                        name.lower(), canonical, cidoc,
+                        context_hint_=_type_cat_hints.get(name, "") if cidoc == "E55_Type" else "",
+                    )
 
                 synset_id = str(bundle.get("synset_id") or "").strip()
                 wd_qids = list(bundle.get("wikidata_qids") or [])
