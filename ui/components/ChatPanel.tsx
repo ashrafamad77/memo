@@ -3,6 +3,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { API_BASE, apiGet } from "@/lib/api";
+import { ThemeToggle } from "@/components/ThemeToggle";
 
 type WikidataCandidate = {
   wikidata_id: string;
@@ -704,6 +705,7 @@ export function ChatPanel() {
       try {
         res = await fetch(API_BASE + "/chat/stream", {
           method: "POST",
+          cache: "no-store",
           headers: { "content-type": "application/json", accept: "text/event-stream" },
           body: JSON.stringify(body),
         });
@@ -718,7 +720,14 @@ export function ChatPanel() {
       let buffer = "";
       try {
         while (true) {
-          const { done, value } = await reader.read();
+          let readResult: ReadableStreamReadResult<Uint8Array>;
+          try {
+            readResult = await reader.read();
+          } catch {
+            /* Mobile Safari often throws "Load failed" mid-stream; fall back to POST /chat */
+            return { kind: "fallback" };
+          }
+          const { done, value } = readResult;
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
           const { events, rest } = consumeSseBuffer(buffer);
@@ -752,6 +761,8 @@ export function ChatPanel() {
             }
           }
         }
+      } catch {
+        return { kind: "fallback" };
       } finally {
         try {
           reader.releaseLock();
@@ -763,7 +774,12 @@ export function ChatPanel() {
     }
 
     try {
-      const streamed = await tryChatStream();
+      let streamed: StreamResult;
+      try {
+        streamed = await tryChatStream();
+      } catch {
+        streamed = { kind: "fallback" };
+      }
       if (streamed.kind === "done") {
         setMsgs((prev) => prev.filter((m) => m.id !== workId));
         await applyChatPayload(streamed.payload, hint);
@@ -780,6 +796,7 @@ export function ChatPanel() {
       setMsgs((prev) => prev.filter((m) => m.id !== workId));
       const res = await fetch(API_BASE + "/chat", {
         method: "POST",
+        cache: "no-store",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
       });
@@ -793,9 +810,16 @@ export function ChatPanel() {
       if (hint) {
         setHintContext(hint);
       }
+      const raw = (e?.message || String(e)).trim();
+      const net = /load failed|failed to fetch|networkerror|network error|aborted|could not connect/i.test(
+        raw,
+      );
+      const detail = net
+        ? `${raw} — On a phone, use your PC’s LAN URL for the app (not localhost) and ensure the API on port 8000 is running and reachable.`
+        : raw;
       setMsgs((prev) => [
         ...prev.filter((m) => m.id !== workId),
-        { id: uid(), role: "assistant", text: "Error: " + (e?.message || String(e)) },
+        { id: uid(), role: "assistant", text: "Error: " + detail },
       ]);
     } finally {
       setBusy(false);
@@ -822,7 +846,7 @@ export function ChatPanel() {
         <div className="text-sm font-semibold text-lt-text dark:text-zinc-100 nebula:bg-gradient-to-r nebula:from-cyan-200 nebula:to-fuchsia-200 nebula:bg-clip-text nebula:text-transparent">
           Memo
         </div>
-        <div className="flex items-center gap-2 text-xs text-zinc-400 dark:text-zinc-500 nebula:text-cyan-200/65">
+        <div className="flex min-w-0 items-center justify-end gap-2 text-xs text-zinc-400 dark:text-zinc-500 nebula:text-cyan-200/65">
           {busy ? (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-lt-accent/12 px-2 py-0.5 text-[11px] font-medium text-lt-accent dark:text-indigo-300">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-lt-accentBright dark:bg-indigo-500" />
@@ -830,6 +854,9 @@ export function ChatPanel() {
             </span>
           ) : null}
           <span className="hidden sm:inline">chat</span>
+          <div className="shrink-0 md:hidden">
+            <ThemeToggle />
+          </div>
         </div>
       </div>
 

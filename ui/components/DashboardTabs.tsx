@@ -9,6 +9,7 @@ import { BasicOverviewPanel } from "@/components/BasicOverviewPanel";
 import { SuggestionsPanel } from "@/components/SuggestionsPanel";
 import { GraphMindMap } from "@/components/GraphMindMap";
 import { InsightsPanel, type Insights } from "@/components/InsightsPanel";
+import { ThemeToggle } from "@/components/ThemeToggle";
 
 const tabs = ["Basic", "Inbox", "Timeline", "Suggestions", "Entity Timeline", "Graph", "Insights"] as const;
 type Tab = (typeof tabs)[number];
@@ -581,7 +582,9 @@ export function DashboardTabs() {
             <div className="truncate text-sm font-semibold text-lt-text dark:text-zinc-100">{tab}</div>
             <div className="text-[11px] text-lt-textMuted dark:text-zinc-400">Dashboard</div>
           </div>
-          <button
+          <div className="flex shrink-0 items-center gap-2">
+            <ThemeToggle />
+            <button
             ref={mobileMenuBtnRef}
             type="button"
             aria-expanded={mobileTabMenuOpen}
@@ -602,8 +605,11 @@ export function DashboardTabs() {
               <path strokeLinecap="round" d="M4 6h16M4 12h16M4 18h16" />
             </svg>
           </button>
+          </div>
         </div>
-        <div className="hidden shrink-0 text-xs text-lt-textMuted dark:text-zinc-400 md:block">dashboard</div>
+        <div className="hidden shrink-0 md:block">
+          <ThemeToggle />
+        </div>
       </div>
 
       {mobileTabMenuOpen ? (

@@ -161,11 +161,12 @@ export function AppSplitLayout() {
       </Panel>
       <PanelResizeHandle
         aria-label="Resize chat and dashboard panels"
-        className="group relative flex w-2 shrink-0 cursor-col-resize items-stretch justify-center bg-transparent px-3 outline-none hover:bg-transparent focus-visible:bg-transparent focus-visible:ring-0 dark:bg-zinc-950 dark:hover:bg-zinc-950 dark:focus-visible:bg-zinc-950 dark:focus-visible:ring-0 nebula:bg-transparent nebula:hover:bg-transparent nebula:focus-visible:bg-transparent nebula:focus-visible:ring-0"
+        className="relative z-10 w-0 shrink-0 cursor-col-resize bg-transparent p-0 outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-lt-borderStrong/50 dark:focus-visible:outline-zinc-500/40 nebula:focus-visible:outline-violet-800/40"
       >
+        {/* Invisible 24px strip for dragging — zero layout width so no wide colored gutter */}
         <span
           aria-hidden
-          className="pointer-events-none my-auto h-12 w-1 rounded-full bg-transparent group-hover:bg-transparent dark:bg-zinc-950 dark:group-hover:bg-zinc-950 nebula:bg-transparent nebula:group-hover:bg-transparent"
+          className="absolute inset-y-0 left-1/2 z-10 w-6 -translate-x-1/2"
         />
       </PanelResizeHandle>
       <Panel defaultSize={100 - chatSize} minSize={40} className="min-h-0 min-w-0">
